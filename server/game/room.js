@@ -858,12 +858,6 @@ export class Room {
     logger.info(`room "${this.id}" (${this.code}) went idle — nobody left in it`);
   }
 
-  /** Re-checks the two membership facts that decide whether the room runs. */
-  settleOccupancy() {
-    if (this.humanCount > 0) this.wake();
-    else this.sleep();
-  }
-
   add(player) {
     this.players.set(player.id, player);
     this.invalidateRoster();
