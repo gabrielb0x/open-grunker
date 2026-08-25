@@ -4,3 +4,4 @@ data/
 *.log
 client/vendor/
 .DS_Store
+/cheat.user.js
