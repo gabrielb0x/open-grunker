@@ -1,0 +1,29 @@
+{
+  "name": "open-grunker",
+  "version": "1.5.0",
+  "description": "Open Grunker \u2014 an open-source, self-hostable 3D FPS arena shooter heavily inspired by krunker.io",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "dev": "node --watch --disable-warning=ExperimentalWarning server/index.js",
+    "postinstall": "node scripts/sync-vendor.js",
+    "db:init": "node --disable-warning=ExperimentalWarning scripts/db-cli.js init",
+    "db:reset": "node --disable-warning=ExperimentalWarning scripts/db-cli.js reset",
+    "db:stats": "node --disable-warning=ExperimentalWarning scripts/db-cli.js stats",
+    "user:admin": "node --disable-warning=ExperimentalWarning scripts/db-cli.js admin",
+    "vendor": "node scripts/sync-vendor.js",
+    "mail:test": "node --disable-warning=ExperimentalWarning scripts/mail-test.js",
+    "check": "node --check server/index.js && echo OK",
+    "db": "node --disable-warning=ExperimentalWarning scripts/db-cli.js",
+    "test": "node --disable-warning=ExperimentalWarning tests/run.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "three": "^0.185.1"
+  }
+}

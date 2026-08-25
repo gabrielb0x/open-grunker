@@ -1,0 +1,54 @@
+# Open Grunker — game + API server
+#
+# Install:  sudo bash /opt/open-grunker/scripts/deploy-service.sh
+# Logs:     journalctl -u open-grunker -f
+
+[Unit]
+Description=Open Grunker — open-source arena FPS server
+Documentation=https://grunker.g0x.dev
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/open-grunker
+Environment=NODE_ENV=production
+EnvironmentFile=-/opt/open-grunker/.env
+ExecStart=/usr/bin/env node --disable-warning=ExperimentalWarning server/index.js
+
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=open-grunker
+
+# Hardening — the server only ever needs to write to data/
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/open-grunker/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+# AF_NETLINK is only used to look up this machine's LAN address for the admin
+# panel's boot banner.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+# Resource guards
+LimitNOFILE=16384
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

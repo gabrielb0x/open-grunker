@@ -1,0 +1,864 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0e14">
+<title>Open Grunker — open-source arena FPS</title>
+<meta name="description" content="Open Grunker is a fast, open-source browser arena shooter: bunny-hop, slide, quickscope. No install, no downloads.">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/css/style.css">
+<script type="importmap">
+{ "imports": { "three": "/vendor/three.module.js" } }
+</script>
+<!--
+  Cloudflare Turnstile. Rendered explicitly rather than by class scan: the two
+  widgets live in a modal that starts hidden, and each one has to be reset by
+  hand after a failed submit so the next attempt gets a fresh token.
+-->
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
+</head>
+<body>
+
+<!-- ══ 3D viewport ══════════════════════════════════════════════════════ -->
+<canvas id="view"></canvas>
+<div id="grade" aria-hidden="true"></div>
+
+<!-- ══ In-game HUD ══════════════════════════════════════════════════════ -->
+<div id="hud" class="hidden" aria-hidden="true">
+
+  <div id="crosshair"><i class="ch-dot"></i><i class="ch-t"></i><i class="ch-b"></i><i class="ch-l"></i><i class="ch-r"></i></div>
+  <div id="hitmarker"></div>
+  <div id="scopeOverlay">
+    <div class="scope-mask"></div>
+    <div class="scope-ring"></div>
+    <div class="scope-h"></div><div class="scope-v"></div>
+    <div class="scope-tick t1"></div><div class="scope-tick t2"></div><div class="scope-tick t3"></div>
+  </div>
+  <div id="damageFlash"></div>
+  <div id="lowHealth"></div>
+  <div id="dirIndicators"></div>
+  <div id="floaters"></div>
+
+  <header id="matchBar">
+    <div class="team red"><span class="t-name">RED</span><span class="t-score" id="scoreRed">0</span></div>
+    <div class="clock">
+      <span id="matchClock">4:00</span>
+      <small id="matchMode">FREE FOR ALL</small>
+    </div>
+    <div class="team blue"><span class="t-score" id="scoreBlue">0</span><span class="t-name">BLUE</span></div>
+  </header>
+
+  <!-- Domination capture points -->
+  <div id="objStrip" class="hidden"></div>
+
+  <!--
+    The whole top-right column is one flow: minimap, then the live standings,
+    then the killfeed under them. Stacking rather than absolutely placing each
+    piece is what stops the killfeed from ever growing over the standings.
+  -->
+  <div id="hudRight">
+    <div id="mapWrap">
+      <canvas id="minimap" width="280" height="280"></canvas>
+      <div id="minimapName"></div>
+    </div>
+
+    <aside id="liveScore">
+      <div class="ls-head"><span id="lsLabel">SCORE</span><b id="lsMine">0</b></div>
+      <ol id="lsRows"></ol>
+    </aside>
+
+    <div id="killfeed"></div>
+  </div>
+
+  <div id="streakBanner"></div>
+  <div id="pointsFeed"></div>
+
+  <!-- Killstreak nuke: armed prompt, then the countdown the whole room sees. -->
+  <div id="nukePrompt" class="hidden">
+    <div class="nk-label">NUKE READY</div>
+    <div class="nk-key">Press <kbd id="nukeKey">N</kbd> to launch</div>
+  </div>
+  <div id="nukeWarning" class="hidden">
+    <div class="nk-w-top"><b id="nukeBy">—</b> HAS LAUNCHED A NUKE</div>
+    <div class="nk-w-count" id="nukeCount">7</div>
+    <div class="nk-w-sub" id="nukeSub">Kill them to stop it</div>
+  </div>
+  <div id="nukeFlash" class="hidden"></div>
+
+  <!-- Gun Game ladder -->
+  <div id="ggStrip" class="hidden">
+    <div class="gg-head"><b id="ggWeapon">—</b><span id="ggRung">1 / 9</span></div>
+    <div class="gg-bar"><i id="ggFill"></i></div>
+    <div class="gg-next" id="ggNext"></div>
+  </div>
+
+  <div id="bottomLeft">
+    <div class="hp-wrap">
+      <div class="hp-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26"><path d="M12 21s-7.5-4.6-9.4-9.2C1.2 8.2 3.3 4.6 6.9 4.6c2 0 3.6 1 5.1 3 1.5-2 3.1-3 5.1-3 3.6 0 5.7 3.6 4.3 7.2C19.5 16.4 12 21 12 21z"/></svg>
+      </div>
+      <div class="hp-stack">
+        <div class="hp-num" id="hpNum">100</div>
+        <div class="hp-bar"><span id="hpFill"></span><i id="hpGhost"></i></div>
+      </div>
+    </div>
+    <div class="lvl-wrap">
+      <span id="playerNameTag">Guest</span>
+      <img id="playerVerified" class="verified hidden" src="/check.png" alt="verified" width="14" height="14">
+      <span class="lvl" id="playerLevel">LVL 1</span>
+    </div>
+    <div class="speedo hidden" id="speedo"><b id="speedVal">0</b><span>u/s</span><i id="speedBar"></i></div>
+  </div>
+
+  <!-- Chat lives in the bottom-right corner, above the ammo readout. -->
+  <div id="chatPanel">
+    <div id="chatLog"></div>
+    <form id="chatForm" class="hidden"><input id="chatInput" maxlength="140" autocomplete="off" placeholder="Say something…"></form>
+    <!-- Replaced by the HUD with the reason whenever this player may not write. -->
+    <div id="chatHint">Press <kbd>Y</kbd> to chat</div>
+  </div>
+
+  <div id="bottomRight">
+    <div class="ammo"><span id="ammoMag">30</span><span class="ammo-sep">/</span><span id="ammoReserve">∞</span></div>
+    <div class="weapon-name" id="weaponName">ASSAULT RIFLE</div>
+    <div class="slots">
+      <span class="slot active" data-slot="0">1</span>
+      <span class="slot" data-slot="1">2</span>
+      <span class="slot" data-slot="2">3</span>
+    </div>
+    <div class="reload-wrap hidden" id="reloadHint">
+      <span>RELOADING</span>
+      <i id="reloadFill"></i>
+    </div>
+  </div>
+
+  <div id="perf"><span id="fps">60 FPS</span><span id="ping">— ms</span><span id="accuracy" class="hidden">—%</span></div>
+
+  <div id="deathScreen" class="hidden">
+    <div class="death-inner">
+      <div class="death-label">ELIMINATED BY</div>
+      <div class="death-killer" id="deathKiller">—</div>
+      <div class="death-weapon" id="deathWeapon"></div>
+      <div class="death-hp"><span>THEY HAD</span><b id="deathKillerHp">—</b><span>HP LEFT</span></div>
+      <div class="death-timer">RESPAWNING IN <b id="respawnIn">3</b></div>
+      <div class="death-hint" id="deathHint">Respawning automatically · <kbd>ESC</kbd> to stay dead
+        · <kbd id="hintClass">B</kbd> to switch class</div>
+      <div class="death-hint hidden" id="deathHintHeld">Respawn on hold · <kbd id="hintRespawn">SPACE</kbd> to go back in
+        · <kbd id="hintClass2">B</kbd> to switch class</div>
+    </div>
+  </div>
+
+  <div id="scoreboard" class="hidden">
+    <div class="sb-card">
+      <div class="sb-head">
+        <h2 id="sbTitle">SCOREBOARD</h2>
+        <span id="sbMap">Burgtown</span>
+      </div>
+      <div class="sb-body"><table><thead><tr>
+        <th class="c-rank">#</th><th class="c-name">PLAYER</th><th>CLASS</th>
+        <th>SCORE</th><th>K</th><th>D</th><th>A</th><th>HS</th><th>K/D</th><th>ACC</th><th>PING</th>
+        <th class="c-mod hidden" id="sbModHead">CHAT</th>
+        <th class="c-report hidden" id="sbReportHead">REPORT</th>
+      </tr></thead><tbody id="sbRows"></tbody></table></div>
+      <div class="sb-foot"><span>100 points = 1 GR</span><span id="sbHint">Hold TAB</span></div>
+    </div>
+  </div>
+
+  <!-- End-of-match scoreboard, shown for the whole intermission -->
+  <div id="matchEnd" class="hidden">
+    <div class="me-card">
+      <div class="me-top">
+        <div>
+          <div class="me-label">MATCH OVER</div>
+          <div class="me-winner" id="meWinner">—</div>
+          <div class="me-sub" id="meSub"></div>
+        </div>
+        <div class="me-next-wrap">
+          <div class="me-next-num" id="meNext">18</div>
+          <div class="me-next-lbl">NEXT MATCH</div>
+        </div>
+      </div>
+
+      <div class="me-mvp hidden" id="meMvp"></div>
+
+      <div class="me-body"><table><thead><tr>
+        <th class="c-rank">#</th><th class="c-name">PLAYER</th><th>SCORE</th><th>GR</th>
+        <th>K</th><th>D</th><th>A</th><th>HS</th><th>DMG</th><th>ACC</th><th>STREAK</th>
+      </tr></thead><tbody id="meRows"></tbody></table></div>
+
+      <div class="me-vote hidden" id="meVote">
+        <div class="mv-head">VOTE FOR THE NEXT MAP</div>
+        <div class="mv-options" id="meVoteOptions"></div>
+      </div>
+
+      <div class="me-rewards" id="meRewards"></div>
+      <!-- Shown only to a guest, and only when the match was actually worth
+           something. The figure is the one they just played for. -->
+      <div class="me-guest hidden" id="meGuest"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ Menu ═════════════════════════════════════════════════════════════
+     A HUD over the live match rather than a page on top of it: the room the
+     player is about to join keeps playing behind everything here.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div id="menu">
+  <div class="menu-veil" aria-hidden="true"></div>
+  <div class="bg-scan" aria-hidden="true"></div>
+
+  <header class="menu-bar">
+    <div class="mb-side mb-left">
+      <button id="accountChip" class="account-chip" type="button">
+        <span class="ac-avatar" id="acAvatar"><img class="av-img hidden" alt="" width="38" height="38"><i class="av-initial">?</i></span>
+        <span class="ac-body">
+          <span class="ac-name">
+            <b id="acName">Guest</b>
+            <img id="acVerified" class="verified hidden" src="/check.png" alt="verified" width="15" height="15">
+          </span>
+          <span class="ac-meta" id="acMeta">Not signed in</span>
+          <span class="ac-xp"><i id="acXpFill"></i></span>
+        </span>
+        <span class="ac-gr"><b id="acGr">0</b><small>GR</small></span>
+      </button>
+      <button id="btnSignupRewards" class="mb-pill" type="button">★ GET SIGNUP REWARDS</button>
+    </div>
+
+    <div class="mb-logo">
+      <h1>OPEN<span>GRUNKER</span></h1>
+      <small>OPEN SOURCE · SEASON 1</small>
+    </div>
+
+    <div class="mb-side mb-right">
+      <button class="mb-link" data-open="challenges" type="button">◈ CHALLENGES</button>
+      <button class="mb-link" data-open="settings" type="button">✧ SETTINGS</button>
+      <button class="mb-link" data-open="help" type="button">☰ MORE</button>
+    </div>
+  </header>
+
+  <nav class="menu-rail">
+    <button class="rail-item" data-open="help" type="button">
+      <span class="ri-ico">◎</span><span class="ri-body"><b>GUIDE</b><small>LEARN THE BASICS</small></span>
+    </button>
+    <button class="rail-item" data-open="shop" type="button">
+      <span class="ri-ico">◆</span><span class="ri-body"><b>STORE</b><small>WEAPON FINISHES</small></span>
+    </button>
+    <button class="rail-item" data-open="challenges" type="button">
+      <span class="ri-ico">✦</span><span class="ri-body"><b>CHALLENGES</b><small>DAILY &amp; MASTERY</small></span>
+    </button>
+    <button class="rail-item" data-open="leaderboard" type="button">
+      <span class="ri-ico">▲</span><span class="ri-body"><b>SOCIAL</b><small>GLOBAL LEADERBOARD</small></span>
+    </button>
+    <button class="rail-item" data-open="clans" type="button">
+      <span class="ri-ico">⬢</span><span class="ri-body"><b>CLANS</b><small>FOUND ONE · JOIN ONE</small>
+        <span class="ri-badge hidden" id="railClanBadge">0</span></span>
+    </button>
+    <button class="rail-item" data-open="servers" type="button">
+      <span class="ri-ico">◈</span><span class="ri-body"><b>COMMUNITY</b><small>SERVER BROWSER</small></span>
+    </button>
+  </nav>
+
+  <button id="btnBackToMatch" class="btn-primary back-to-match hidden" type="button">◂ BACK TO MATCH</button>
+
+  <div class="menu-bottom">
+    <!--
+      Which build you are playing, and what changed in it.
+
+      This corner used to hold a read-only nickname box and a "signed in as…"
+      line. Both said something the account chip in the top-left already says —
+      it carries the name, the level, the GR and the way in and out of an
+      account — so the space went to the one thing nothing else was telling
+      anybody.
+    -->
+    <div class="menu-ident">
+      <!--
+        Watch instead of play.
+
+        A switch rather than a button because it is a state you are in, not an
+        action you take: flipped on mid-match it waits for your next death, so
+        the line under it says which of the two is about to happen.
+      -->
+      <label class="mp-spectate" for="specToggle">
+        <input type="checkbox" id="specToggle">
+        <span class="sw" aria-hidden="true"></span>
+        <span class="mp-spec-body">
+          <b>SPECTATOR MODE</b>
+          <small id="specToggleHint">Watch the match from another player's eyes</small>
+        </span>
+      </label>
+
+      <label>THIS BUILD</label>
+      <button class="version-chip" id="btnPatchNotes" type="button">
+        <b id="gameVersion">—</b>
+        <i id="patchHeadline">—</i>
+        <span class="vc-more">PATCH NOTES ›</span>
+      </button>
+      <div class="ident-account">
+        <span id="patchDate"></span>
+      </div>
+    </div>
+
+    <section class="menu-play">
+      <div class="mp-head">
+        <div class="mp-now">
+          <div class="mp-title" id="nowPlaying">Finding a match…</div>
+          <div class="mp-sub"><button class="link" id="btnInvite" type="button">INVITE</button>
+            <span class="dot">·</span>
+            <button class="link" id="btnJoin" type="button">JOIN</button>
+            <span class="mp-code" id="menuRoomCode"></span></div>
+        </div>
+        <div class="mp-meta">
+          <b id="menuRegion">—</b>
+          <span><i id="menuFps">60</i> FPS <i id="menuPing">0</i> MS</span>
+        </div>
+      </div>
+
+      <div class="mp-buttons">
+        <button id="btnPlay" class="mp-btn c-magenta" type="button">QUICK MATCH<small id="playSub">Jump into the live match</small></button>
+        <button id="btnTeamPlay" class="mp-btn c-green" type="button">TEAM PLAY<small>Deathmatch &amp; Domination</small></button>
+        <button id="btnGunGame" class="mp-btn c-red" type="button">GUN GAME<small>Climb the ladder</small></button>
+        <button id="btnFindGame" class="mp-btn c-slate" type="button">FIND GAME<small>Server browser</small></button>
+        <button id="btnPractice" class="mp-btn c-cyan" type="button">PRACTICE<small>Range · no clock</small></button>
+      </div>
+    </section>
+
+    <aside class="menu-loadout">
+      <div class="ml-card">
+        <div class="ml-class" id="mlClass">Triggerman</div>
+        <div class="ml-weapon" id="mlWeapon">Assault Rifle</div>
+      </div>
+      <button class="ml-btn" data-open="classes" type="button">LOADOUT <span>⟳</span></button>
+      <button class="ml-btn" data-open="shop" type="button">CUSTOMIZE <span>✎</span></button>
+    </aside>
+  </div>
+
+  <footer class="menu-foot">
+    <!--
+      Account totals, matches played and who is online are a staff readout now.
+      Hidden here and refused by the API to anyone who is not a moderator, so
+      hiding it is not the control — the route is.
+    -->
+    <span id="globalStats" class="hidden"></span>
+    <span>Open Grunker · MIT · <a href="/api/v1/health" target="_blank" rel="noopener">API</a></span>
+  </footer>
+
+  <!-- ── Everything that used to be a tab strip now opens over the menu ──── -->
+  <div id="menuPanel" class="hidden">
+    <div class="panel-card">
+      <button class="modal-x" id="panelClose" type="button">×</button>
+
+      <nav class="tabs">
+        <button class="tab active" data-tab="classes">CLASS</button>
+        <button class="tab" data-tab="servers">SERVERS</button>
+        <button class="tab" data-tab="challenges">CHALLENGES</button>
+        <button class="tab" data-tab="profile">ACCOUNT</button>
+        <button class="tab" data-tab="leaderboard">LEADERBOARD</button>
+        <button class="tab" data-tab="clans">CLANS
+          <span class="tab-badge hidden" id="clanTabBadge">0</span></button>
+        <button class="tab" data-tab="shop">SKINS</button>
+        <button class="tab" data-tab="controls">CONTROLS</button>
+        <button class="tab" data-tab="settings">SETTINGS</button>
+        <button class="tab" data-tab="help">HOW TO PLAY</button>
+        <button class="tab" data-tab="patch">PATCH NOTES</button>
+      </nav>
+
+      <div class="panel-scroll">
+        <section class="tab-panel active" data-panel="classes">
+          <div id="classGrid" class="class-grid"></div>
+        </section>
+
+        <!-- ── Challenges & mastery ─────────────────────────────────────── -->
+        <section class="tab-panel" data-panel="challenges">
+          <div class="panel-head">
+            <h3>DAILY CHALLENGES</h3>
+            <span class="panel-note" id="chReset">—</span>
+          </div>
+          <div id="challengeList" class="challenge-list"></div>
+
+          <div class="panel-head" style="margin-top:26px">
+            <h3>WEAPON MASTERY</h3>
+            <span class="panel-note">Kills with a weapon raise its tier. Tiers unlock finishes.</span>
+          </div>
+          <div id="masteryList" class="mastery-list"></div>
+        </section>
+
+        <!-- ── Account ──────────────────────────────────────────────────────
+             One hero and five views behind a sub-nav, rather than one long
+             column with three forms stacked at the bottom of it. Everything an
+             account owns is one click from here and nothing is more than one
+             screen deep.
+             ─────────────────────────────────────────────────────────────── -->
+        <section class="tab-panel" data-panel="profile">
+          <div id="profileSignedOut" class="profile-empty">
+            <h3>YOU ARE PLAYING AS A GUEST</h3>
+            <p>Create a free account to keep your level, GR, stats, skins and key bindings across devices.</p>
+            <button class="btn-primary" id="btnProfileSignIn">SIGN IN / REGISTER</button>
+          </div>
+
+          <div id="profileSignedIn" class="profile hidden">
+            <div class="profile-hero">
+              <!-- The picture is the button that changes it: no separate edit
+                   mode, and the same round frame everywhere it is drawn. -->
+              <button class="ph-avatar" id="phAvatar" type="button"
+                      title="Change your profile picture">
+                <img class="av-img hidden" alt="" width="96" height="96">
+                <span class="av-initial">?</span>
+                <span class="ph-avatar-edit">CHANGE</span>
+              </button>
+              <div class="ph-id">
+                <h3>
+                  <span id="phName">Player</span>
+                  <img id="phVerified" class="verified big hidden" src="/check.png" alt="verified" width="20" height="20">
+                  <span class="clan-tag hidden" id="phClan"></span>
+                </h3>
+                <div class="ph-tags">
+                  <span class="pill" id="phRole">PLAYER</span>
+                  <span class="pill" id="phJoined">Joined —</span>
+                </div>
+                <div class="ph-level">
+                  <div class="ph-lv"><b id="phLevel">1</b><small>LEVEL</small></div>
+                  <div class="ph-bar"><i id="phXpFill"></i><span id="phXpText">0 / 0 XP</span></div>
+                </div>
+              </div>
+              <div class="ph-gr">
+                <b id="phGr">0</b><small>GR</small>
+                <span class="ph-gr-note">100 match points = 1 GR</span>
+              </div>
+            </div>
+
+            <nav class="acct-nav">
+              <button class="acct-tab active" data-acct="overview" type="button">OVERVIEW</button>
+              <button class="acct-tab" data-acct="progression" type="button">PROGRESSION</button>
+              <button class="acct-tab" data-acct="matches" type="button">MATCHES</button>
+              <button class="acct-tab" data-acct="reports" type="button">REPORTS
+                <span class="acct-badge hidden" id="acctReportBadge">0</span></button>
+              <button class="acct-tab" data-acct="identity" type="button">PROFILE</button>
+              <button class="acct-tab" data-acct="security" type="button">SECURITY</button>
+            </nav>
+
+            <!-- ── Overview ─────────────────────────────────────────────── -->
+            <div class="acct-view active" data-acct-view="overview">
+              <div class="stat-grid" id="phStats"></div>
+              <div class="acct-cards">
+                <div class="acct-card">
+                  <span class="ac-k">EMAIL</span>
+                  <b id="ovEmail">—</b>
+                  <span class="pill" id="ovEmailBadge">UNCONFIRMED</span>
+                </div>
+                <div class="acct-card">
+                  <span class="ac-k">REPORTS FILED</span>
+                  <b id="ovReports">0</b>
+                  <span class="ac-note" id="ovReportsNote">None yet</span>
+                </div>
+                <div class="acct-card">
+                  <span class="ac-k">NICKNAME CHANGES</span>
+                  <b id="ovRenames">0</b>
+                  <span class="ac-note">Next one costs <i id="ovRenameCost">100</i> GR</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- ── Progression ──────────────────────────────────────────────
+                 What a level is actually worth. Every gate in the game knew its
+                 own threshold and nothing wrote them down in one place, so a
+                 player who found the chat locked had no way to learn that
+                 anything else was waiting further up.
+                 ─────────────────────────────────────────────────────────── -->
+            <div class="acct-view" data-acct-view="progression">
+              <div class="panel-head"><h4>YOUR PROGRESSION</h4>
+                <span class="panel-note" id="progNote">XP is your match score, one for one.</span></div>
+              <div class="prog-now">
+                <div class="prog-lv"><small>LEVEL</small><b id="progLevel">1</b></div>
+                <div class="prog-bar-wrap">
+                  <div class="prog-bar"><i id="progXpFill"></i></div>
+                  <div class="prog-bar-line"><span id="progXpText">0 / 0 XP</span>
+                    <span id="progXpLeft"></span></div>
+                </div>
+              </div>
+
+              <!-- ── Daily streak ────────────────────────────────────────
+                   Two bonuses, paid on the first match you finish each day.
+                   Drawn as seven pips because a streak you cannot see is not
+                   a streak anyone keeps. -->
+              <div class="streak-card" id="streakCard">
+                <div class="sk-head">
+                  <span class="sk-flame" aria-hidden="true">🔥</span>
+                  <div class="sk-title"><b id="skDays">No streak yet</b>
+                    <small id="skNote">Finish a match today to start one.</small></div>
+                  <span class="sk-best" id="skBest"></span>
+                </div>
+                <ol class="sk-pips" id="skPips"></ol>
+                <div class="sk-rewards">
+                  <span class="sk-reward" id="skToday">Today · —</span>
+                  <span class="sk-reward" id="skWin">First win · —</span>
+                </div>
+              </div>
+
+              <ol id="progList" class="prog-list"></ol>
+            </div>
+
+            <!-- ── Matches ──────────────────────────────────────────────── -->
+            <div class="acct-view" data-acct-view="matches">
+              <div class="panel-head"><h4>RECENT MATCHES</h4>
+                <span class="panel-note">Your last ten. Score turns into GR at 100 points each.</span></div>
+              <div id="phMatches" class="match-list"></div>
+            </div>
+
+            <!-- ── Reports ──────────────────────────────────────────────────
+                 What became of every report this account filed. A report that
+                 vanishes into a queue is a report nobody files twice.
+                 ─────────────────────────────────────────────────────────── -->
+            <div class="acct-view" data-acct-view="reports">
+              <div class="panel-head"><h4>YOUR REPORTS</h4>
+                <span class="panel-note" id="reportQuota">Report a player from the scoreboard, mid-match.</span></div>
+              <div id="reportList" class="report-list"></div>
+            </div>
+
+            <!-- ── Profile: the picture and the nickname ────────────────── -->
+            <div class="acct-view" data-acct-view="identity">
+              <div class="profile-cols single">
+                <div class="profile-col">
+                  <h4>PROFILE PICTURE</h4>
+                  <div class="avatar-editor">
+                    <div class="av-preview" id="avatarPreview">
+                      <img class="av-img hidden" alt="" width="128" height="128">
+                      <span class="av-initial">?</span>
+                    </div>
+                    <div class="av-body">
+                      <p class="panel-note" id="avatarLimits">
+                        Any square-ish PNG, JPEG or WebP. It is cropped to a circle and
+                        shrunk to 256×256 in your browser before it is uploaded.</p>
+                      <div class="row-actions">
+                        <button type="button" class="btn-ghost" id="btnAvatarPick">CHOOSE A PICTURE</button>
+                        <button type="button" class="btn-ghost" id="btnAvatarRemove">REMOVE</button>
+                      </div>
+                      <input type="file" id="avatarInput" class="hidden"
+                             accept="image/png,image/jpeg,image/webp">
+                      <div class="form-msg hidden" id="avatarMsg"></div>
+                    </div>
+                  </div>
+
+                  <h4>NICKNAME</h4>
+                  <form id="nameForm" class="mini-form">
+                    <label>NEW NICKNAME
+                      <input name="username" maxlength="16" minlength="3" autocomplete="off"
+                             spellcheck="false" placeholder="3–16 chars: letters, digits, . _ -" required>
+                    </label>
+                    <div class="cost-line">Changing your name costs <b id="renameCost">100</b> GR
+                      · you have <b id="renameBalance">0</b> GR</div>
+                    <div class="form-msg hidden" id="nameMsg"></div>
+                    <button type="submit" class="btn-ghost" id="btnRename">CHANGE NICKNAME</button>
+                  </form>
+                </div>
+              </div>
+            </div>
+
+            <!-- ── Security: address, password, sign out ────────────────── -->
+            <div class="acct-view" data-acct-view="security">
+              <div class="profile-cols">
+                <div class="profile-col">
+                  <h4>EMAIL</h4>
+                  <div class="email-state" id="emailState">
+                    <span id="emailAddr">—</span>
+                    <span class="pill" id="emailBadge">UNCONFIRMED</span>
+                  </div>
+                  <form id="emailForm" class="mini-form">
+                    <label>EMAIL ADDRESS<input name="email" type="email" autocomplete="email" required></label>
+                    <label>PASSWORD<input name="password" type="password" autocomplete="current-password" required></label>
+                    <div class="form-msg hidden" id="emailMsg"></div>
+                    <div class="row-actions">
+                      <button type="submit" class="btn-ghost">SAVE &amp; SEND LINK</button>
+                      <button type="button" class="btn-ghost" id="btnResendVerify">RESEND LINK</button>
+                    </div>
+                  </form>
+                </div>
+                <div class="profile-col">
+                  <h4>PASSWORD</h4>
+                  <form id="passwordForm" class="mini-form">
+                    <label>CURRENT PASSWORD<input name="current" type="password" autocomplete="current-password" required></label>
+                    <label>NEW PASSWORD<input name="next" type="password" minlength="6" autocomplete="new-password" required></label>
+                    <div class="form-msg hidden" id="passwordMsg"></div>
+                    <button type="submit" class="btn-ghost">CHANGE PASSWORD</button>
+                  </form>
+                  <p class="panel-note">Changing it signs every device out, this one included.</p>
+                  <button class="btn-danger wide" id="btnSignOut">SIGN OUT</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-panel" data-panel="servers">
+          <div class="panel-head">
+            <h3>SERVER BROWSER</h3>
+            <div class="head-actions">
+              <select id="srvFilter">
+                <option value="">All modes</option>
+              </select>
+              <button class="btn-ghost" id="btnRefreshServers">REFRESH</button>
+            </div>
+          </div>
+          <div id="serverList" class="server-list"></div>
+        </section>
+
+        <section class="tab-panel" data-panel="leaderboard">
+          <div class="panel-head">
+            <h3>GLOBAL LEADERBOARD</h3>
+            <select id="lbSort">
+              <option value="kills">Kills</option>
+              <option value="score">Score</option>
+              <option value="level">Level</option>
+              <option value="kd">K/D</option>
+              <option value="wins">Wins</option>
+              <option value="headshots">Headshots</option>
+              <option value="damage">Damage</option>
+              <option value="gr">GR</option>
+            </select>
+          </div>
+          <div id="lbList" class="lb-list"></div>
+        </section>
+
+        <!-- ── Clans ────────────────────────────────────────────────────────
+             Two halves: what this account's own clan is (or what founding one
+             would cost), and everybody else's. The rules come from /meta rather
+             than being written into the page, so a server that changes them
+             does not need a new client.
+             ─────────────────────────────────────────────────────────────── -->
+        <section class="tab-panel" data-panel="clans">
+          <div class="panel-head">
+            <h3>CLANS</h3>
+            <span class="panel-note" id="clanRules">—</span>
+          </div>
+
+          <div id="clanMine" class="clan-mine"></div>
+
+          <div class="panel-head" style="margin-top:26px">
+            <h3>ALL CLANS</h3>
+            <div class="head-actions">
+              <input id="clanSearch" class="mini-input" maxlength="4" autocomplete="off"
+                     spellcheck="false" placeholder="Search a tag…">
+              <button class="btn-ghost" id="btnClanRefresh" type="button">REFRESH</button>
+            </div>
+          </div>
+          <div id="clanList" class="clan-list"></div>
+        </section>
+
+        <section class="tab-panel" data-panel="shop">
+          <div class="panel-head">
+            <h3>WEAPON SKINS</h3>
+            <span class="gr-balance">GR <b id="grBalance">0</b></span>
+          </div>
+          <p class="panel-note" id="shopFor">Finishes apply to the class you have selected.</p>
+          <div id="shopGrid" class="shop-grid"></div>
+        </section>
+
+        <!-- ── Controls ─────────────────────────────────────────────────── -->
+        <section class="tab-panel" data-panel="controls">
+          <div class="panel-head">
+            <h3>KEY BINDINGS</h3>
+            <span class="bind-legend"><i>KEY</i><i>ALT</i><i class="pad">PAD</i></span>
+            <button class="btn-ghost" id="btnResetPadBinds">RESET PAD</button>
+            <button class="btn-ghost" id="btnResetBinds">RESET TO DEFAULTS</button>
+          </div>
+          <p class="panel-note">Click a slot to rebind it. Keyboard keys, mouse buttons and the
+            scroll wheel go in the first two; the third takes a controller button, so a pad
+            layout is rebound and reset on its own. <kbd>ESC</kbd> cancels, <kbd>DELETE</kbd> clears.</p>
+          <div id="bindList" class="bind-list"></div>
+        </section>
+
+        <section class="tab-panel" data-panel="settings">
+          <div id="settingsForm" class="settings-form"></div>
+        </section>
+
+        <!-- ── Patch notes ──────────────────────────────────────────────── -->
+        <section class="tab-panel" data-panel="patch">
+          <div class="panel-head">
+            <h3>PATCH NOTES</h3>
+            <span class="panel-note" id="patchNote">—</span>
+          </div>
+          <div id="patchList" class="patch-list"></div>
+        </section>
+
+        <section class="tab-panel" data-panel="help">
+          <div class="help">
+            <div class="help-col">
+              <h4>MOVEMENT</h4>
+              <ul id="helpMovement"></ul>
+              <h4>SCORING</h4>
+              <ul id="helpScoring"></ul>
+            </div>
+            <div class="help-col">
+              <h4>COMBAT</h4>
+              <ul id="helpCombat"></ul>
+              <h4>MODES</h4>
+              <ul id="helpModes"></ul>
+              <h4>TIPS</h4>
+              <ul>
+                <li>Ammo is unlimited — reload whenever you like.</li>
+                <li>Hold jump: every landing chains straight into the next hop.</li>
+                <li>The first round out of a settled weapon is its most accurate — tap at range.</li>
+                <li>Spray patterns are fixed. Learn one and pull against it.</li>
+                <li>Nametags and the minimap only show enemies you can actually see.</li>
+                <li>Rocketeer can rocket-jump: look down, jump, fire.</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ Overlays (outside #menu so they work in-game too) ════════════════ -->
+
+<!-- Account modal -->
+<div id="authModal" class="modal hidden">
+  <div class="modal-card">
+    <button class="modal-x" id="authClose">×</button>
+    <div class="auth-tabs"><button class="active" data-auth="login">SIGN IN</button><button data-auth="register">REGISTER</button></div>
+    <!-- What registering actually pays. Drawn from shared/constants.js, so the
+         promise on this card and the grant the server makes are one number. -->
+    <ul class="auth-rewards reg-only hidden" id="authRewards"></ul>
+    <form id="authForm">
+      <label>USERNAME<input name="username" maxlength="16" autocomplete="username" required></label>
+      <label>PASSWORD<input name="password" type="password" minlength="6" autocomplete="current-password" required></label>
+      <label class="reg-only hidden">EMAIL <small>(you have to confirm it before you can play)</small>
+        <input name="email" type="email" autocomplete="email"></label>
+      <!-- One widget per form: separate key pairs, separate lifetimes. -->
+      <div class="turnstile reg-only hidden" id="tsRegister"></div>
+      <div class="turnstile login-only" id="tsLogin"></div>
+      <div class="auth-error hidden" id="authError"></div>
+      <button type="submit" class="btn-primary" id="authSubmit">SIGN IN</button>
+    </form>
+    <div class="auth-note">Accounts store your name, stats, level, GR, unlocked skins and key bindings. You can play without one, under an assigned guest name.</div>
+  </div>
+</div>
+
+<!-- Class picker, used from the menu and mid-match -->
+<div id="classModal" class="modal hidden">
+  <div class="modal-card wide">
+    <button class="modal-x" id="classClose">×</button>
+    <h3>CHOOSE YOUR CLASS</h3>
+    <div id="classGridModal" class="class-grid"></div>
+    <p class="modal-note">Out of combat the swap is instant — otherwise it lands on your next respawn.</p>
+  </div>
+</div>
+
+<!-- ══ Player card ══════════════════════════════════════════════════════
+     Opened by clicking any nickname — a scoreboard row, a chat line, a
+     leaderboard entry. It is the same card everywhere, so a name means the same
+     thing wherever it is drawn. Lives outside #hud so it works mid-match too.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div id="playerCard" class="modal hidden">
+  <div class="modal-card pc-card">
+    <button class="modal-x" id="playerCardClose" type="button">×</button>
+    <div id="playerCardBody" class="pc-body"><p class="empty">Loading…</p></div>
+  </div>
+</div>
+
+<!-- ══ Report card ══════════════════════════════════════════════════════
+     Opened from a scoreboard row. A reason is mandatory: "reported" on its own
+     is a queue entry no moderator can act on.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div id="reportCard" class="modal hidden">
+  <div class="modal-card report-card">
+    <button class="modal-x" id="reportCancel" type="button">×</button>
+    <h3>REPORT <span id="reportWho">PLAYER</span></h3>
+    <p class="modal-note">Pick what happened. The match, the map and what was said in
+      the chat are attached automatically — a moderator sees all of it.</p>
+    <div id="reportReasons" class="rp-reasons"></div>
+    <label class="rp-detail">ANYTHING ELSE <small>(optional)</small>
+      <textarea id="reportDetail" rows="3" maxlength="300"
+                placeholder="What did they do? Which round?"></textarea>
+    </label>
+    <div class="rp-actions">
+      <button class="btn-primary" id="reportSend" type="button" disabled>SEND REPORT</button>
+    </div>
+    <p class="rp-foot">False reports are themselves a reportable offence. You can follow
+      what happens to this one under <b>ACCOUNT ▸ REPORTS</b>.</p>
+  </div>
+</div>
+
+<!-- ══ Ban screen ═══════════════════════════════════════════════════════
+     Shown the moment a ban lands, mid-match or on connect. It cannot be
+     dismissed while the ban is live: play is blocked here and on the server.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div id="banScreen" class="hidden">
+  <div class="ban-card">
+    <div class="ban-head">LOST CONNECTION</div>
+    <div class="ban-title" id="banTitle">CONNECTION BANNED</div>
+    <div class="ban-line" id="banIds">REF: — | SCOPE: — | EXPIRES: —</div>
+    <div class="ban-reason" id="banReason">—</div>
+    <div class="ban-appeal" id="banAppeal"></div>
+    <div class="ban-actions">
+      <button class="btn-ghost" id="banRetry" type="button">RETRY</button>
+      <button class="btn-ghost" id="banDismiss" type="button">CLOSE</button>
+    </div>
+  </div>
+</div>
+
+<!--
+  Refusals that are not bans: a VPN, an unconfirmed address, or the same
+  account playing somewhere else. Same weight as the ban screen — the server
+  has already closed the socket — but each one has something the player can
+  actually do about it, so the action button changes with the reason.
+-->
+<div id="gateScreen" class="hidden">
+  <div class="gate-card">
+    <div class="gate-head" id="gateHead">CANNOT JOIN</div>
+    <div class="gate-title" id="gateTitle">BLOCKED</div>
+    <div class="gate-reason" id="gateReason">—</div>
+    <div class="gate-note" id="gateNote"></div>
+    <div class="gate-actions">
+      <button class="btn-primary" id="gateAction" type="button">RETRY</button>
+      <button class="btn-ghost" id="gateDismiss" type="button">CLOSE</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ Pause / in-match escape menu ═════════════════════════════════════ -->
+<div id="pause" class="hidden">
+  <div class="pause-card">
+    <h2>PAUSED</h2>
+    <button class="btn-primary" id="btnResume">RESUME</button>
+    <button class="btn-ghost" id="btnPauseClass">CHANGE CLASS</button>
+    <button class="btn-ghost" id="btnPauseSettings">SETTINGS</button>
+    <button class="btn-ghost" id="btnPauseSpectate">SPECTATE INSTEAD</button>
+    <button class="btn-danger" id="btnQuit">LEAVE MATCH</button>
+    <p class="pause-note">Click anywhere outside this box — or press <kbd>ESC</kbd> — to jump straight back in.<br>
+      Leaving keeps your score: rejoin before the match ends and it comes back.</p>
+  </div>
+</div>
+
+<!-- ══ Spectator bar ═════════════════════════════════════════════════════
+     Up whenever this player is watching somebody instead of playing. Lives
+     outside #hud because the HUD belongs to a body in the world and a
+     spectator does not have one.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div id="specBar" class="hidden">
+  <div class="spec-card">
+    <span class="spec-eye" aria-hidden="true">◉</span>
+    <span class="spec-label">SPECTATING</span>
+    <b class="spec-name" id="specName">—</b>
+    <span class="spec-keys">
+      <kbd>A</kbd><kbd>D</kbd> or click to switch player
+    </span>
+    <span class="spec-sep" aria-hidden="true"></span>
+    <button class="spec-opt" id="btnSpecView" type="button" title="Switch between their eyes and a chase camera (V)">
+      <kbd>V</kbd> <span id="specViewLabel">FIRST PERSON</span>
+    </button>
+    <button class="spec-opt" id="btnSpecXray" type="button" title="See every player through the walls (X)">
+      <kbd>X</kbd> <span id="specXrayLabel">X-RAY OFF</span>
+    </button>
+    <button class="btn-ghost spec-join" id="btnSpecJoin" type="button">JOIN THE MATCH</button>
+  </div>
+</div>
+
+<div id="loading" class="hidden"><div class="spinner"></div><span id="loadingText">CONNECTING…</span></div>
+<div id="toast"></div>
+
+<script type="module" src="/js/main.js"></script>
+<noscript><p style="color:#fff;padding:2rem;font:16px system-ui">Open Grunker needs JavaScript and WebGL.</p></noscript>
+</body>
+</html>

@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Open Grunker — admin</title>
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+
+<!-- ── Sign in ─────────────────────────────────────────────────────────── -->
+<div id="gate" class="gate">
+  <form id="gateForm" class="gate-card">
+    <h1>OPEN<span>GRUNKER</span></h1>
+    <p class="gate-sub">Administration · local machine only</p>
+    <label>PASSWORD<input name="password" type="password" autocomplete="current-password" required autofocus></label>
+    <div class="msg hidden" id="gateMsg"></div>
+    <button type="submit" class="btn primary">SIGN IN</button>
+    <p class="gate-note">The password is <code>ADMIN_PASSWORD</code> in <code>/opt/open-grunker/.env</code>.</p>
+  </form>
+</div>
+
+<!-- ── Panel ───────────────────────────────────────────────────────────── -->
+<div id="app" class="hidden">
+  <header class="topbar">
+    <div class="brand">OPEN<span>GRUNKER</span><i>admin</i></div>
+    <nav class="tabs">
+      <button class="tab" data-tab="stats">STATS</button>
+      <button class="tab active" data-tab="players">PLAYERS</button>
+      <button class="tab" data-tab="reports">REPORTS
+        <span class="tab-badge hidden" id="reportBadge">0</span></button>
+      <button class="tab" data-tab="clans">CLANS</button>
+      <button class="tab" data-tab="logs">LOGS</button>
+    </nav>
+    <!--
+      Four live figures, each one a tile: the number is what a moderator is
+      actually looking for, so it is the thing set in 900 weight, and the word
+      under it is the caption.
+    -->
+    <div class="top-right">
+      <span class="stat" id="statOnline"><b>—</b><small>ONLINE</small></span>
+      <span class="stat" id="statUsers"><b>—</b><small>ACCOUNTS</small></span>
+      <span class="stat" id="statClans"><b>—</b><small>CLANS</small></span>
+      <span class="stat" id="statUptime"><b>—</b><small>UPTIME</small></span>
+      <button class="btn" id="btnSignOut">SIGN OUT</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Stats ───────────────────────────────────────────────────────────
+         Everything the server knows about itself, over time. The filter row
+         at the top scopes every card below it, so the figures always agree
+         with each other — a page that painted itself in fourteen stages
+         would be showing fourteen different moments.
+         ──────────────────────────────────────────────────────────────────── -->
+    <section class="panel" data-panel="stats">
+      <div class="page-head">
+        <h2>STATS</h2>
+        <p>Population, matches, combat and the machine underneath them.</p>
+      </div>
+
+      <div class="toolbar stats-bar">
+        <div class="range" id="statRange" role="group" aria-label="Time range">
+          <button class="rg" data-hours="6">6H</button>
+          <button class="rg active" data-hours="24">24H</button>
+          <button class="rg" data-hours="168">7D</button>
+          <button class="rg" data-hours="720">30D</button>
+          <button class="rg" data-hours="2160">90D</button>
+        </div>
+        <label class="check"><input type="checkbox" id="statFollow" checked> Auto-refresh</label>
+        <span class="count" id="statWindow">—</span>
+        <button class="btn" id="btnStatReload">REFRESH</button>
+      </div>
+
+      <!-- Right now -->
+      <div class="tile-grid" id="statTiles"></div>
+
+      <!-- Who is here -->
+      <div class="card-grid">
+        <article class="chart-card wide">
+          <header><h3>PLAYERS ONLINE</h3>
+            <p>Accounts and guests in a seat, spectators watching from the menu, and the bots holding rooms open.</p>
+            <div class="legend-host" id="lgPopulation"></div>
+          </header>
+          <div class="chart-host" id="chPopulation"></div>
+        </article>
+
+        <article class="chart-card">
+          <header><h3>ROOMS</h3>
+            <p>The floor never moves; everything above it is opened and closed by demand.</p>
+            <div class="legend-host" id="lgRooms"></div>
+          </header>
+          <div class="chart-host" id="chRooms"></div>
+        </article>
+
+        <article class="chart-card">
+          <header><h3>FREE SEATS</h3>
+            <p>How close the server came to turning somebody away. It should never reach zero.</p>
+          </header>
+          <div class="chart-host" id="chSeats"></div>
+        </article>
+      </div>
+
+      <!-- What they did -->
+      <div class="card-grid">
+        <article class="chart-card wide">
+          <header><h3>COMBAT</h3>
+            <p>Per sampling interval. Kills and headshots share an axis because they are the same unit — nothing here is ever plotted against a second scale.</p>
+            <div class="legend-host" id="lgCombat"></div>
+          </header>
+          <div class="chart-host" id="chCombat"></div>
+        </article>
+
+        <article class="chart-card">
+          <header><h3>ROUNDS FIRED</h3>
+            <p>Every shot the server resolved.</p>
+          </header>
+          <div class="chart-host" id="chShots"></div>
+        </article>
+
+        <article class="chart-card">
+          <header><h3>MATCHES FINISHED</h3>
+            <p>One bar per bucket, from the match rows themselves.</p>
+          </header>
+          <div class="chart-host" id="chMatches"></div>
+        </article>
+      </div>
+
+      <!-- Accounts -->
+      <div class="card-grid">
+        <article class="chart-card">
+          <header><h3>NEW ACCOUNTS</h3>
+            <p>Per day, from the accounts table.</p>
+          </header>
+          <div class="chart-host" id="chSignups"></div>
+        </article>
+
+        <article class="chart-card">
+          <header><h3>SIGN-INS</h3>
+            <p>Per day. A returning player is a sign-in, not a sign-up.</p>
+          </header>
+          <div class="chart-host" id="chLogins"></div>
+        </article>
+
+        <article class="chart-card">
+          <header><h3>PLAYERS WHO FINISHED A MATCH</h3>
+            <p>Distinct accounts per day — the only honest version of "active".</p>
+          </header>
+          <div class="chart-host" id="chActive"></div>
+        </article>
+      </div>
+
+      <!-- Retention & the ladder -->
+      <div class="card-grid">
+        <article class="chart-card">
+          <header><h3>RETENTION</h3>
+            <p>Of every account ever made: how many played at all, and how many came back on a later day.</p>
+          </header>
+          <div class="meter-list" id="stRetention"></div>
+        </article>
+
+        <article class="chart-card">
+          <header><h3>THE LADDER</h3>
+            <p>How the population is spread across the levels, in bands of five.</p>
+          </header>
+          <div class="chart-host" id="chLevels"></div>
+        </article>
+
+        <article class="chart-card">
+          <header><h3>ECONOMY</h3>
+            <p>GR held across every account, and what matches have paid out.</p>
+          </header>
+          <div class="meter-list" id="stEconomy"></div>
+        </article>
+      </div>
+
+      <!-- What gets played -->
+      <div class="card-grid">
+        <article class="chart-card">
+          <header><h3>MAPS PLAYED</h3><p>Matches started, by level.</p></header>
+          <div class="chart-host" id="chMaps"></div>
+        </article>
+
+        <article class="chart-card">
+          <header><h3>MODES PLAYED</h3><p>Matches started, by mode.</p></header>
+          <div class="chart-host" id="chModes"></div>
+        </article>
+
+        <article class="chart-card">
+          <header><h3>CLASSES</h3>
+            <p>Pick rate says what is popular; the win rate beside it says whether that is a problem.</p>
+          </header>
+          <div class="chart-host" id="chClasses"></div>
+        </article>
+      </div>
+
+      <!-- When they play, and how the machine held up -->
+      <div class="card-grid">
+        <article class="chart-card wide">
+          <header><h3>BUSIEST HOURS (UTC)</h3>
+            <p>Matches started, by hour of day. This is what the room list is scaling against.</p>
+          </header>
+          <div class="chart-host" id="chHours"></div>
+        </article>
+
+        <article class="chart-card">
+          <header><h3>TICK COST</h3>
+            <p>Milliseconds per simulation tick. The budget is 16.7.</p>
+            <div class="legend-host" id="lgTick"></div>
+          </header>
+          <div class="chart-host" id="chTick"></div>
+        </article>
+
+        <article class="chart-card">
+          <header><h3>MEMORY</h3><p>Resident set size, in megabytes.</p></header>
+          <div class="chart-host" id="chMemory"></div>
+        </article>
+      </div>
+
+      <!-- The journal -->
+      <div class="card-grid">
+        <article class="chart-card">
+          <header><h3>WHAT HAPPENED</h3>
+            <p>Every kind of event recorded in this window.</p>
+          </header>
+          <div class="chart-host" id="chEventMix"></div>
+        </article>
+
+        <article class="chart-card wide">
+          <header><h3>EVENT LOG</h3>
+            <p>The things that happened once, newest first.</p>
+          </header>
+          <div class="event-box" id="eventBox"></div>
+        </article>
+      </div>
+    </section>
+
+    <!-- Players -->
+    <section class="panel active" data-panel="players">
+      <div class="page-head">
+        <h2>PLAYERS</h2>
+        <p>Accounts, sanctions and everything on them.</p>
+      </div>
+
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Search a name or clan…" autocomplete="off">
+        <select id="sort">
+          <option value="id">Newest last</option>
+          <option value="name">Name</option>
+          <option value="level">Level</option>
+          <option value="gr">GR</option>
+          <option value="kills">Kills</option>
+          <option value="seen">Last seen</option>
+        </select>
+        <span class="count" id="playerCount">—</span>
+        <button class="btn" id="btnReload">REFRESH</button>
+      </div>
+
+      <div class="split">
+        <div class="list-wrap">
+          <table class="list">
+            <thead><tr>
+              <th>#</th><th>PLAYER</th><th>LVL</th><th>GR</th><th>K/D</th><th>STATUS</th>
+            </tr></thead>
+            <tbody id="playerRows"></tbody>
+          </table>
+          <div class="pager">
+            <button class="btn" id="btnPrev">‹ PREV</button>
+            <span id="pageInfo">—</span>
+            <button class="btn" id="btnNext">NEXT ›</button>
+          </div>
+        </div>
+
+        <aside class="detail" id="detail">
+          <div class="detail-empty" id="detailEmpty">Select a player to edit their account.</div>
+          <div class="detail-body hidden" id="detailBody"></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- Reports ─────────────────────────────────────────────────────────
+         The moderation queue. Open reports sort first regardless of age: this
+         is a to-do list, and the history is what the filter is for.
+         ──────────────────────────────────────────────────────────────────── -->
+    <section class="panel" data-panel="reports">
+      <div class="page-head">
+        <h2>REPORTS</h2>
+        <p>The moderation queue. Open first, oldest first.</p>
+      </div>
+
+      <div class="toolbar">
+        <input id="reportSearch" type="search" placeholder="Search a player, a reporter or their words…" autocomplete="off">
+        <select id="reportStatus">
+          <option value="open">Open</option>
+          <option value="">All</option>
+          <option value="actioned">Actioned</option>
+          <option value="rejected">Rejected</option>
+        </select>
+        <span class="count" id="reportCount">—</span>
+        <button class="btn" id="btnReportReload">REFRESH</button>
+      </div>
+
+      <div class="split">
+        <div class="list-wrap">
+          <table class="list">
+            <thead><tr>
+              <th>#</th><th>REPORTED</th><th>REASON</th><th>BY</th><th>WHEN</th><th>STATUS</th>
+            </tr></thead>
+            <tbody id="reportRows"></tbody>
+          </table>
+          <div class="pager">
+            <button class="btn" id="btnReportPrev">‹ PREV</button>
+            <span id="reportPageInfo">—</span>
+            <button class="btn" id="btnReportNext">NEXT ›</button>
+          </div>
+        </div>
+
+        <aside class="detail" id="reportDetail">
+          <div class="detail-empty" id="reportDetailEmpty">Select a report to review it.</div>
+          <div class="detail-body hidden" id="reportDetailBody"></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- Clans ───────────────────────────────────────────────────────────
+         Verification is the whole of what this panel decides: a verified clan
+         wears a gold tag instead of a grey one, everywhere a name is drawn. It
+         confers nothing else, which is why it can be given on judgement.
+         ──────────────────────────────────────────────────────────────────── -->
+    <section class="panel" data-panel="clans">
+      <div class="page-head">
+        <h2>CLANS</h2>
+        <p>Verification turns a grey tag gold, everywhere a name is drawn.</p>
+      </div>
+
+      <div class="toolbar">
+        <input id="clanSearch" type="search" placeholder="Search a tag…" autocomplete="off" maxlength="4">
+        <span class="count" id="clanCount">—</span>
+        <button class="btn" id="btnClanReload">REFRESH</button>
+      </div>
+
+      <div class="split">
+        <div class="list-wrap">
+          <table class="list">
+            <thead><tr>
+              <th>#</th><th>TAG</th><th>OWNER</th><th>MEMBERS</th><th>SCORE</th><th>STATUS</th>
+            </tr></thead>
+            <tbody id="clanRows"></tbody>
+          </table>
+        </div>
+
+        <aside class="detail" id="clanDetail">
+          <div class="detail-empty" id="clanDetailEmpty">Select a clan to review it.</div>
+          <div class="detail-body hidden" id="clanDetailBody"></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- Logs -->
+    <section class="panel" data-panel="logs">
+      <div class="page-head">
+        <h2>LOGS</h2>
+        <p>Live server output and every write an administrator has made.</p>
+      </div>
+
+      <div class="toolbar">
+        <select id="logLevel">
+          <option value="">All levels</option>
+          <option value="error">Errors</option>
+          <option value="warn">Warnings</option>
+          <option value="info">Info</option>
+          <option value="debug">Debug</option>
+        </select>
+        <label class="check"><input type="checkbox" id="logFollow" checked> Auto-refresh</label>
+        <span class="count" id="logCount">—</span>
+        <button class="btn" id="btnLogReload">REFRESH</button>
+      </div>
+
+      <div class="logs-split">
+        <div class="log-col">
+          <h3>SERVER</h3>
+          <div class="log-box" id="logBox"></div>
+        </div>
+        <div class="log-col">
+          <h3>ADMIN ACTIONS</h3>
+          <div class="log-box" id="auditBox"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast"></div>
+</div>
+
+<script type="module" src="/admin/admin.js"></script>
+</body>
+</html>
