@@ -18,7 +18,7 @@ const logger = log.child('metrics');
 /** Series that are gauges (averaged when a chart buckets them). */
 export const GAUGES = [
   'players.online', 'players.watching', 'players.accounts', 'players.guests',
-  'players.bots', 'rooms.open', 'rooms.dynamic', 'rooms.freeSeats',
+  'players.bots', 'rooms.open', 'rooms.live', 'rooms.dynamic', 'rooms.freeSeats',
   'server.tickMs', 'server.tickMaxMs', 'server.memMb', 'server.sockets',
 ];
 
@@ -35,7 +35,8 @@ export const SERIES_META = {
   'players.guests': { label: 'Guests', unit: '', agg: 'avg' },
   'players.watching': { label: 'Spectators', unit: '', agg: 'avg' },
   'players.bots': { label: 'Bots', unit: '', agg: 'avg' },
-  'rooms.open': { label: 'Rooms open', unit: '', agg: 'avg' },
+  'rooms.open': { label: 'Rooms listed', unit: '', agg: 'avg' },
+  'rooms.live': { label: 'Rooms with players', unit: '', agg: 'avg' },
   'rooms.dynamic': { label: 'Rooms opened by demand', unit: '', agg: 'avg' },
   'rooms.freeSeats': { label: 'Free seats', unit: '', agg: 'avg' },
   'server.tickMs': { label: 'Tick cost', unit: 'ms', agg: 'avg' },
@@ -126,6 +127,7 @@ export class Telemetry {
       'players.watching': health.watching,
       'players.bots': health.bots,
       'rooms.open': health.rooms,
+      'rooms.live': health.liveRooms ?? 0,
       'rooms.dynamic': health.dynamicRooms,
       'rooms.freeSeats': health.freeSeats,
       'server.tickMs': Math.round(health.lastTickMs * 100) / 100,

@@ -15,6 +15,7 @@ import { suite, check, info } from './harness.mjs';
 export default function run() {
   for (const pingMs of [20, 60, 150]) {
     const room = new Room({ id: `test-lag-${pingMs}`, mapId: 'subzero', modeId: 'ffa' });
+    room.wake();                       // placed by hand, so nothing seated it
     room.broadcast = room.broadcastNear = () => {};
     const hits = [];
     room.sendTo = (p, m) => { if (m.o === K.S2C.HIT) hits.push(m); };

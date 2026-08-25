@@ -151,7 +151,7 @@ async function loadPlayers() {
         <td title="${p.id}">${shortId(p.id)}</td>
         <td><span class="p-name">${esc(p.username)}
           ${p.verified ? '<img src="/check.png" width="13" height="13" alt="verified">' : ''}
-          ${p.clan ? `<span class="p-clan">[${esc(p.clan)}]</span>` : ''}</span></td>
+          ${p.clan ? `<span class="p-clan${p.clanVerified ? ' gold' : ''}">[${esc(p.clan)}]</span>` : ''}</span></td>
         <td>${p.level}</td>
         <td>${p.gr}</td>
         <td>${p.stats.kd}</td>
@@ -198,7 +198,7 @@ function renderDetail({ player: p, matches, sessions, liveIps = [], reports = nu
         : `<div class="pic letter">${esc(p.username[0].toUpperCase())}</div>`}
       <div class="who"><b>${esc(p.username)}</b>
         ${p.verified ? '<img src="/check.png" width="15" height="15" alt="verified">' : ''}
-        ${p.clan ? `<span class="p-clan">[${esc(p.clan)}]</span>` : ''}
+        ${p.clan ? `<span class="p-clan${p.clanVerified ? ' gold' : ''}">[${esc(p.clan)}]</span>` : ''}
         <div>${p.avatar ? 'has a profile picture' : 'no profile picture'}</div></div>
     </div>
     <div class="sub" title="${p.id}">#${shortId(p.id)} · joined ${fmtDate(p.createdAt)} · last seen ${fmtDate(p.lastLogin)}
@@ -1053,12 +1053,12 @@ export function renderStats(s) {
       spark: series('players.online'), color: SERIES[0],
     }),
     tileCard({
-      label: 'Rooms open', value: `${g.rooms}`,
-      note: g.dynamicRooms > 0
-        ? `${g.dynamicRooms} opened by demand · ceiling ${g.maxRooms}`
-        : `floor only · ceiling ${g.maxRooms}`,
-      kind: g.dynamicRooms > 0 ? 'good' : '',
-      spark: series('rooms.open'), color: SERIES[2],
+      // The figure that matters is how many rooms are *running*. The rest are
+      // listed and joinable but asleep, and they cost nothing.
+      label: 'Rooms with players', value: `${g.liveRooms ?? 0}`,
+      note: `${g.rooms} listed${g.dynamicRooms > 0 ? ` · ${g.dynamicRooms} by demand` : ''} · ceiling ${g.maxRooms}`,
+      kind: (g.liveRooms ?? 0) > 0 ? 'good' : '',
+      spark: series('rooms.live'), color: SERIES[2],
     }),
     tileCard({
       label: 'Free seats', value: compact(g.freeSeats),
@@ -1105,7 +1105,8 @@ export function renderStats(s) {
   lineChart($('chPopulation'), { series: population, height: 210 });
 
   const rooms = [
-    { name: 'Rooms open', points: series('rooms.open'), color: SERIES[2] },
+    { name: 'Listed', points: series('rooms.open'), color: SERIES[2] },
+    { name: 'With players', points: series('rooms.live'), color: SERIES[0] },
     { name: 'Opened by demand', points: series('rooms.dynamic'), color: SERIES[3] },
   ];
   legendFor($('lgRooms'), rooms);

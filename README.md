@@ -55,7 +55,7 @@ sudo bash scripts/setup.sh
 | --- | --- |
 | `npm start` | Run the server (API + game + static client) |
 | `npm run dev` | Same, restarting on file changes |
-| `npm test` | Run every suite (movement, combat, lag comp, simulation, keybinds) |
+| `npm test` | Run every suite (movement, combat, lag comp, simulation, keybinds, rooms, progression, two-factor, moderation, accounts, clans, client, charts, admin) |
 | `npm run check` | Syntax-check the server entry point |
 | `npm run vendor` | Re-copy three.js from `node_modules` into `client/vendor/` |
 | `npm run db:init` | Create the database and schema (idempotent) |
@@ -614,6 +614,49 @@ whether to play one more or close the tab. It is drawn at the far end of the
 rewards strip, in the quiet register — everything to its left was earned, and an
 offer that looked like a payout would be selling.
 
+### Challenges: tonight, this week, and this career
+
+Three lists, on three timescales, because "a reason to play" means a different
+thing on each one. All three live on the **CHALLENGES** tab and all three are
+paid automatically at the end of the match that completes them.
+
+| | How many | Resets | Worth |
+| --- | --- | --- | --- |
+| **Daily** | 3 | Every UTC midnight | 300–800 XP, 25–70 GR each |
+| **Weekly** | 3 | Monday morning | 3 500–9 000 XP, 280–700 GR each |
+| **Career milestones** | 21 | Never | 500–55 000 XP, 80–5 000 GR each |
+
+Everybody is given the same three of each, picked deterministically from the day
+or the week number — so a challenge is something to talk about rather than
+something you were unlucky with.
+
+**A daily is worth one evening and is gone by morning, whether or not it was
+finished.** That makes it useless to somebody who plays twice a week: the target
+resets before they can reach it, so there is never anything to come back *to*.
+Weekly goals are deliberately out of reach of a single sitting — a week's worth
+of them is what a Tuesday session and a Saturday session add up to — and the
+progress survives in between. Both kinds share one table, keyed by a period
+number; a week's number is pushed above a million so the daily cleanup, which
+deletes everything below the last few days, cannot sweep away a week that is
+still running.
+
+**Career milestones are the only list here that never resets.** Twenty-one
+thresholds on lifetime counters that only ever go up — kills, wins, headshots,
+matches finished, best killstreak, damage, hours played — each paid exactly once.
+The list is deliberately front-loaded: the first rung of every track is inside a
+first evening, so a new account collects two or three immediately and learns the
+list is worth reading. The top rungs are years of play and are meant to be.
+
+They are drawn closest-first rather than earned-first, and only the nearest one
+is highlighted. A trophy cabinet gives nobody a reason to play tomorrow; the
+*next* rung does, and a screen where everything is the next thing has no next
+thing on it. When one lands it is named on the end-of-match card in gold, apart
+from the dailies — a line somebody has been walking toward for a month should not
+arrive looking like the third of tonight's three chores.
+
+Each is claimed through a primary key rather than a check-then-write, so two
+matches ending in the same instant cannot pay the same milestone twice.
+
 ### The progression ladder
 
 Levels do not gate anything that decides a fight: all nine classes, every map and
@@ -638,43 +681,50 @@ Crossing a rung takes effect where you are standing: reach level 2 mid-session
 and the chat unlocks in the same breath as the reward card, with no reload.
 
 **Every level crossed pays GR on the spot**, and it pays more the higher up the
-ladder it is — 52 GR at level 2, 208 at 15, capped at 600. It arrives as its own
-line on the end-of-match card rather than folded into the match figure.
+ladder it is — 124 GR at level 2, 566 at 15, capped at 1 800. It arrives as its
+own line on the end-of-match card rather than folded into the match figure.
 
 #### The curve, and why it bends where it does
 
 Total XP to reach level *L* is
 
 ```
-120 × (L − 1)^1.55        +        9 × (L − 10)^2.6   (only past level 10)
-└─── the original curve ───┘        └── the ramp ──┘
+260 × (L − 1)^1.75        +        46 × (L − 10)^2.75   (only past level 10)
+└─── the base curve ────┘          └───── the ramp ────┘
 ```
 
-**Below level 10 the ramp is zero, so the first ten levels cost exactly what they
-always cost.** That is the whole point of the shape. Everything that lives down
-there — the chat at 2, the report button and a clan at 5 — arrives on the same
-evening it always did, and a new account still watches the number move. Past the
-ramp the second term takes over and grows far faster than the first:
+Two terms doing two jobs. The first is the whole curve up to level 10 and keeps
+the bottom of the ladder reachable: level 2 is one short match, and the gates
+that live down there — the chat at 2, the report button and a clan at 5 — are
+still a first sitting away, because that is where people decide whether to come
+back at all. Past 10 the second term takes over and grows much faster.
 
-| Level | Old total | New total | |
-| ---: | ---: | ---: | --- |
-| 10 | 3 616 | 3 616 | identical |
-| 15 | 7 172 | 7 763 | +8% |
-| 30 | 22 176 | 43 899 | ×2.0 |
-| 50 | 50 001 | 181 705 | ×3.6 |
-| 100 | 148 735 | 1 233 344 | ×8.3 |
+**The whole thing was lifted in 1.6, because it was being cleared far too fast.**
+A match pays its score back as XP one for one, and a decent four-minute round is
+a couple of thousand points — which put level 10 inside two matches and level 50
+inside a hundred. A level nobody had to work for is a number, not an achievement.
 
-A single steeper exponent would have made the top of the ladder respectable by
-making the bottom of it a wall, and the bottom of the ladder is where people
-decide whether to come back.
+| Level | 1.4 total | 1.6 total | | Matches, at ~1 800 XP each |
+| ---: | ---: | ---: | --- | ---: |
+| 10 | 3 616 | 12 158 | ×3.4 | ~7 |
+| 15 | 7 763 | 30 190 | ×3.9 | ~17 |
+| 30 | 43 899 | 268 242 | ×6.1 | ~150 |
+| 50 | 181 705 | 1 406 586 | ×7.7 | ~780 |
+| 100 | 1 233 344 | 11 695 271 | ×9.5 | ~6 500 |
 
-**Nobody lost a level they had already earned.** Levels are derived from XP
-rather than stored, so the first boot after this change would have quietly
-demoted every account above the ramp — and taken their chat, their report button
-and their clan membership down with them. Instead `regradeLevels()` tops those
-accounts up to exactly what their level now costs: they keep the level, they keep
-a coherent XP figure behind it, and the new curve applies to everything they earn
-from here.
+Note what did *not* change: matches still pay exactly the score you watched climb
+all round. Levels got dearer rather than matches getting stingier, because the
+number on the end card has to keep meaning what the scoreboard said.
+
+**Nobody lost a level they had already earned** — not in 1.4 and not in 1.6.
+Levels are derived from XP rather than stored, so the first boot after a change
+like this would quietly demote every account above the old curve, taking their
+chat, their report button and their clan membership down with them. Instead
+`regradeLevels()` tops those accounts up to exactly what their level now costs:
+they keep the level, they keep a coherent XP figure behind it, and the new curve
+applies to everything they earn from here. The marker it writes is the curve's
+*generation* rather than a flag, so the pass runs again — once — the next time
+the ladder is reshaped.
 
 ### Classes
 
@@ -777,6 +827,36 @@ Three details that are the difference between this working and flapping:
 
 `DYNAMIC_ROOMS=false` pins the list to exactly `ROOMS`, forever.
 
+#### A room nobody is in does not run
+
+Every room starts **dormant** and stays that way until somebody walks in. A
+dormant room is listed, joinable and shareable — it simply is not simulated: no
+clock, no physics, no snapshots, no bots and no map rotation. The first person
+through the door wakes it with a fresh match; the last one out puts it back to
+sleep, abandoning whatever round was in progress.
+
+This is not only about CPU, though eight idle tick loops is eight idle tick
+loops. A running room *finishes matches*, and a finished match used to be written
+to the database whether or not anybody had been in it — so a server that nobody
+played on all night still produced fifteen match records an hour, and most of the
+match history was rounds that never happened. **Nothing empty is recorded, paid
+out or graphed.** The match row is now written at the *end* of a match rather
+than the start, and only when at least one human was in it.
+
+Two consequences worth knowing:
+
+* **The room's clock is thrown away when it sleeps.** Handing an arrival forty
+  seconds of a match nobody played is worse than handing them a fresh one, and a
+  stale intermission would sit them in front of an end card for a round that
+  never took place.
+* **A spectator counts as somebody.** A watcher is a person looking at the arena,
+  and an arena that stopped moving underneath them would be a bug rather than a
+  saving.
+
+The balancer also caps demand-opened rooms against the number of people actually
+online rather than against `ROOMS_MAX`, so a brief rush cannot leave a quiet
+server carrying a dozen rooms for the length of the idle window.
+
 ---
 
 ## Accounts, names and abuse
@@ -826,6 +906,52 @@ slogan:
 
 Nothing is stored against it. There is no account to store it against, and
 pretending otherwise is a lie the next session exposes.
+
+### Two-factor authentication
+
+A password is one secret, and a secret that has been reused anywhere else is a
+secret somebody else already has. **ACCOUNT ▸ SECURITY** turns on a second one:
+scan the QR code with any authenticator app — Google Authenticator, Aegis,
+1Password, whatever — and signing in asks for six digits as well as the password.
+
+It is RFC 6238 to the letter (SHA-1, six digits, thirty-second steps, ±1 step of
+clock tolerance), which is what makes every app on the planet agree with it, and
+the published test vectors are in the test suite.
+
+**The QR code is drawn on your own machine.** `client/js/qr.js` is a complete
+ISO/IEC 18004 encoder — Reed–Solomon over GF(256) and all eight mask patterns,
+about three hundred lines — for exactly one reason: asking a chart API for a
+picture of your `otpauth://` URI would hand that server your secret, and asking
+somebody to retype thirty-two base32 characters into a phone is how a security
+feature ends up switched off. The key is also shown as text, for a password
+manager on the same machine or a phone with no camera.
+
+Four rules the implementation is built around:
+
+* **The secret only becomes real once a code from it has been checked.** Opening
+  the setup card and wandering off leaves the account exactly as it was, rather
+  than locked behind a secret nobody finished scanning. Until then the server has
+  not stored it — the copy the client sends back at the confirm step is the only
+  one that exists.
+* **A code cannot be used twice.** Bare TOTP lets the same six digits be replayed
+  for the whole thirty seconds they are valid, which is thirty seconds an
+  attacker with a shoulder-surfed code does not have to hurry in. Each account
+  records the last time step it accepted and only ever takes a strictly newer
+  one, so a replay loses to its own first use.
+* **Ten recovery codes, each good once**, for the day the phone is gone. They are
+  shown exactly once and stored only as SHA-256 hashes, the same treatment
+  session tokens get: a leak of the table is not a way into anybody's account.
+  Regenerating them invalidates the whole previous set immediately.
+* **An account with 2FA is indistinguishable from one without it until the
+  password is already right.** The `totp_required` answer comes *after* the
+  password check, so this route cannot be used to find out which accounts are
+  worth attacking. It carries no token and no session — it is a second question,
+  not a partial login.
+
+Turning it off, and issuing new recovery codes, both cost the password *and* a
+live code. So does changing the password, because a password change signs every
+device out — which makes it the one move that turns a borrowed session into a
+stolen account.
 
 ### Anti-bot: Cloudflare Turnstile
 
@@ -1063,10 +1189,15 @@ Authentication is a bearer token, also set as an `HttpOnly` cookie:
 | Method | Path | Body |
 | --- | --- | --- |
 | `POST` | `/auth/register` | `{ username, password, email, turnstileToken }` |
-| `POST` | `/auth/login` | `{ username, password, turnstileToken }` |
+| `POST` | `/auth/login` | `{ username, password, turnstileToken, code }` — `code` is the second factor, six digits or a recovery code. Omitting it on an account that has 2FA answers `401 totp_required` with no token |
 | `POST` | `/auth/logout` | — |
 | `GET` | `/auth/me` | *(auth)* profile, stats, loadout and verification state |
-| `POST` | `/auth/password` | *(auth)* `{ current, next }` |
+| `POST` | `/auth/password` | *(auth)* `{ current, next, code }` — `code` required while 2FA is on |
+| `POST` | `/auth/totp/setup` | *(auth)* draws a secret and its `otpauth://` URI. Stores nothing |
+| `POST` | `/auth/totp/enable` | *(auth)* `{ secret, code, password }` → the ten recovery codes, shown once |
+| `POST` | `/auth/totp/disable` | *(auth)* `{ password, code }` |
+| `POST` | `/auth/totp/recovery` | *(auth)* `{ password, code }` → a new set; the old one dies immediately |
+| `GET` | `/auth/totp` | *(auth)* whether it is on, and how many recovery codes are left |
 | `POST` | `/auth/username` | *(auth)* `{ username }` — spends `RENAME_COST` GR |
 | `POST` | `/auth/verify` | `{ token }` from a confirmation link; works signed out |
 | `POST` | `/auth/verify/resend` | *(auth)* a fresh link, invalidating the last one |
@@ -1074,6 +1205,8 @@ Authentication is a bearer token, also set as an `HttpOnly` cookie:
 | `POST` | `/avatar` | *(auth)* the image **as the raw body**, not a form — see below |
 | `DELETE` | `/avatar` | *(auth)* back to the initials |
 | `GET` | `/reports/mine` | *(auth)* every report you filed, and what became of each |
+| `GET` | `/challenges` | *(auth)* today's three, this week's three, and all twenty-one career milestones with your progress on each |
+| `GET` | `/mastery` | *(auth)* per-weapon kills and tier |
 
 `POST /avatar` takes the bytes themselves with the image's own `Content-Type`;
 there is no multipart form and no base64 envelope. It answers `unsupported_image`
@@ -1093,7 +1226,9 @@ the clan rules — the two level gates, the founding price and the tag limits.
 Beyond the usual statuses, these routes answer `captcha_failed` (400, or 503
 when Cloudflare itself is unreachable), `email_required` (400), `bad_token`
 (400, an expired or already-spent link), `vpn_blocked` (403), `resend_cooldown`
-(429) and `insufficient_gr` (402).
+(429), `insufficient_gr` (402), `totp_required` (401, the password was right and
+the second factor is still owed) and `totp_invalid` (401, wrong or already
+spent).
 
 ### Clans
 

@@ -481,9 +481,14 @@ kbd {
 .speedo span { font-size: 10px; letter-spacing: .16em; color: var(--dim); }
 .speedo i { position: absolute; left: 0; bottom: -4px; height: 2px; background: var(--accent); opacity: .7; transition: width .08s; }
 
-/* — Bottom right: ammo — */
+/* — Bottom right: ammo —
+   The box never changes shape. Every row inside it — the reload bar included —
+   is always in the layout, so a reload cannot make the panel grow a line taller
+   and a magazine going from 100 to 9 cannot make it narrower. Rows that have
+   nothing to say hide with `visibility`, which keeps their space. */
 #bottomRight {
   position: absolute; right: 20px; bottom: 20px; text-align: right;
+  min-width: 196px;
   padding: 10px 16px 12px; border-radius: var(--r);
   background: rgba(9,12,18,.42); backdrop-filter: blur(10px);
   box-shadow: var(--shadow-sm), var(--ring);
@@ -502,7 +507,19 @@ kbd {
   background: rgba(9,12,18,.6); transition: all .12s;
 }
 .slots .slot.active { border-color: var(--accent); color: var(--accent); background: rgba(245, 166, 35, .16); }
-.reload-wrap { margin-top: 8px; position: relative; width: 150px; margin-left: auto; }
+/*
+ * Always laid out, only sometimes visible.
+ *
+ * It used to be toggled with `hidden` — `display: none` — which took its whole
+ * row out of the flow. The panel is sized by its contents, so every reload made
+ * the box jump a line taller and 150px wider and every finished reload made it
+ * jump back. `visibility` keeps the space and hides the ink.
+ */
+.reload-wrap {
+  margin-top: 8px; position: relative; width: 150px; margin-left: auto;
+  visibility: hidden;
+}
+.reload-wrap.on { visibility: visible; }
 .reload-wrap span { font-size: 11px; letter-spacing: .2em; color: var(--accent); }
 .reload-wrap i {
   display: block; height: 3px; margin-top: 3px; width: 0;
@@ -769,6 +786,10 @@ kbd {
   font-size: 13px; letter-spacing: .1em; color: var(--accent); min-height: 20px; }
 .me-challenge { color: var(--green); font-size: 12px; }
 .me-challenge i { font-style: normal; color: var(--muted); }
+/* A career milestone is somebody's month, not their evening. Gold, like a
+   verified tag, because it is the same kind of statement: this one is rare. */
+.me-challenge.career { color: var(--clan-gold); font-weight: 700; }
+.me-challenge.career i { color: rgba(245,197,66,.7); }
 /* An offer, not a payout. Quiet, and pushed to the far end of the strip so it
    never sits in the run of things that were actually just earned. */
 .me-tomorrow { margin-left: auto; font-size: 11.5px; letter-spacing: .04em; color: var(--dim); }
@@ -1262,6 +1283,37 @@ select, input[type=color] {
 .challenge.done .ch-bar i { background: linear-gradient(90deg,#2ea55c,var(--green)); }
 .ch-prog { font-size: 10.5px; color: var(--dim); margin-top: 5px; font-variant-numeric: tabular-nums; }
 
+/* A weekly is drawn the same way as a daily, in a colder ink, so the two lists
+   are legibly different at a glance without being two different components. */
+#weeklyList .challenge { border-color: rgba(79,208,232,.28); }
+#weeklyList .ch-reward { color: #4fd0e8; }
+#weeklyList .ch-bar i { background: linear-gradient(90deg, #2c8fa8, #4fd0e8); }
+#weeklyList .challenge.done { border-color: rgba(77,219,122,.5); background: rgba(77,219,122,.07); }
+#weeklyList .challenge.done .ch-bar i { background: linear-gradient(90deg,#2ea55c,var(--green)); }
+
+/* — Career milestones —
+   Denser than a challenge card, because there are twenty of them and the list
+   is meant to be read down rather than across. Everything already earned sits
+   at the bottom, dimmed: the point of the screen is the next rung. */
+.milestone-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 9px; }
+.milestone {
+  padding: 11px 13px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--r); min-width: 0;
+}
+.milestone.done { border-color: rgba(245,197,66,.45); background: rgba(245,197,66,.07); }
+.milestone.next { border-color: rgba(245,166,35,.5); }
+.ms-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.ms-name { font-size: 13px; font-weight: 700; }
+.milestone.done .ms-name { color: var(--clan-gold); }
+.ms-reward { font-size: 10px; letter-spacing: .08em; color: var(--accent); white-space: nowrap; }
+.milestone.done .ms-reward { color: var(--clan-gold); }
+.ms-desc { font-size: 11px; color: var(--muted); margin: 3px 0 8px; }
+.ms-bar { height: 4px; background: rgba(255,255,255,.08); border-radius: var(--r-pill); overflow: hidden; }
+.ms-bar i { display: block; height: 100%; background: linear-gradient(90deg,var(--accent),var(--accent-2));
+  transition: width .4s; }
+.milestone.done .ms-bar i { background: linear-gradient(90deg,#c9a227,var(--clan-gold)); }
+.ms-prog { font-size: 10px; color: var(--dim); margin-top: 4px; font-variant-numeric: tabular-nums; }
+
 .mastery-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
 .mastery {
   display: grid; grid-template-columns: 42px 1fr; gap: 12px; align-items: center;
@@ -1352,6 +1404,52 @@ select, input[type=color] {
 .email-state .pill.good { color: var(--green); border-color: rgba(77,219,122,.45); }
 .email-state .pill.bad { color: var(--accent); border-color: rgba(245,166,35,.45); }
 .empty { color: var(--dim); font-size: 12.5px; padding: 18px; text-align: center; }
+
+/* — Two-factor authentication —
+   Its own slab under the two security columns rather than a third column: the
+   QR code needs the width, and this is the one control on the screen where
+   showing the wrong state would matter. */
+.tfa {
+  margin-top: 18px; padding: 18px 20px;
+  background: rgba(255,255,255,.02); border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+.tfa-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.tfa-head h4 { margin: 0 0 4px; font-size: 11px; letter-spacing: .2em; color: var(--muted); }
+.tfa-head .panel-note { margin: 0; }
+.tfa-head .pill { flex: none; }
+.tfa-head .pill.good { color: var(--green); border-color: rgba(77,219,122,.45); }
+.tfa-blurb { margin: 12px 0 14px; font-size: 12.5px; line-height: 1.6; color: var(--muted); max-width: 62ch; }
+.tfa-steps { margin: 12px 0 16px; padding-left: 20px; font-size: 12.5px; line-height: 1.7; color: var(--muted); }
+.tfa-steps li { margin-bottom: 2px; }
+
+/* The QR and the same key in text beside it: a phone with no camera, or a
+   password manager on the same machine, both need the second one. */
+.tfa-scan { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 16px; }
+.tfa-qr {
+  flex: none; width: 190px; height: 190px; padding: 8px;
+  background: #fff; border-radius: var(--r-sm); box-shadow: var(--shadow-sm);
+}
+.tfa-qr svg { display: block; width: 100%; height: 100%; }
+.tfa-manual { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; min-width: 0; }
+.tfa-manual label { font-size: 9.5px; letter-spacing: .18em; color: var(--muted); }
+.tfa-manual code {
+  padding: 9px 12px; font: 600 13px/1.5 var(--mono); letter-spacing: .06em; color: var(--accent);
+  background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  word-break: break-all; max-width: 260px;
+}
+.tfa h5 { margin: 16px 0 0; font-size: 11px; letter-spacing: .2em; color: var(--accent); }
+.tfa-codes {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px; margin: 0 0 14px; padding: 0; list-style: none;
+}
+.tfa-codes li {
+  padding: 9px 10px; text-align: center;
+  font: 700 13px/1 var(--mono); letter-spacing: .08em; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--r-sm);
+}
+#tfaConfirmForm { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+#tfaCodes { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
 
 /* — Account sub-navigation —
    Five views behind one row rather than one column three screens tall. */
@@ -1895,10 +1993,18 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
    way back into the match. */
 #specBar {
   position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%); z-index: 28;
+  width: max-content; max-width: calc(100vw - 32px);
   pointer-events: none;
 }
+/*
+ * It wraps. The card carries a name of unknown length, two toggles and a
+ * button, and on a narrow window that is wider than the screen — it used to run
+ * off both edges and sit on top of the ammo panel. Wrapping costs a second row
+ * on small screens and nothing at all on a normal one.
+ */
 .spec-card {
-  display: flex; align-items: center; gap: 14px; padding: 10px 14px;
+  display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+  gap: 10px 14px; padding: 10px 14px;
   background: rgba(13,17,24,.92); border: 1px solid var(--line-2); border-radius: var(--r-lg);
   box-shadow: 0 10px 30px rgba(0,0,0,.55); backdrop-filter: blur(3px);
   animation: toastIn .22s ease-out;
@@ -1913,7 +2019,7 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
   font: 600 10px/1.3 var(--mono); color: var(--muted);
   background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--r-sm);
 }
-.spec-sep { width: 1px; align-self: stretch; background: var(--line); }
+.spec-sep { width: 1px; align-self: stretch; min-height: 20px; background: var(--line); }
 .spec-opt {
   pointer-events: auto; display: flex; align-items: center; gap: 6px;
   padding: 6px 10px; font: 600 10px/1.3 var(--hud-font); letter-spacing: .12em;
@@ -1930,13 +2036,21 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
 .spec-opt.on kbd { color: #0c1017; background: rgba(255,255,255,.55); border-color: transparent; }
 .spec-card .spec-join { pointer-events: auto; padding: 7px 14px; font-size: 10.5px; }
 
-/* The HUD while watching: the same interface, marked as somebody else's. */
+/*
+ * The HUD while watching: the same interface, marked as somebody else's.
+ *
+ * The marker is drawn *inside* the panel's own box. It used to hang above it
+ * from a `::before`, which needed a positioning context and was given one with
+ * `position: relative` — on a rule specific enough to beat `#bottomLeft`'s own
+ * `position: absolute`. That dropped the health panel out of the corner it
+ * lives in and into the top-left of the screen the moment anybody started
+ * watching, on top of the match clock. Nothing here touches `position` now.
+ */
 #hud.spectating #bottomLeft::before {
   content: 'WATCHING';
-  position: absolute; top: -15px; left: 2px;
-  font-size: 8.5px; letter-spacing: .28em; color: var(--dim);
+  display: block; margin: -2px 0 6px;
+  font-size: 8.5px; letter-spacing: .28em; color: #4fd0e8;
 }
-#hud.spectating #bottomLeft { position: relative; }
 /* The menu already owns the bottom of the screen; don't stack on it. */
 #menu:not(.hidden) ~ #specBar { display: none; }
 
@@ -1969,6 +2083,10 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
 }
 
 @media (max-width: 900px) {
+  /* The spectator bar drops the things a small screen has no room for before
+     it drops the two toggles and the way back into the match. */
+  .spec-keys, .spec-sep { display: none; }
+  .spec-name { max-width: 130px; }
   .profile-cols, .help { grid-template-columns: 1fr; }
   .profile-hero { grid-template-columns: 1fr; text-align: center; justify-items: center; }
   .avatar-editor { flex-direction: column; align-items: center; text-align: center; }
@@ -1991,6 +2109,8 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
 }
 
 @media (max-width: 600px) {
+  .spec-label { display: none; }
+  #specBar { bottom: 96px; }
   .hp-bar { width: 140px; }
   .ammo { font-size: 32px; }
   #chatPanel { width: calc(100vw - 40px); bottom: 128px; }

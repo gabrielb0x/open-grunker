@@ -39,7 +39,7 @@ function payload() {
   const series = (f) => Array.from({ length: 96 }, (_, i) => [now - (96 - i) * 900, f(i)]);
   const names = [
     'players.online', 'players.accounts', 'players.guests', 'players.watching',
-    'players.bots', 'rooms.open', 'rooms.dynamic', 'rooms.freeSeats',
+    'players.bots', 'rooms.open', 'rooms.live', 'rooms.dynamic', 'rooms.freeSeats',
     'server.tickMs', 'server.tickMaxMs', 'server.memMb', 'server.sockets',
     'server.overloadDrops', 'game.kills', 'game.headshots', 'game.deaths',
     'game.shots', 'game.damage', 'game.chat', 'game.joins', 'game.leaves', 'game.matches',
@@ -48,7 +48,7 @@ function payload() {
     window: { since: now - 86400, until: now, hours: 24, bucketSec: 900, dayBucketSec: 3600 },
     live: {
       game: {
-        rooms: 11, dynamicRooms: 3, maxRooms: 32, players: 14, watching: 5, bots: 2,
+        rooms: 11, liveRooms: 4, dynamicRooms: 3, maxRooms: 32, players: 14, watching: 5, bots: 2,
         freeSeats: 9, ticks: 900000, lastTickMs: 1.4, maxTickMs: 6.2, overloadDrops: 0,
         roomsOpened: 14, roomsClosed: 3, peakPlayers: 22, peakRooms: 12,
       },
@@ -149,7 +149,7 @@ export default async function run() {
     const combat = $('lgCombat').querySelectorAll('li').length;
     const tick = $('lgTick').querySelectorAll('li').length;
     info(`population ${pop} · rooms ${rooms} · combat ${combat} · tick ${tick}`);
-    return pop === 4 && rooms === 2 && combat === 3 && tick === 2;
+    return pop === 4 && rooms === 3 && combat === 3 && tick === 2;
   })());
 
   check('the meters read as proportions of something named', (() => {

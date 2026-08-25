@@ -44,10 +44,8 @@ export class Hub {
       const room = this.openRoom({ id: `${mapId}-${modeId}`, mapId, modeId, permanent: true });
       if (room) this.permanent.add(room.id);
     }
-    for (const room of this.rooms.values()) {
-      if (room.mode.practice) room.fillBots(config.practiceBots);
-      else if (config.botsEnabled) room.fillBots(config.botCount);
-    }
+    // No bots yet: every room starts dormant, and a dormant room is staffed by
+    // nobody. `maintain()` fills them in as soon as somebody wakes one.
   }
 
   /* ── The room list ─────────────────────────────────────────────────────── */
@@ -116,6 +114,10 @@ export class Hub {
       if (!m) byMode.set(room.modeId, (m = { free: 0, players: 0, rooms: [], dynamic: 0 }));
       m.rooms.push(room);
       m.players += room.playerCount;
+      // A dormant room's seats count as free, because they are: walking into
+      // one wakes it. Discounting them would make the room this pass just
+      // opened invisible to the next pass, which is a server that opens a room
+      // every five seconds for the same two players.
       m.free += Math.max(0, config.maxPlayersPerRoom - room.playerCount);
       if (!room.permanent) m.dynamic++;
     }
@@ -125,9 +127,25 @@ export class Hub {
     // which is a server that opens and closes rooms forever.
     const headroom = Math.max(0, Math.min(cfg.headroom, config.maxPlayersPerRoom - 1));
 
+    /*
+     * How many rooms this crowd is allowed to be spread across.
+     *
+     * The floor is never touched — every mode stays browsable — but the rooms
+     * opened *by demand* are capped against the number of people actually here,
+     * not against the ceiling. Without it a brief spike could leave a quiet
+     * server carrying a dozen rooms for the length of the idle window, and a
+     * room that opens for one arrival and empties again is a shared match code
+     * that stops working. One extra room per full room's worth of players is
+     * the most that can ever be justified.
+     */
+    const crowd = this.humanCount;
+    const earned = Math.ceil(crowd / Math.max(1, config.maxPlayersPerRoom));
+    const dynamicOpen = [...this.rooms.values()].filter((r) => !r.permanent).length;
+
     // ── Open ──
     for (const [modeId, m] of byMode) {
       if (this.rooms.size >= cfg.max) break;
+      if (dynamicOpen >= earned) break;          // more rooms than there are people
       if (m.players === 0) continue;             // nobody is playing this mode
       if (m.free > headroom) continue;
       const room = this.openRoom({
@@ -136,7 +154,6 @@ export class Hub {
         modeId,
       });
       if (!room) continue;
-      if (config.botsEnabled) room.fillBots(config.botCount);
       logger.info(`opened ${room.id} (${room.code}) — ${modeId} was down to ${m.free} free seat(s)`);
     }
 
@@ -240,6 +257,12 @@ export class Hub {
     const nowMs = Date.now();
     this.balanceRooms(dtSec);
     for (const room of this.rooms.values()) {
+      if (room.dormant) {
+        // Asleep: no bots, no idle sweep, nothing. Waking it is somebody
+        // walking in, and that happens in `Room.add`.
+        if (room.botCount) room.fillBots(0);
+        continue;
+      }
       if (room.mode.practice) {
         // The range keeps its sparring partners as long as somebody is in it.
         const want = room.playerCount > 0 ? config.practiceBots : 0;
@@ -294,7 +317,6 @@ export class Hub {
         modeId,
       });
       if (room) {
-        if (config.botsEnabled) room.fillBots(config.botCount);
         logger.info(`opened ${room.id} (${room.code}) — every room was full`);
         return room;
       }
@@ -392,6 +414,13 @@ export class Hub {
     return n;
   }
 
+  /** Rooms actually simulating. The rest are listed, joinable and asleep. */
+  get liveRooms() {
+    let n = 0;
+    for (const r of this.rooms.values()) if (!r.dormant) n++;
+    return n;
+  }
+
   /** Free seats across every room that is not the practice range. */
   get freeSeats() {
     let n = 0;
@@ -405,6 +434,9 @@ export class Hub {
   health() {
     return {
       rooms: this.rooms.size,
+      // Of those, the ones with somebody in them. A quiet server carries its
+      // whole room list and simulates none of it.
+      liveRooms: this.liveRooms,
       dynamicRooms: this.rooms.size - this.permanent.size,
       maxRooms: config.dynamicRooms.enabled ? config.dynamicRooms.max : this.rooms.size,
       players: this.humanCount,

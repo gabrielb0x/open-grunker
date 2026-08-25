@@ -46,12 +46,40 @@ CREATE TABLE IF NOT EXISTS users (
   play_streak    INTEGER NOT NULL DEFAULT 0,      -- consecutive days with a finished match
   best_streak_days INTEGER NOT NULL DEFAULT 0,    -- the longest one they have ever held
   last_win_day   INTEGER NOT NULL DEFAULT 0,      -- UTC day the first-win bonus was last paid
-  -- Has this account been through regradeLevels()? The level curve got steeper
-  -- above LEVEL_RAMP_FROM, and a level is derived from XP rather than stored,
-  -- so accounts that predate the change are topped up once and marked here.
-  -- It lives in the schema as well as in migrate() because the UUID rebuild
-  -- recreates this table from this file and then re-inserts the old rows.
-  level_graded   INTEGER NOT NULL DEFAULT 0
+  -- Which generation of the level curve this account has been graded against.
+  -- The ladder has been reshaped twice and a level is derived from XP rather
+  -- than stored, so accounts that predate a change are topped up once and
+  -- stamped here. It lives in the schema as well as in migrate() because the
+  -- UUID rebuild recreates this table from this file and re-inserts the rows.
+  level_graded   INTEGER NOT NULL DEFAULT 0,
+  -- Two-factor authentication. The secret is the base32 an authenticator app
+  -- was given; it is only ever set once a first code has been verified, so a
+  -- non-null totp_secret means 2FA is actually on rather than half configured.
+  totp_secret    TEXT,
+  totp_enabled_at INTEGER,
+  -- The last accepted time step, so one code cannot be spent twice inside the
+  -- thirty seconds it is valid for.
+  totp_last_step INTEGER NOT NULL DEFAULT 0
+);
+
+-- Career milestones an account has been paid for. One row per milestone per
+-- account, written once and never again — the primary key is the whole of the
+-- "pay it once" rule.
+CREATE TABLE IF NOT EXISTS milestones (
+  user_id      TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  milestone_id TEXT    NOT NULL,
+  claimed_at   INTEGER NOT NULL,
+  PRIMARY KEY (user_id, milestone_id)
+);
+
+-- One row per unspent recovery code. Hashed exactly like a session token: a
+-- leak of this table is not a way into anybody's account.
+CREATE TABLE IF NOT EXISTS totp_recovery (
+  user_id    TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code_hash  TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  used_at    INTEGER,
+  PRIMARY KEY (user_id, code_hash)
 );
 
 CREATE TABLE IF NOT EXISTS stats (
@@ -321,6 +349,7 @@ CREATE INDEX IF NOT EXISTS idx_mp_user           ON match_players(user_id);
 CREATE INDEX IF NOT EXISTS idx_admin_log_at      ON admin_log(at DESC);
 CREATE INDEX IF NOT EXISTS idx_mastery_user       ON mastery(user_id, kills DESC);
 CREATE INDEX IF NOT EXISTS idx_challenges_day     ON challenges(user_id, day);
+CREATE INDEX IF NOT EXISTS idx_totp_recovery     ON totp_recovery(user_id) WHERE used_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_ip_bans_user       ON ip_bans(user_id);
 CREATE INDEX IF NOT EXISTS idx_chat_bans_until    ON chat_bans(until);
 CREATE INDEX IF NOT EXISTS idx_report_bans_until  ON report_bans(until);

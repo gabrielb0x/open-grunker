@@ -7,6 +7,9 @@ import { suite, check, info } from './harness.mjs';
 export default function run() {
   suite('Bot match — 8 bots, 90 seconds of Burgtown FFA');
   const room = new Room({ id: 'test-sim', mapId: 'burgtown', modeId: 'ffa' });
+  // Rooms open dormant and are woken by the first person through the door.
+  // There is nobody to play these bots against, so the test opens the room.
+  room.wake();
   const kills = [];
   room.broadcast = (m) => { if (m.o === K.S2C.KILL) kills.push(m); };
   room.broadcastNear = () => {};
@@ -41,6 +44,7 @@ export default function run() {
 
   suite('Match flow');
   const scoreRoom = new Room({ id: 'test-flow', mapId: 'subzero', modeId: 'ffa' });
+  scoreRoom.wake();
   const flowMsgs = [];
   scoreRoom.broadcast = (m) => flowMsgs.push(m);
   scoreRoom.broadcastNear = scoreRoom.sendTo = () => {};
@@ -92,6 +96,12 @@ export default function run() {
   suite('Score persistence');
   const keep = new Room({ id: 'test-keep', mapId: 'burgtown', modeId: 'ffa' });
   keep.broadcast = keep.broadcastNear = keep.sendTo = () => {};
+  // Two of them: a scorecard is parked for the match the player left, and a
+  // match only outlives its last player if there is a next-to-last one. The
+  // room goes to sleep behind the final human out of it and the match they
+  // were in the middle of goes with them.
+  const bystander = new Player({ name: 'Bystander', userId: 7, classId: 'triggerman' });
+  keep.add(bystander);
   const human = new Player({ name: 'Tester', userId: 42, classId: 'triggerman' });
   keep.add(human);
   human.score.score = 730;
@@ -172,6 +182,7 @@ export default function run() {
 
   suite('Team deathmatch');
   const tdm = new Room({ id: 'test-tdm', mapId: 'sandstorm', modeId: 'tdm' });
+  tdm.wake();
   tdm.broadcast = tdm.broadcastNear = tdm.sendTo = () => {};
   for (let i = 0; i < 8; i++) tdm.addBot();
   const teams = [...tdm.players.values()].map((p) => p.team);

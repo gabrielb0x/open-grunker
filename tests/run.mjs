@@ -22,10 +22,15 @@ process.env.DB_PATH = join(dbDir, 'test.db');
 // this hook teaches Node the same two rules so they can be tested unmodified.
 register('./client-loader.mjs', import.meta.url);
 
+// Two orderings matter here.
+//
 // `client` and `gamepad` install the browser shim, which stubs `fetch` and
 // `WebSocket` — so both run last, after every suite that talks to a real socket.
+// And `moderation` closes the shared database module when it is done, so every
+// suite that uses that module directly has to have had its turn by then.
 const suites = ['movement', 'combat', 'lagcomp', 'simulation', 'keybinds', 'modes', 'rooms',
-  'moderation', 'accounts', 'clans', 'client', 'gamepad', 'charts', 'admin'];
+  'progression', 'twofactor', 'moderation', 'accounts', 'clans', 'client', 'gamepad',
+  'charts', 'admin'];
 const only = process.argv[2];
 
 for (const name of suites) {

@@ -779,6 +779,12 @@ export class Game {
             xp: 0, gr: msg.levelGr,
           });
         }
+        // A career milestone is not a daily. It is named as what it is, so a
+        // line somebody has been walking toward for a month does not arrive
+        // looking like the third of tonight's three chores.
+        for (const m of msg.milestones ?? []) {
+          extras.push({ name: `${m.name} · ${m.desc}`, xp: m.xp, gr: m.gr, career: true });
+        }
         this.hud.setMatchEndReward(`${bits.join('  ·  ')}  ·  LEVEL ${msg.level}`,
           [...extras, ...(msg.challenges ?? [])],
           // Not a reward — a standing offer, drawn apart from the ones that
@@ -1299,16 +1305,26 @@ export class Game {
     if (btn) btn.textContent = on ? 'STOP SPECTATING' : 'SPECTATE INSTEAD';
   }
 
-  /** The bar along the bottom: who the camera is on, and the way back in. */
+  /**
+   * The bar along the bottom: who the camera is on, and the way back in.
+   *
+   * Runs on every frame while watching as well as on every message that could
+   * change it, and writes nothing the screen already says. The room retargets
+   * the camera silently when the watched player dies, so a name that only
+   * followed message arrivals spent the gap naming a corpse.
+   */
   updateSpectatorBar() {
     const bar = $('specBar');
     if (!bar) return;
     bar.classList.toggle('hidden', !(this.specWatching && this.state === 'spectating'));
-    if (!this.specWatching) return;
+    if (!this.specWatching) { this._specBarName = null; return; }
     const name = this.specName
       ?? (this.specFollowId ? this.entities.get(this.specFollowId)?.profile?.name ?? '—' : 'the arena');
-    $('specName').textContent = name;
-    this.hud.setWatching(name);
+    if (name !== this._specBarName) {
+      this._specBarName = name;
+      $('specName').textContent = name;
+      this.hud.setWatching(name);
+    }
     this.hud.setSpectatorView({ firstPerson: !settings.specThirdPerson, xray: !!settings.specXray });
   }
 
@@ -2555,12 +2571,16 @@ export class Game {
 
     this.updateNukeCountdown(nowSec);
     this.hud.update({
+      // No body under the camera — between matches, or with everybody down at
+      // once. The HUD reads that as "nothing to show" rather than as a player
+      // sitting on zero health.
+      hasBody: !!e,
       health: e ? e.health : 0,
       ammo: this.specAmmo?.[0] ?? (w.magSize ?? 0),
       reserve: this.specAmmo?.[1] ?? -1,
       weapon: w,
       slot,
-      reloading: !!this.specAmmo?.[2],
+      reloading: !!e && !!this.specAmmo?.[2],
       reloadFrac: this.specReloadEnd
         ? clamp(1 - (this.specReloadEnd - nowSec) / Math.max(0.05, w.reloadTime ?? 1), 0, 1)
         : 0,
@@ -2584,6 +2604,11 @@ export class Game {
       accuracy: 0,
       practice: this.practice,
     }, dt);
+
+    // The bar names whoever the camera settled on. The room retargets silently
+    // when somebody dies, so the name under it has to follow every frame rather
+    // than only the frames a message happened to arrive on.
+    this.updateSpectatorBar();
 
     if (this.hud.scoreboardOpen) {
       this.hud.renderScoreboard(this.scoreboardRows, e?.id ?? this.myId,

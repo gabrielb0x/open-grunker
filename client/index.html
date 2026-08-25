@@ -127,7 +127,7 @@
       <span class="slot" data-slot="1">2</span>
       <span class="slot" data-slot="2">3</span>
     </div>
-    <div class="reload-wrap hidden" id="reloadHint">
+    <div class="reload-wrap" id="reloadHint">
       <span>RELOADING</span>
       <i id="reloadFill"></i>
     </div>
@@ -214,6 +214,10 @@
         <span class="ac-avatar" id="acAvatar"><img class="av-img hidden" alt="" width="38" height="38"><i class="av-initial">?</i></span>
         <span class="ac-body">
           <span class="ac-name">
+            <!-- In front of the name, gold when the clan is verified — the same
+                 order and the same ink as every other place a tag is drawn.
+                 This chip was the one place it was missing entirely. -->
+            <span id="acClan" class="clan-tag hidden"></span>
             <b id="acName">Guest</b>
             <img id="acVerified" class="verified hidden" src="/check.png" alt="verified" width="15" height="15">
           </span>
@@ -375,6 +379,24 @@
             <span class="panel-note" id="chReset">—</span>
           </div>
           <div id="challengeList" class="challenge-list"></div>
+
+          <!-- ── Weekly ───────────────────────────────────────────────────
+               A daily is worth one evening and is gone by morning, which makes
+               it useless to anyone who plays twice a week. These are what a
+               Tuesday and a Saturday add up to. -->
+          <div class="panel-head" style="margin-top:26px">
+            <h3>THIS WEEK</h3>
+            <span class="panel-note" id="wkReset">—</span>
+          </div>
+          <div id="weeklyList" class="challenge-list"></div>
+
+          <!-- ── Career ───────────────────────────────────────────────────
+               The only list here that never resets. -->
+          <div class="panel-head" style="margin-top:26px">
+            <h3>CAREER</h3>
+            <span class="panel-note" id="msCount">—</span>
+          </div>
+          <div id="milestoneList" class="milestone-list"></div>
 
           <div class="panel-head" style="margin-top:26px">
             <h3>WEAPON MASTERY</h3>
@@ -578,11 +600,103 @@
                   <form id="passwordForm" class="mini-form">
                     <label>CURRENT PASSWORD<input name="current" type="password" autocomplete="current-password" required></label>
                     <label>NEW PASSWORD<input name="next" type="password" minlength="6" autocomplete="new-password" required></label>
+                    <!-- Shown only while two-factor is on: this is the one
+                         password action that signs every device out. -->
+                    <label class="hidden" id="pwCodeRow">AUTHENTICATOR CODE
+                      <input name="code" inputmode="numeric" autocomplete="one-time-code"
+                             maxlength="11" placeholder="000000"></label>
                     <div class="form-msg hidden" id="passwordMsg"></div>
                     <button type="submit" class="btn-ghost">CHANGE PASSWORD</button>
                   </form>
                   <p class="panel-note">Changing it signs every device out, this one included.</p>
                   <button class="btn-danger wide" id="btnSignOut">SIGN OUT</button>
+                </div>
+              </div>
+
+              <!-- ── Two-factor ───────────────────────────────────────────
+                   A password is one secret, and a secret that has been reused
+                   anywhere else is a secret somebody else already has. This is
+                   the whole of the second half: an authenticator app, and ten
+                   codes on paper for the day the phone is gone.
+                   ────────────────────────────────────────────────────────── -->
+              <div class="tfa" id="tfaPanel">
+                <div class="tfa-head">
+                  <div>
+                    <h4>TWO-FACTOR AUTHENTICATION</h4>
+                    <p class="panel-note" id="tfaState">Checking…</p>
+                  </div>
+                  <span class="pill" id="tfaBadge">OFF</span>
+                </div>
+
+                <!-- Off: what it is, and the way in. -->
+                <div id="tfaOff">
+                  <p class="tfa-blurb">Turn this on and signing in asks for a six-digit code
+                    from an app on your phone as well as your password. Anyone who learns your
+                    password still cannot get in.</p>
+                  <button class="btn-primary" id="btnTfaStart" type="button">SET IT UP</button>
+                </div>
+
+                <!-- Setting up: the QR, the secret in text, and the first code. -->
+                <div id="tfaSetup" class="hidden">
+                  <ol class="tfa-steps">
+                    <li>Scan this with Google Authenticator, Aegis, 1Password — any of them.</li>
+                    <li>Type the six digits it shows, and your password, to switch it on.</li>
+                  </ol>
+                  <div class="tfa-scan">
+                    <div class="tfa-qr" id="tfaQr" aria-label="Setup QR code"></div>
+                    <div class="tfa-manual">
+                      <label>OR ENTER THIS KEY BY HAND</label>
+                      <code id="tfaSecret">—</code>
+                      <button class="btn-ghost sm" id="btnTfaCopy" type="button">COPY KEY</button>
+                    </div>
+                  </div>
+                  <form id="tfaEnableForm" class="mini-form">
+                    <label>THE SIX DIGITS
+                      <input name="code" inputmode="numeric" autocomplete="one-time-code"
+                             maxlength="6" placeholder="000000" required></label>
+                    <label>YOUR PASSWORD
+                      <input name="password" type="password" autocomplete="current-password" required></label>
+                    <div class="form-msg hidden" id="tfaMsg"></div>
+                    <div class="row-actions">
+                      <button type="submit" class="btn-primary">TURN IT ON</button>
+                      <button type="button" class="btn-ghost" id="btnTfaCancel">CANCEL</button>
+                    </div>
+                  </form>
+                </div>
+
+                <!-- On: recovery codes, and the way back out. -->
+                <div id="tfaOn" class="hidden">
+                  <p class="tfa-blurb" id="tfaRecoveryNote">—</p>
+                  <div class="row-actions">
+                    <button class="btn-ghost" id="btnTfaNewCodes" type="button">NEW RECOVERY CODES</button>
+                    <button class="btn-danger" id="btnTfaOff" type="button">TURN IT OFF</button>
+                  </div>
+                  <form id="tfaConfirmForm" class="mini-form hidden">
+                    <p class="panel-note" id="tfaConfirmWhy">—</p>
+                    <label>YOUR PASSWORD
+                      <input name="password" type="password" autocomplete="current-password" required></label>
+                    <label>A CODE <small>(from the app, or one of your recovery codes)</small>
+                      <input name="code" autocomplete="one-time-code" maxlength="11"
+                             placeholder="000000" required></label>
+                    <div class="form-msg hidden" id="tfaConfirmMsg"></div>
+                    <div class="row-actions">
+                      <button type="submit" class="btn-primary" id="tfaConfirmGo">CONFIRM</button>
+                      <button type="button" class="btn-ghost" id="btnTfaConfirmCancel">CANCEL</button>
+                    </div>
+                  </form>
+                </div>
+
+                <!-- Shown once, after enabling or regenerating. -->
+                <div id="tfaCodes" class="hidden">
+                  <h5>YOUR RECOVERY CODES</h5>
+                  <p class="tfa-blurb">Each one signs you in exactly once, without the app.
+                    Keep them somewhere that is not your phone — this is the only time
+                    they are ever shown.</p>
+                  <ul class="tfa-codes" id="tfaCodeList"></ul>
+                  <div class="row-actions">
+                    <button class="btn-ghost" id="btnTfaCopyCodes" type="button">COPY ALL</button>
+                    <button class="btn-primary" id="btnTfaCodesDone" type="button">I HAVE SAVED THEM</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -725,6 +839,14 @@
       <label>PASSWORD<input name="password" type="password" minlength="6" autocomplete="current-password" required></label>
       <label class="reg-only hidden">EMAIL <small>(you have to confirm it before you can play)</small>
         <input name="email" type="email" autocomplete="email"></label>
+      <!-- The second question, and only once the first has been answered
+           correctly. It appears when the server says this account has an
+           authenticator on it, never before — an account with two-factor must
+           not be distinguishable from one without it until the password is
+           already right. -->
+      <label class="tfa-only hidden" id="authCodeRow">AUTHENTICATOR CODE
+        <small>(or one of your recovery codes)</small>
+        <input name="code" autocomplete="one-time-code" maxlength="11" placeholder="000000"></label>
       <!-- One widget per form: separate key pairs, separate lifetimes. -->
       <div class="turnstile reg-only hidden" id="tsRegister"></div>
       <div class="turnstile login-only" id="tsLogin"></div>

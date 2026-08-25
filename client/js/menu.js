@@ -1069,13 +1069,69 @@ export class Menu {
 
   /* ── Challenges & mastery ──────────────────────────────────────────────── */
 
+  /**
+   * The career list: everything still to earn first, everything earned after.
+   *
+   * A trophy cabinet gives nobody a reason to play tomorrow. What does is the
+   * *next* rung of each track, so the unclaimed ones sort to the top by how
+   * close they are — the one thing on this screen a player can act on tonight
+   * is the first thing on it — and the earned ones settle underneath as the
+   * record they are.
+   */
+  renderMilestones(list) {
+    const host = $('milestoneList');
+    if (!host) return;
+    if (!list.length) { host.innerHTML = '<p class="empty">Nothing to chase yet.</p>'; return; }
+
+    const done = list.filter((m) => m.done);
+    const togo = list.filter((m) => !m.done)
+      .sort((a, b) => (b.progress / b.goal) - (a.progress / a.goal));
+    $('msCount').textContent = `${done.length} of ${list.length} earned`;
+
+    // Only the closest one is highlighted: a screen where everything is the
+    // next thing has no next thing on it.
+    host.innerHTML = [...togo, ...done].map((m, i) => {
+      const pct = Math.min(100, Math.round((m.progress / m.goal) * 100));
+      const next = !m.done && i === 0 && pct > 0;
+      return `<div class="milestone${m.done ? ' done' : ''}${next ? ' next' : ''}">
+        <div class="ms-top">
+          <span class="ms-name">${escapeHtml(m.name)}</span>
+          <span class="ms-reward">+${fmtNum(m.xp)} XP · +${fmtNum(m.gr)} ${K.CURRENCY}</span>
+        </div>
+        <div class="ms-desc">${escapeHtml(m.desc)}</div>
+        <div class="ms-bar"><i style="width:${pct}%"></i></div>
+        <div class="ms-prog">${m.done ? 'EARNED' : milestoneText(m)}</div>
+      </div>`;
+    }).join('');
+  }
+
+  /** One challenge card, drawn the same way whichever board it belongs to. */
+  challengeCard(c) {
+    const pct = Math.min(100, Math.round((c.progress / c.goal) * 100));
+    return `<div class="challenge${c.done ? ' done' : ''}">
+      <div class="ch-top">
+        <span class="ch-name">${escapeHtml(c.name)}</span>
+        <span class="ch-reward">+${fmtNum(c.xp)} XP · +${fmtNum(c.gr)} ${K.CURRENCY}</span>
+      </div>
+      <div class="ch-desc">${escapeHtml(c.desc)}</div>
+      <div class="ch-bar"><i style="width:${pct}%"></i></div>
+      <div class="ch-prog">${c.done ? 'COMPLETE' : `${fmtNum(c.progress)} / ${fmtNum(c.goal)}`}</div>
+    </div>`;
+  }
+
   async buildProgress() {
     const chList = $('challengeList');
+    const wkList = $('weeklyList');
+    const msList = $('milestoneList');
     const mList = $('masteryList');
     if (!api.isAuthed) {
-      chList.innerHTML = '<p class="empty">Sign in to track daily challenges and weapon mastery.</p>';
+      chList.innerHTML = '<p class="empty">Sign in to track challenges, career milestones and weapon mastery.</p>';
+      wkList.innerHTML = '';
+      msList.innerHTML = '';
       mList.innerHTML = '';
       $('chReset').textContent = '';
+      $('wkReset').textContent = '';
+      $('msCount').textContent = '';
       return;
     }
     await api.refreshProgress();
@@ -1085,19 +1141,20 @@ export class Menu {
       chList.innerHTML = '<p class="empty">No challenges today.</p>';
     } else {
       $('chReset').textContent = `Resets in ${fmtDuration(ch.resetsIn)}`;
-      chList.innerHTML = ch.items.map((c) => {
-        const pct = Math.min(100, Math.round((c.progress / c.goal) * 100));
-        return `<div class="challenge${c.done ? ' done' : ''}">
-          <div class="ch-top">
-            <span class="ch-name">${escapeHtml(c.name)}</span>
-            <span class="ch-reward">+${c.xp} XP · +${c.gr} GR</span>
-          </div>
-          <div class="ch-desc">${escapeHtml(c.desc)}</div>
-          <div class="ch-bar"><i style="width:${pct}%"></i></div>
-          <div class="ch-prog">${c.done ? 'COMPLETE' : `${fmtNum(c.progress)} / ${fmtNum(c.goal)}`}</div>
-        </div>`;
-      }).join('');
+      chList.innerHTML = ch.items.map((c) => this.challengeCard(c)).join('');
     }
+
+    // The week's three. Same card, colder ink — see the stylesheet.
+    const wk = ch?.week;
+    if (!wk?.items?.length) {
+      wkList.innerHTML = '<p class="empty">No weekly challenges right now.</p>';
+      $('wkReset').textContent = '';
+    } else {
+      $('wkReset').textContent = `Resets in ${fmtDuration(wk.resetsIn)} · Monday`;
+      wkList.innerHTML = wk.items.map((c) => this.challengeCard(c)).join('');
+    }
+
+    this.renderMilestones(ch?.milestones ?? []);
 
     const weapons = [...new Set(CLASS_IDS.flatMap((id) => loadoutFor(id).map((w) => w)))];
     const seen = new Set();
@@ -1534,7 +1591,30 @@ export class Menu {
     $('authSubmit').textContent = register ? 'CREATE ACCOUNT' : 'SIGN IN';
     $('authForm').querySelector('input[name=email]').required =
       register && !!this.meta?.emailVerification?.required;
+    // Switching tabs puts the second question away again: it belongs to one
+    // sign-in attempt, and asking a *new* account for a code it does not have
+    // would be nonsense.
+    this.askForCode(false);
     this.mountTurnstile(this.authMode);
+  }
+
+  /**
+   * Shows or hides the sign-in form's second-factor field.
+   *
+   * It only ever appears because the server asked for it, which it only does
+   * once the password is already right — so the form never reveals which
+   * accounts have two-factor on to somebody guessing passwords at it.
+   */
+  askForCode(on) {
+    const row = $('authCodeRow');
+    if (!row) return;
+    row.classList.toggle('hidden', !on);
+    const input = row.querySelector('input');
+    if (input) {
+      input.required = !!on;
+      if (!on) input.value = '';
+      else setTimeout(() => input.focus(), 0);
+    }
   }
 
   /* ── Cloudflare Turnstile ──────────────────────────────────────────────── */
@@ -1682,9 +1762,10 @@ export class Menu {
             this.notify('Account created. Address confirmation is not switched on yet.', '');
           }
         } else {
-          await api.login(username, password, captcha);
+          await api.login(username, password, captcha, String(fd.get('code') ?? '').trim());
         }
         modal.classList.add('hidden');
+        this.askForCode(false);
         e.target.reset();
         this.resetTurnstile();
         this.refreshAccount();
@@ -1692,7 +1773,15 @@ export class Menu {
       } catch (ex) {
         // Every token is single-use, and a refused attempt has spent one.
         this.resetTurnstile(mode);
-        showError(ex.message || 'Something went wrong.');
+        // Not a failure: the password was right and the server is asking the
+        // second question. The form grows a field rather than starting over.
+        if (ex.code === 'totp_required') {
+          this.askForCode(true);
+          showError('Enter the six-digit code from your authenticator app.');
+        } else {
+          if (ex.code === 'totp_invalid') this.askForCode(true);
+          showError(ex.message || 'Something went wrong.');
+        }
       } finally {
         btn.disabled = false;
         btn.textContent = mode === 'login' ? 'SIGN IN' : 'CREATE ACCOUNT';
@@ -1845,17 +1934,232 @@ export class Menu {
       const msg = $('passwordMsg');
       msg.className = 'form-msg';
       try {
-        await api.changePassword(String(fd.get('current')), String(fd.get('next')));
+        await api.changePassword(String(fd.get('current')), String(fd.get('next')),
+          String(fd.get('code') ?? '').trim());
         msg.textContent = 'Password changed — signing you back in is required.';
         e.target.reset();
         sfx.ui('ok');
         setTimeout(() => this.refreshAccount(), 900);
       } catch (ex) {
+        // The account has a second factor and this form did not ask for it yet.
+        if (ex.code === 'totp_required') $('pwCodeRow')?.classList.remove('hidden');
         msg.textContent = ex.message || 'Could not change the password.';
         msg.classList.add('bad');
         sfx.ui('error');
       }
     });
+
+    this._bindTwoFactor();
+  }
+
+  /* ── Two-factor authentication ─────────────────────────────────────────────
+     Three states, one at a time: off (with the way in), setting up (the QR and
+     the first code), and on (recovery codes, and the way back out). The panel
+     never shows two of them at once, because "which of these am I looking at"
+     is the one question a security screen must not raise.
+     ──────────────────────────────────────────────────────────────────────── */
+
+  _bindTwoFactor() {
+    if (!$('tfaPanel')) return;
+    /** The secret drawn from `/setup`, held only until it is confirmed. */
+    this.tfaSecret = null;
+    /** What the confirm form is confirming: 'disable' or 'recovery'. */
+    this.tfaConfirming = null;
+
+    $('btnTfaStart').addEventListener('click', () => this.startTwoFactor());
+    $('btnTfaCancel').addEventListener('click', () => {
+      this.tfaSecret = null;
+      sfx.ui();
+      this.renderTwoFactor();
+    });
+
+    $('btnTfaCopy').addEventListener('click', () => this.copyText(this.tfaSecret, 'Setup key copied'));
+    $('btnTfaCopyCodes').addEventListener('click', () => this.copyText(
+      [...$('tfaCodeList').querySelectorAll('li')].map((li) => li.textContent).join('\n'),
+      'Recovery codes copied'));
+    $('btnTfaCodesDone').addEventListener('click', () => {
+      $('tfaCodes').classList.add('hidden');
+      $('tfaCodeList').textContent = '';
+      sfx.ui();
+      this.renderTwoFactor();
+    });
+
+    $('tfaEnableForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const msg = $('tfaMsg');
+      msg.className = 'form-msg';
+      try {
+        const codes = await api.totpEnable(this.tfaSecret,
+          String(fd.get('code') ?? '').trim(), String(fd.get('password') ?? ''));
+        this.tfaSecret = null;
+        e.target.reset();
+        sfx.unlock();
+        this.notify('Two-factor is on. Save your recovery codes.', 'good');
+        this.showRecoveryCodes(codes);
+        this.refreshAccount();
+      } catch (ex) {
+        msg.textContent = ex.message || 'Could not switch it on.';
+        msg.classList.add('bad');
+        sfx.ui('error');
+      }
+    });
+
+    $('btnTfaOff').addEventListener('click', () => this.askTwoFactorConfirm('disable'));
+    $('btnTfaNewCodes').addEventListener('click', () => this.askTwoFactorConfirm('recovery'));
+    $('btnTfaConfirmCancel').addEventListener('click', () => {
+      this.tfaConfirming = null;
+      sfx.ui();
+      this.renderTwoFactor();
+    });
+
+    $('tfaConfirmForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const password = String(fd.get('password') ?? '');
+      const code = String(fd.get('code') ?? '').trim();
+      const msg = $('tfaConfirmMsg');
+      msg.className = 'form-msg';
+      const what = this.tfaConfirming;
+      try {
+        if (what === 'disable') {
+          await api.totpDisable(password, code);
+          this.tfaConfirming = null;
+          e.target.reset();
+          this.notify('Two-factor is off. Your password is all that guards this account now.', '');
+          sfx.ui('ok');
+          this.refreshAccount();
+          this.renderTwoFactor();
+        } else {
+          const codes = await api.totpRecovery(password, code);
+          this.tfaConfirming = null;
+          e.target.reset();
+          this.notify('New recovery codes. The old ones no longer work.', 'good');
+          sfx.ui('ok');
+          this.showRecoveryCodes(codes);
+        }
+      } catch (ex) {
+        msg.textContent = ex.message || 'That did not work.';
+        msg.classList.add('bad');
+        sfx.ui('error');
+      }
+    });
+  }
+
+  /** Draws the secret and its QR code, without committing to anything. */
+  async startTwoFactor() {
+    const setup = $('tfaSetup');
+    try {
+      const r = await api.totpSetup();
+      this.tfaSecret = r.secret;
+      $('tfaSecret').textContent = r.secret.replace(/(.{4})/g, '$1 ').trim();
+      // Rendered here rather than fetched: a QR code of *this* secret requested
+      // from somebody else's server would hand them the secret.
+      const { qrSvg } = await import('./qr.js');
+      $('tfaQr').innerHTML = qrSvg(r.uri);
+      $('tfaMsg').className = 'form-msg hidden';
+      $('tfaEnableForm').reset();
+      this.renderTwoFactor();
+      setup.querySelector('input[name=code]')?.focus();
+      sfx.ui();
+    } catch (ex) {
+      this.notify(ex.message || 'Could not start the setup.', 'error');
+      sfx.ui('error');
+    }
+  }
+
+  /** The password-and-code gate in front of turning it off or reissuing codes. */
+  askTwoFactorConfirm(what) {
+    this.tfaConfirming = what;
+    const form = $('tfaConfirmForm');
+    form.classList.remove('hidden');
+    $('tfaConfirmMsg').className = 'form-msg hidden';
+    $('tfaConfirmWhy').textContent = what === 'disable'
+      ? 'Turning it off leaves your password as the only thing guarding this account.'
+      : 'The codes you have now will stop working the moment the new ones appear.';
+    $('tfaConfirmGo').textContent = what === 'disable' ? 'TURN IT OFF' : 'ISSUE NEW CODES';
+    form.querySelector('input[name=password]')?.focus();
+    sfx.ui();
+  }
+
+  /** The one and only time a set of recovery codes is ever on screen. */
+  showRecoveryCodes(codes = []) {
+    const list = $('tfaCodeList');
+    list.textContent = '';
+    for (const c of codes) {
+      const li = document.createElement('li');
+      li.textContent = c;                      // never innerHTML: this is a secret
+      list.appendChild(li);
+    }
+    $('tfaCodes').classList.toggle('hidden', !codes.length);
+    $('tfaConfirmForm').classList.add('hidden');
+    this.renderTwoFactor();
+  }
+
+  /** Clipboard, with the one fallback that still works without permission. */
+  async copyText(text, said) {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      this.notify(said, 'good');
+    } catch {
+      // A clipboard the page is not allowed to touch is not an error worth a
+      // red banner — a selection the player can copy themselves is the answer.
+      const box = document.createElement('textarea');
+      box.value = text;
+      box.style.cssText = 'position:fixed;opacity:0';
+      document.body.appendChild(box);
+      box.select();
+      const ok = document.execCommand?.('copy');
+      box.remove();
+      this.notify(ok ? said : 'Select the text and copy it by hand.', ok ? 'good' : '');
+    }
+    sfx.ui();
+  }
+
+  /**
+   * Puts the panel into whichever of its three states the account is in.
+   *
+   * `tfaSecret` set means a setup is half-done and the QR is on screen; past
+   * that, the account itself is the only source of truth about whether the
+   * second factor is on.
+   */
+  async renderTwoFactor() {
+    if (!$('tfaPanel')) return;
+    const setting = !!this.tfaSecret;
+    const on = !!api.account?.totp?.enabled;
+
+    $('tfaOff').classList.toggle('hidden', setting || on);
+    $('tfaSetup').classList.toggle('hidden', !setting);
+    $('tfaOn').classList.toggle('hidden', setting || !on);
+    if (!on) {
+      $('tfaConfirmForm').classList.add('hidden');
+      this.tfaConfirming = null;
+    }
+    // The password form asks for a code only when there is one to ask for.
+    $('pwCodeRow')?.classList.toggle('hidden', !on);
+
+    const badge = $('tfaBadge');
+    badge.textContent = on ? 'ON' : setting ? 'SETTING UP' : 'OFF';
+    badge.classList.toggle('good', on);
+    $('tfaState').textContent = on
+      ? 'Signing in asks for a code from your authenticator app.'
+      : setting
+        ? 'Scan the code, then confirm with the six digits it shows.'
+        : 'Your password is the only thing guarding this account.';
+
+    if (!on) return;
+    // How many codes are left is the one thing the account payload does not
+    // carry, and the one number worth warning about.
+    try {
+      const state = await api.totpState();
+      const left = state.recoveryLeft ?? 0;
+      $('tfaRecoveryNote').textContent = left === 0
+        ? 'You have no recovery codes left. Issue a new set before you lose the phone.'
+        : `${left} unused recovery code${left === 1 ? '' : 's'}. Each one signs you in once, without the app.`;
+    } catch {
+      $('tfaRecoveryNote').textContent = 'Recovery codes sign you in once each, without the app.';
+    }
   }
 
   /* ── Account sub-navigation ────────────────────────────────────────────── */
@@ -2153,6 +2457,16 @@ export class Menu {
     }
   }
 
+  /** The clan tag on the account chip, from whatever the account last said. */
+  setChipClan(clan, verified = false) {
+    const el = $('acClan');
+    if (!el) return;
+    el.classList.toggle('hidden', !clan);
+    el.classList.toggle('verified', !!clan && !!verified);
+    el.title = clan ? (verified ? 'Verified clan' : 'Clan') : '';
+    el.textContent = clan ? `[${clan}]` : '';
+  }
+
   async refreshAccount() {
     const user = await api.me();
 
@@ -2164,6 +2478,9 @@ export class Menu {
     if (!user) {
       $('acName').textContent = this.assignedName || 'Guest';
       $('acMeta').textContent = 'Not signed in — nothing is saved';
+      this.setChipClan(null, false);
+      this.tfaSecret = null;
+      this.renderTwoFactor();
       this.paintAvatars(null);
       $('acGr').textContent = '0';
       $('acXpFill').style.width = '0%';
@@ -2180,6 +2497,8 @@ export class Menu {
     const span = Math.max(1, user.nextLevelXp - user.levelXp);
     const pct = Math.max(0, Math.min(100, ((user.xp - user.levelXp) / span) * 100));
     $('acName').textContent = user.username;
+    this.setChipClan(user.clan, user.clanVerified);
+    this.renderTwoFactor();
     $('acMeta').textContent = api.needsVerification
       ? 'Confirm your email to play'
       : `LEVEL ${user.level} · ${fmtNum(s.kills ?? 0)} kills · K/D ${s.kd ?? 0}`;
@@ -2366,8 +2685,27 @@ function fmtNum(n) {
 }
 
 function fmtDuration(sec) {
-  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  // A weekly reset is days away, and "137h 12m" is not a length of time anybody
+  // reads as five and a half days.
+  if (d) return `${d}d ${h}h`;
   return h ? `${h}h ${m}m` : `${m}m`;
+}
+
+/**
+ * How far along a milestone is, in the unit that milestone is counted in.
+ *
+ * Playtime is stored in seconds and nobody thinks in seconds, so that one track
+ * reads in hours; everything else is a plain count with thin thousands
+ * separators, exactly as it appears on the scoreboard.
+ */
+function milestoneText(m) {
+  if (m.stat === 'playtime') {
+    return `${Math.floor(m.progress / 3600)} / ${Math.floor(m.goal / 3600)} h`;
+  }
+  const sep = (n) => Number(n ?? 0).toLocaleString('en-GB').replace(/,/g, '\u202f');
+  return `${sep(m.progress)} / ${sep(m.goal)}`;
 }
 
 const fmtDate = (ts) => (ts ? new Date(ts * 1000).toLocaleDateString() : '—');
