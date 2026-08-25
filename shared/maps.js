@@ -631,7 +631,7 @@ function littletown() {
   add(planter(3.1, -2.9, 2.2, 1.1, 0xb9713c, 0xf0c33c, 0.42));
   add(bush(3.2, 3.0, 1.4, 0x46974a, 0.42), bush(-3.2, -3.0, 1.4, 0x46974a, 0.42));
   for (const [bx, bz] of [[-4.2, -4.2], [4.2, -4.2], [-4.2, 4.2], [4.2, 4.2]]) {
-    add(D(bx, 0.42, bz, 0.34, 1.0, 0.34, 0xd8d2c0, { mat: S.PAINT, noShadow: true }));
+    add(B(bx, 0.42, bz, 0.34, 1.0, 0.34, 0xd8d2c0, { mat: S.PAINT, noShadow: true }));
   }
 
   /* ── North-west: the corner shop, and the map's high ground ──────────── */
@@ -1052,8 +1052,10 @@ function crossfire() {
   h(B(-2, 0, -26, 8, 1.35, 1.1, HAZ, { mat: S.PAINT }));
   h(D(-2, 1.35, -26, 8.3, 0.14, 1.3, 0x2b2b2f, { mat: S.PAINT, noShadow: true }));
   h(dumpster(-33, -24, 0xd8402f));
-  h(D(-14, 0, -30, 9, 0.9, 6, 0xd9c08a, { mat: S.SAND, noShadow: true }));   // sand pile
-  h(D(-14, 0.9, -30, 6, 0.7, 4, 0xd9c08a, { mat: S.SAND, noShadow: true }));
+  // Two steps of sand, both solid: a pile you can be shot off the top of is
+  // worth having, and one you walk through is a hole in the map.
+  h(B(-14, 0, -30, 9, 0.9, 6, 0xd9c08a, { mat: S.SAND, noShadow: true }));   // sand pile
+  h(B(-14, 0.9, -30, 6, 0.7, 4, 0xd9c08a, { mat: S.SAND, noShadow: true }));
   h(lamp(-11.4, 26, { dir: 1, h: 6.8 }));
 
   // ── Entrance to the trench that crosses under the middle ──
@@ -1300,7 +1302,7 @@ function shipyard() {
     doors: [{ side: 'e', at: -4, w: 4 }, { side: 'e', at: 6, w: 4 }, { side: 's', at: 0, w: 4 }],
     windows: [{ side: 'n', at: -5, y: 4.4 }, { side: 'n', at: 0, y: 4.4 }, { side: 'n', at: 5, y: 4.4 },
       { side: 'w', at: -5, y: 4.4 }, { side: 'w', at: 5, y: 4.4 }] }));
-  add(D(-38, 0, -24.3, 17, 1.2, 0.3, RED, { mat: S.PAINT, noShadow: true }));
+  add(B(-38, 0, -24.3, 17, 1.2, 0.3, RED, { mat: S.PAINT, noShadow: true }));
   add(stairs({ x: -29, z: -22, w: 3, steps: 13, rise: 0.58, run: 0.8, dir: '-x', c: DECK, mat: S.GRATE }));
   add(B(-38, 3.4, -20, 17, 0.4, 6, DECK, { roof: true, mat: S.GRATE }));
   add(stairs({ x: -44, z: -16, w: 2.6, steps: 7, rise: 0.5, run: 0.72, dir: '-z', c: DECK, mat: S.GRATE }));
@@ -1392,7 +1394,7 @@ function subzero() {
     }));
     add(stairs({ x: s * 8.4, z: s * 18, w: 3, steps: 8, rise: 0.6, run: 0.88, dir: s < 0 ? '-x' : '+x', c: DARKLOG, mat: S.WOOD }));
     add(D(0, 4.95, s * 24.5, 16.8, 0.5, 0.6, ICE, { mat: S.ICE, noShadow: true }));   // icicle fringe
-    add(D(s * 9.6, 0, s * 22, 2.4, 1.9, 2.4, WOODC, { mat: S.PLANK }));               // log pile
+    add(B(s * 9.6, 0, s * 22, 2.4, 1.9, 2.4, WOODC, { mat: S.PLANK }));               // log pile
   }
 
   /* ── Frozen pond in the middle ───────────────────────────────────────── */
@@ -1507,7 +1509,7 @@ function range() {
 
   // Target berm at the far end, with alcoves so shots have somewhere to land.
   add(B(0, 0, -28, 36, 6, 1.2, WALL, { mat: S.CONCRETE }));
-  add(D(0, 0, -26.4, 36, 1.4, 2.2, 0xd9c08a, { mat: S.SAND, noShadow: true }));
+  add(B(0, 0, -26.4, 36, 1.4, 2.2, 0xd9c08a, { mat: S.SAND, noShadow: true }));
   for (const x of [-10, -5, 0, 5, 10]) {
     add(B(x, 0.6, -27.4, 1.8, 1.8, 0.5, ACCENT, { mat: S.PAINT }));
     add(D(x, 1.0, -27.7, 1.0, 1.0, 0.1, 0xf7f7f2, { mat: S.PAINT, noShadow: true }));

@@ -690,7 +690,16 @@ from here.
 | Bulldog | Pump Shotgun | 13 × 9 | 78 | 6 | 1.02× |
 | Rocketeer | Rocket Launcher | 130 + splash | 46 | 1 | 0.82× |
 
-Every class also carries a sidearm and a combat knife (backstabs hit for 145).
+Every class also carries the **P9 sidearm** (25 damage, 330 rpm, 15 rounds) and a
+combat knife (backstabs hit for 145). The pistol is deliberately kept a hair
+under lethal at four rounds: 25 × 4 is exactly a full health bar, so a
+point-blank four-tap kills and any distance at all makes it five. It is free, it
+is on every class, and it must never be the reason a fight was won at range.
+
+The sniper is the other weapon balanced on one number: **scoped it is perfect and
+unscoped it is a lottery.** Its hip-fire cone is genuinely wild, because a rifle
+that deletes anybody it touches has to be aimed to touch them.
+
 Headshots multiply damage by roughly 2.35×; leg shots reduce it. **Reserve ammo
 is unlimited for every weapon in the game** — only the magazine and the reload
 timer matter.

@@ -523,7 +523,7 @@ export class EntityManager {
         e.tag.sprite.visible = false;
         if (e.deathT > 0) {
           e.deathT = Math.max(0, e.deathT - dt);
-          this._deathPose(e, dt);
+          this._deathPose(e);
           e.group.visible = true;
         } else {
           e.group.visible = false;
@@ -594,7 +594,7 @@ export class EntityManager {
    * Everything is derived from `deathSeed`, so two clients watching the same
    * kill watch the same fall, and nobody's corpse lands the same way twice.
    */
-  _deathPose(e, dt) {
+  _deathPose(e) {
     const u = e.group.userData;
     const dur = e.deathDur || DEATH_TIME;
     const t = 1 - e.deathT / dur;
@@ -659,7 +659,6 @@ export class EntityManager {
     }
     u.blob.material.opacity = 0.3 * fade * (1 - fall * 0.4);
     e.faded = true;
-    void dt;
   }
 
   /** Undoes every last thing `_deathPose` touched. */

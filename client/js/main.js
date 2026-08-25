@@ -1012,10 +1012,13 @@ export class Game {
    */
   onNuke(msg) {
     if (msg.phase === 'armed') {
-      const armed = !!msg.armed && this.state === 'playing';
+      // Kept whatever the client is doing at the time: the room only sends this
+      // when the answer *changes*, so a frame dropped because a menu happened to
+      // be open would never come again.
+      const armed = !!msg.armed;
       if (armed && !this.nukeArmed && settings.announcer) sfx.sting(1.35);
       this.nukeArmed = armed;
-      this.hud.setNukeArmed(armed);
+      this.hud.setNukeArmed(armed && this.state === 'playing');
       return;
     }
 
@@ -1042,9 +1045,11 @@ export class Game {
     sfx.nuke();
     this.addShake(3.2);
     this.gfx.post.addFlash(1, 0xffffff);
-    // A blast at the middle of the map, so the world itself lights up rather
-    // than only the screen over it.
-    this.effects.explosion(this.local.x, this.local.y + 12, this.local.z, 30);
+    // A blast over wherever the view actually is — a spectator's camera is not
+    // standing where `local` says a body is, and lighting the world under an
+    // empty coordinate would flash nothing anybody can see.
+    const cam = this.gfx.camera.position;
+    this.effects.explosion(cam.x, cam.y + 12, cam.z, 30);
   }
 
   /** One frame of the countdown: the siren, and the HUD that carries it. */
@@ -1525,8 +1530,9 @@ export class Game {
     inp.on('melee', () => this.tryMelee());
     inp.on('nuke', () => {
       if (this.state !== 'playing' || !this.alive || !this.nukeArmed) return;
-      this.nukeArmed = false;                        // one press, one launch
-      this.hud.setNukeArmed(false);
+      // Asked for, not done. The room decides whether the streak was really
+      // there and answers with the launch everybody sees; clearing the prompt
+      // here instead would leave the two disagreeing whenever it refuses.
       this.net.nuke();
     });
     inp.on('slot', (s) => this.switchSlot(s));
@@ -2024,7 +2030,11 @@ export class Game {
 
     const def = weaponById(msg.w);
     if (def) sfx.shot(def.sound, from, this.listener());
-    if (e) e.group.userData.gun.position.z -= 0.06;      // tiny visible kick
+    // A tiny visible kick, on whichever weapon they are actually holding.
+    if (e) {
+      const held = e.group.userData.guns[e.lastSlot] ?? e.group.userData.gun;
+      held.position.z -= 0.06;
+    }
     // Flash at the shooter's barrel, a little ahead of their eye.
     const fd = { x: -Math.sin(msg.yaw ?? 0), y: Math.sin(msg.pitch ?? 0), z: -Math.cos(msg.yaw ?? 0) };
     this.effects.muzzleFlash(from.x + fd.x * 0.9, from.y + fd.y * 0.9 - 0.15, from.z + fd.z * 0.9,
