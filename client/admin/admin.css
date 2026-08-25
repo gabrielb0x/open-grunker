@@ -547,12 +547,33 @@ table.list tr.unread td { background: rgba(255, 176, 46, .045); }
 .rg:hover { color: var(--text); background: var(--panel-3); }
 .rg.active { color: var(--bg); background: var(--accent); }
 
-/* ── Right now ─────────────────────────────────────────────────────────── */
-
-.tile-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
-  gap: 12px; margin-bottom: 16px;
+/* ── Sections ──────────────────────────────────────────────────────────────
+   The page used to be seventeen charts in a column with nothing between them
+   but HTML comments nobody can see. Every group now names itself, and the rule
+   under the name is what tells a reader where one subject ends and the next
+   begins. */
+.stats-section {
+  display: flex; align-items: baseline; gap: 12px;
+  margin: 26px 0 12px; padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+  font: 900 11px var(--font); letter-spacing: .2em; color: var(--text);
 }
+.stats-section:first-of-type { margin-top: 4px; }
+.stats-section small {
+  font: 600 11px var(--font); letter-spacing: .02em; color: var(--dim);
+  text-transform: none;
+}
+
+/* ── Right now ─────────────────────────────────────────────────────────────
+   Four across, on the same tracks as the cards below. `auto-fit` sized them
+   against whatever happened to fit, so eight tiles became seven and an orphan
+   at one width and five and three at another. */
+.tile-grid {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px; margin-bottom: 4px;
+}
+@media (max-width: 1240px) { .tile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px)  { .tile-grid { grid-template-columns: minmax(0, 1fr); } }
 .tile {
   padding: 16px 18px; background: var(--panel); border: 1px solid var(--line);
   border-radius: var(--r); box-shadow: var(--shadow-sm), var(--ring);
@@ -571,17 +592,35 @@ table.list tr.unread td { background: rgba(255, 176, 46, .045); }
 
 /* ── Cards ─────────────────────────────────────────────────────────────── */
 
+/*
+ * One grid, four columns, everywhere on the page.
+ *
+ * It used to be six independent `auto-fit` grids. Auto-fit collapses the tracks
+ * it cannot fill, so a section with two cards drew them at half the page width
+ * while the section above drew three at a third of it — no two rows on the page
+ * lined up, and a "wide" card spanning `1 / -1` under 1500px then `span 2` over
+ * it left a hole at every width in between. Fixed tracks and an explicit span
+ * per card mean every section fills its row exactly and every card edge on the
+ * page falls on the same four lines.
+ */
 .card-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px; margin-bottom: 12px; align-items: start;
 }
 .chart-card {
   padding: 16px 18px 12px; background: var(--panel); border: 1px solid var(--line);
   border-radius: var(--r-lg); box-shadow: var(--shadow-sm), var(--ring); min-width: 0;
 }
-/* A wide card takes the whole row when the grid has room for two. */
-.chart-card.wide { grid-column: 1 / -1; }
-@media (min-width: 1500px) { .chart-card.wide { grid-column: span 2; } }
+.chart-card.wide  { grid-column: span 2; }
+.chart-card.wider { grid-column: span 3; }
+@media (max-width: 1240px) {
+  .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .chart-card.wide, .chart-card.wider { grid-column: span 2; }
+}
+@media (max-width: 820px) {
+  .card-grid { grid-template-columns: minmax(0, 1fr); }
+  .chart-card.wide, .chart-card.wider { grid-column: span 1; }
+}
 .chart-card header { margin-bottom: 10px; }
 .chart-card h3 { margin: 0; font: 900 13px var(--font); letter-spacing: .1em; color: var(--text); }
 .chart-card header p { margin: 5px 0 0; font: 600 11.5px/1.5 var(--font); color: var(--dim); }

@@ -87,9 +87,17 @@ export const api = {
     return { user: r.user, verification, reward: r.reward ?? null, mailError: r.mailError ?? null };
   },
 
-  /** @param {string} [turnstileToken] the solved challenge from the sign-in widget */
-  async login(username, password, turnstileToken) {
-    const r = await request('POST', '/auth/login', { username, password, turnstileToken });
+  /**
+   * @param {string} [turnstileToken] the solved challenge from the sign-in widget
+   * @param {string} [code] the second factor — six digits, or a recovery code
+   * @throws {ApiError} with `code === 'totp_required'` when the account has
+   *   two-factor on and no code was given. That is not a failure to sign in; it
+   *   is the form's cue to ask the second question.
+   */
+  async login(username, password, turnstileToken, code) {
+    const r = await request('POST', '/auth/login', {
+      username, password, turnstileToken, code: code || undefined,
+    });
     setToken(r.token);
     account = r.user;
     verification = r.verification ?? null;
@@ -116,6 +124,35 @@ export const api = {
     if (account) account.email = r.email;
     return r;
   },
+
+  /* ── Two-factor authentication ─────────────────────────────────────────
+     The secret is drawn here, shown as a QR code, and only becomes real once a
+     code derived from it has been checked — so a setup card that is opened and
+     abandoned leaves the account exactly as it was. ──────────────────────── */
+
+  /** A fresh secret and the `otpauth://` URI behind the QR code. Stores nothing. */
+  totpSetup: () => request('POST', '/auth/totp/setup'),
+
+  /** Turns it on. Resolves to the recovery codes, which are shown exactly once. */
+  async totpEnable(secret, code, password) {
+    const r = await request('POST', '/auth/totp/enable', { secret, code, password });
+    account = r.user ?? account;
+    return r.recovery ?? [];
+  },
+
+  async totpDisable(password, code) {
+    const r = await request('POST', '/auth/totp/disable', { password, code });
+    account = r.user ?? account;
+    return r;
+  },
+
+  /** A new set of recovery codes. The old ones stop working immediately. */
+  async totpRecovery(password, code) {
+    const r = await request('POST', '/auth/totp/recovery', { password, code });
+    return r.recovery ?? [];
+  },
+
+  totpState: () => request('GET', '/auth/totp'),
 
   /** Buys a new nickname. Costs GR unless it is only a change of spelling. */
   async changeUsername(username) {
@@ -176,9 +213,15 @@ export const api = {
     } catch { return null; }
   },
 
-  /** Changes the password and signs every session out (including this one). */
-  async changePassword(current, next) {
-    const r = await request('POST', '/auth/password', { current, next });
+  /**
+   * Changes the password and signs every session out (including this one).
+   *
+   * `code` is the second factor, required when the account has one: signing
+   * every device out is what turns a borrowed session into a stolen account,
+   * so it is the one password-protected action that also costs a code.
+   */
+  async changePassword(current, next, code) {
+    const r = await request('POST', '/auth/password', { current, next, code: code || undefined });
     setToken(null);
     account = null;
     return r;

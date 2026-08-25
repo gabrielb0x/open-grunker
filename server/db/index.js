@@ -109,6 +109,27 @@ function migrate() {
   // would fail outright on a database whose users table has no clan_id yet.
   db.exec('CREATE INDEX IF NOT EXISTS idx_users_clan ON users(clan_id)');
 
+  // Two-factor authentication. `totp_secret` is null until a first code has
+  // been checked, so it doubles as the "is it actually on" flag — an account
+  // that opened the setup card and walked away is not half-protected.
+  if (!u.has('totp_secret')) db.exec('ALTER TABLE users ADD COLUMN totp_secret TEXT');
+  if (!u.has('totp_enabled_at')) db.exec('ALTER TABLE users ADD COLUMN totp_enabled_at INTEGER');
+  if (!u.has('totp_last_step')) db.exec('ALTER TABLE users ADD COLUMN totp_last_step INTEGER NOT NULL DEFAULT 0');
+  db.exec(`CREATE TABLE IF NOT EXISTS totp_recovery (
+    user_id    TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_hash  TEXT    NOT NULL,
+    created_at INTEGER NOT NULL,
+    used_at    INTEGER,
+    PRIMARY KEY (user_id, code_hash))`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_totp_recovery ON totp_recovery(user_id) WHERE used_at IS NULL');
+
+  // Career milestones. The primary key is the whole of the "pay it once" rule.
+  db.exec(`CREATE TABLE IF NOT EXISTS milestones (
+    user_id      TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    milestone_id TEXT    NOT NULL,
+    claimed_at   INTEGER NOT NULL,
+    PRIMARY KEY (user_id, milestone_id))`);
+
   regradeLevels();
   grantSignupSkins();
 }
@@ -127,23 +148,29 @@ function migrate() {
  * behind it, and the new curve applies to everything they earn from here on.
  * `level_graded` is the marker that stops it running twice; the top-up itself
  * is idempotent anyway, but a second pass on a player who legitimately lost XP
- * would not be.
+ * would not be. It holds the *generation* of the curve an account has been
+ * graded against rather than a flag, so the next time the ladder is reshaped —
+ * as it was in v1.6, right across the range this time — the same pass runs
+ * again for accounts that have only seen the older shape.
  */
+const LEVEL_CURVE_GENERATION = 2;
+
 function regradeLevels() {
   if (!cols('users').has('level_graded')) {
     db.exec('ALTER TABLE users ADD COLUMN level_graded INTEGER NOT NULL DEFAULT 0');
   }
-  const pending = db.prepare('SELECT id, username, xp, level FROM users WHERE level_graded = 0').all();
+  const pending = db.prepare(
+    'SELECT id, username, xp, level FROM users WHERE level_graded < ?').all(LEVEL_CURVE_GENERATION);
   if (!pending.length) return;
 
-  const bump = db.prepare('UPDATE users SET xp = ?, level_graded = 1 WHERE id = ?');
-  const mark = db.prepare('UPDATE users SET level = ?, level_graded = 1 WHERE id = ?');
+  const bump = db.prepare('UPDATE users SET xp = ?, level = ?, level_graded = ? WHERE id = ?');
+  const mark = db.prepare('UPDATE users SET level = ?, level_graded = ? WHERE id = ?');
   let topped = 0;
   for (const u of pending) {
     const held = Math.max(1, int(u.level) || 1);
     const need = xpForLevel(held);
-    if (int(u.xp) < need) { bump.run(need, u.id); topped++; }
-    else mark.run(levelFromXp(int(u.xp)), u.id);
+    if (int(u.xp) < need) { bump.run(need, held, LEVEL_CURVE_GENERATION, u.id); topped++; }
+    else mark.run(levelFromXp(int(u.xp)), LEVEL_CURVE_GENERATION, u.id);
   }
   if (topped) logger.info(`migrated: topped up ${topped} account(s) so the steeper level curve costs nobody a level`);
 }
@@ -202,6 +229,8 @@ const UUID_TABLES = {
   chat_bans: { refs: { user_id: 'user' } },
   report_bans: { refs: { user_id: 'user' } },
   email_tokens: { refs: { user_id: 'user' } },
+  totp_recovery: { refs: { user_id: 'user' } },
+  milestones: { refs: { user_id: 'user' } },
   reports: { self: 'report', refs: { reporter_id: 'user', target_id: 'user' } },
   clans: { self: 'clan', refs: { owner_id: 'user' }, avatarOf: 'clan' },
   clan_members: { refs: { clan_id: 'clan', user_id: 'user' } },
@@ -450,6 +479,28 @@ const S = {
   setEmail: db.prepare('UPDATE users SET email = ?, email_verified = 0, verified_at = NULL WHERE id = ?'),
   rename: db.prepare(
     'UPDATE users SET username = ?, username_lower = ?, renamed_at = ?, name_changes = name_changes + 1 WHERE id = ?'),
+
+  // Two-factor. `totp_last_step < ?` in the spend is the replay guard: a step
+  // only lands if it is strictly newer than the last one this account accepted.
+  enableTotp: db.prepare(
+    'UPDATE users SET totp_secret = ?, totp_enabled_at = ?, totp_last_step = 0 WHERE id = ?'),
+  disableTotp: db.prepare(
+    'UPDATE users SET totp_secret = NULL, totp_enabled_at = NULL, totp_last_step = 0 WHERE id = ?'),
+  spendTotpStep: db.prepare(
+    'UPDATE users SET totp_last_step = ? WHERE id = ? AND totp_last_step < ?'),
+  insertRecovery: db.prepare(
+    'INSERT OR IGNORE INTO totp_recovery (user_id, code_hash, created_at) VALUES (?,?,?)'),
+  clearRecovery: db.prepare('DELETE FROM totp_recovery WHERE user_id = ?'),
+
+  // Career milestones. OR IGNORE is the "pay it once" rule: a row that already
+  // exists reports no change, and the caller pays nothing.
+  milestonesFor: db.prepare('SELECT milestone_id FROM milestones WHERE user_id = ?'),
+  claimMilestone: db.prepare(
+    'INSERT OR IGNORE INTO milestones (user_id, milestone_id, claimed_at) VALUES (?,?,?)'),
+  countRecovery: db.prepare(
+    'SELECT COUNT(*) AS n FROM totp_recovery WHERE user_id = ? AND used_at IS NULL'),
+  spendRecovery: db.prepare(
+    'UPDATE totp_recovery SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL'),
 
   putIpIntel: db.prepare(`INSERT INTO ip_intel (ip, proxy, hosting, tor, country, asn, provider, detail, checked_at)
       VALUES (?,?,?,?,?,?,?,?,?)
@@ -880,9 +931,14 @@ export const sessions = {
 /* ── Matches ─────────────────────────────────────────────────────────────── */
 
 export const matches = {
-  start: (room, mode, map) => {
+  /**
+   * @param {number} [startedAt] when the match actually began. The row is
+   *   written when the match *ends* — a match nobody played never earns one —
+   *   so the start time has to be carried in rather than read off the clock.
+   */
+  start: (room, mode, map, startedAt = null) => {
     const id = newId();
-    S.insertMatch.run(id, room, mode, map, now());
+    S.insertMatch.run(id, room, mode, map, Math.floor(startedAt ?? now()));
     return id;
   },
   finish: (id, winner) => S.endMatch.run(now(), winner ?? null, id),
@@ -1087,6 +1143,110 @@ export const emailTokens = {
   latestFor: (userId) => S.latestEmailToken.get(userId) ?? null,
   clearFor: (userId) => int(S.clearEmailTokens.run(userId).changes),
   prune: () => int(S.pruneEmailTokens.run(now()).changes),
+};
+
+/* ── Career milestones ───────────────────────────────────────────────────── */
+
+/**
+ * Which lifetime thresholds an account has already been paid for.
+ *
+ * The table is the ledger and the primary key is the rule: `INSERT OR IGNORE`
+ * returns a change count of zero for a milestone that was already claimed, so
+ * two matches finishing at the same instant cannot pay the same one twice.
+ */
+export const milestones = {
+  claimedFor: (userId) => S.milestonesFor.all(userId).map((r) => r.milestone_id),
+
+  /**
+   * Claims one. @returns {boolean} true only when this call is the one that
+   * claimed it — which is what the caller pays out on.
+   */
+  claim: (userId, id) => int(S.claimMilestone.run(userId, String(id).slice(0, 32), now()).changes) > 0,
+};
+
+/* ── Two-factor authentication ───────────────────────────────────────────── */
+
+/**
+ * The stored half of TOTP.
+ *
+ * The maths lives in `server/util/totp.js`; this is only the bookkeeping, and
+ * it enforces one rule the maths cannot: `totp_secret` is written *after* a
+ * first code has been checked, never before. A half-finished setup therefore
+ * leaves an account exactly as it was, rather than locked behind a secret
+ * nobody managed to scan.
+ */
+export const totp = {
+  /** Turns it on. Recovery codes arrive already hashed — see util/totp.js. */
+  enable(userId, secret, codeHashes = []) {
+    const ts = now();
+    db.exec('BEGIN');
+    try {
+      S.enableTotp.run(String(secret), ts, userId);
+      S.clearRecovery.run(userId);
+      for (const h of codeHashes) S.insertRecovery.run(userId, h, ts);
+      db.exec('COMMIT');
+      return ts;
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  },
+
+  /** Turns it off and takes the recovery codes with it. */
+  disable(userId) {
+    db.exec('BEGIN');
+    try {
+      S.disableTotp.run(userId);
+      S.clearRecovery.run(userId);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  },
+
+  /** Replaces the whole set — what "regenerate my recovery codes" does. */
+  resetRecovery(userId, codeHashes = []) {
+    const ts = now();
+    db.exec('BEGIN');
+    try {
+      S.clearRecovery.run(userId);
+      for (const h of codeHashes) S.insertRecovery.run(userId, h, ts);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  },
+
+  /**
+   * Marks a time step spent.
+   *
+   * TOTP on its own lets the same six digits be replayed for the whole thirty
+   * seconds they are valid, which is thirty seconds an attacker with a
+   * shoulder-surfed code does not have to be quick in. The compare-and-set is
+   * the whole defence: only a step strictly newer than the last one accepted
+   * gets through, so a replay of the same code loses to its own first use.
+   *
+   * @returns {boolean} false when this step has already been used.
+   */
+  spendStep(userId, step) {
+    return int(S.spendTotpStep.run(Math.floor(step), userId, Math.floor(step)).changes) > 0;
+  },
+
+  /** How many unspent recovery codes are left, for the panel to show. */
+  recoveryLeft: (userId) => int(S.countRecovery.get(userId).n),
+
+  /**
+   * Spends one recovery code.
+   *
+   * @returns {boolean} true only when this call is the one that spent it — the
+   *   `used_at IS NULL` in the WHERE is what makes two simultaneous attempts
+   *   with the same code resolve to one success.
+   */
+  spendRecovery(userId, codeHash) {
+    return int(S.spendRecovery.run(now(), userId, codeHash).changes) > 0;
+  },
 };
 
 /* ── Address intelligence cache ──────────────────────────────────────────── */
@@ -1822,6 +1982,6 @@ export function close() {
 
 export default {
   db, users, stats, loadouts, sessions, matches, mastery, challenges, ipBans, chatBans, audit,
-  reportBans, emailTokens, ipIntel, reports, clans, normaliseIp, summary, maintain, close,
-  metrics, events, analytics,
+  reportBans, emailTokens, totp, milestones, ipIntel, reports, clans, normaliseIp,
+  summary, maintain, close, metrics, events, analytics,
 };

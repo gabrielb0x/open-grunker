@@ -12,6 +12,10 @@ import { GAME_VERSION } from '../../shared/patchnotes.js';
 import { Router, ApiError } from './router.js';
 import { ok, fail, json, readJson, readBody, cookieHeader } from '../util/http.js';
 import { hashPassword, verifyPassword, newToken, hashToken } from '../util/auth.js';
+import {
+  newSecret, verifyTotp, otpauthUri, newRecoveryCodes, hashRecoveryCode, PERIOD as TOTP_PERIOD,
+  DIGITS as TOTP_DIGITS,
+} from '../util/totp.js';
 import { take } from '../util/ratelimit.js';
 import * as turnstile from '../util/turnstile.js';
 import * as ipintel from '../util/ipintel.js';
@@ -50,7 +54,13 @@ const publicUser = (u, s = null, l = null, { self = false } = {}) => ({
   verified: !!u.verified,
   // Null when this account has never uploaded one; the client draws initials.
   avatar: avatars.urlFor(u.avatar),
-  ...(self ? { email: u.email ?? null, emailVerified: !!u.email_verified } : {}),
+  ...(self ? {
+    email: u.email ?? null,
+    emailVerified: !!u.email_verified,
+    // Whether this account is behind a second factor. Own-account only: it is
+    // nobody else's business which accounts are the easy ones to attack.
+    totp: { enabled: !!u.totp_secret, since: u.totp_enabled_at ?? null },
+  } : {}),
   nameChanges: u.name_changes ?? 0,
   // The tag, and whether the clan behind it is verified — which is the only
   // difference between a grey tag and a gold one wherever a name is drawn.
@@ -108,20 +118,62 @@ function masteryPayload(db, userId) {
   return out;
 }
 
-/** Today's three challenges with this player's progress on each. */
+/** One board's worth of challenges with this player's progress on each. */
+function challengeItems(db, userId, period, list) {
+  const rows = new Map(db.challenges.forUser(userId, period).map((r) => [r.id, r]));
+  return list.map((c) => {
+    const row = rows.get(c.id);
+    const progress = Math.min(c.goal, row?.progress ?? 0);
+    return {
+      id: c.id, name: c.name, desc: c.desc, goal: c.goal, xp: c.xp, gr: c.gr,
+      progress, done: !!row?.claimed || progress >= c.goal,
+    };
+  });
+}
+
+/**
+ * Both challenge boards, and the career list underneath them.
+ *
+ * `items` is still the day's three, unchanged, because that is what the client
+ * has always read. The week's three and the milestone ledger ride alongside it.
+ */
 function challengePayload(db, userId) {
   const day = K.dayIndex();
-  const list = K.dailyChallenges(day);
-  const rows = new Map(db.challenges.forUser(userId, day).map((r) => [r.id, r]));
+  const week = K.weekIndex();
+  const nowSec = Math.floor(Date.now() / 1000);
+  const claimed = new Set(db.milestones.claimedFor(userId));
+  const stats = db.stats.get(userId) ?? {};
+  const value = {
+    kills: stats.kills, wins: stats.wins, headshots: stats.headshots,
+    matches: stats.matches, bestStreak: stats.best_streak,
+    damage: stats.damage_dealt, playtime: stats.playtime_sec,
+  };
+
   return {
     day,
-    resetsIn: Math.max(0, (day + 1) * 86400 - Math.floor(Date.now() / 1000)),
-    items: list.map((c) => {
-      const row = rows.get(c.id);
-      const progress = Math.min(c.goal, row?.progress ?? 0);
+    resetsIn: Math.max(0, (day + 1) * 86400 - nowSec),
+    items: challengeItems(db, userId, day, K.dailyChallenges(day)),
+    week: {
+      index: week,
+      // Weeks roll over on Monday morning; see `K.weekIndex`.
+      resetsIn: Math.max(0, ((week + 1) * 7 - 3) * 86400 - nowSec),
+      items: challengeItems(db, userId, K.weeklyPeriod(week), K.weeklyChallenges(week)),
+    },
+    /*
+     * Every milestone, claimed or not, with where this account stands on it.
+     *
+     * The unclaimed ones are the point — a list that only showed what had
+     * already been earned would be a trophy cabinet, and a trophy cabinet gives
+     * nobody a reason to play tomorrow. The next rung of each track is what
+     * does that, so it is sent with the number that is still missing from it.
+     */
+    milestones: K.MILESTONES.map((m) => {
+      const at = Math.max(0, value[m.stat] ?? 0);
       return {
-        id: c.id, name: c.name, desc: c.desc, goal: c.goal, xp: c.xp, gr: c.gr,
-        progress, done: !!row?.claimed || progress >= c.goal,
+        id: m.id, name: m.name, desc: m.desc, goal: m.goal, stat: m.stat,
+        xp: m.xp, gr: m.gr,
+        progress: Math.min(at, m.goal),
+        done: claimed.has(m.id),
       };
     }),
   };
@@ -255,6 +307,33 @@ export function createApi({ db, hub }) {
     if (res.ok) return;
     throw new ApiError(res.reason === 'unreachable' ? 503 : 400,
       'captcha_failed', turnstile.humanError(res));
+  };
+
+  /**
+   * Checks a second factor and spends it, whichever kind it turns out to be.
+   *
+   * Six digits is the authenticator app; anything else is treated as a recovery
+   * code. Both are single-use, and both say so through the *same* boolean, so
+   * no caller can accidentally accept one and not consume it:
+   *
+   *   • A TOTP code is bound to a thirty-second step. `spendStep` refuses a
+   *     step that is not strictly newer than the last one accepted, so the
+   *     same six digits cannot be replayed inside their own lifetime — which
+   *     is the one weakness bare TOTP has.
+   *   • A recovery code is a row that is deleted-by-marking on use, and the
+   *     `used_at IS NULL` in that UPDATE is what makes two simultaneous
+   *     attempts with the same code resolve to exactly one success.
+   *
+   * @returns {boolean} true only when this call consumed a valid factor.
+   */
+  const spendSecondFactor = (user, answer) => {
+    const given = String(answer ?? '').trim();
+    if (!given) return false;
+    if (/^\d{6}$/.test(given.replace(/\s/g, ''))) {
+      const step = verifyTotp(user.totp_secret, given);
+      return step !== null && db.totp.spendStep(user.id, step);
+    }
+    return db.totp.spendRecovery(user.id, hashRecoveryCode(given));
   };
 
   /** Everything the client needs to render the "confirm your address" state. */
@@ -443,6 +522,28 @@ export function createApi({ db, hub }) {
         : '';
       throw new ApiError(403, 'banned',
         `this account is banned${until} — ${user.ban_reason || 'no reason given'}`);
+    }
+
+    /*
+     * The second factor, if this account has one.
+     *
+     * Deliberately *after* the password check: an account with 2FA on must not
+     * be distinguishable from one without it until the password is already
+     * right, or this route becomes a way to enumerate which accounts are worth
+     * attacking. The password being right is what earns the `totp_required`
+     * answer, and that answer carries no session and no token — it is a second
+     * question, not a partial login.
+     */
+    if (user.totp_secret) {
+      const answer = String(body.code ?? body.totp ?? '').trim();
+      if (!answer) {
+        throw new ApiError(401, 'totp_required',
+          'this account is protected by an authenticator app — enter the six-digit code');
+      }
+      if (!spendSecondFactor(user, answer)) {
+        throw new ApiError(401, 'totp_invalid',
+          'that code is wrong or has already been used — wait for the next one');
+      }
     }
 
     const token = newToken();
@@ -635,9 +736,20 @@ export function createApi({ db, hub }) {
   r.post('/auth/password', async (ctx) => {
     const user = requireAuth(ctx);
     limit(ctx, 'auth', config.rateMaxAuth);
-    const { current, next } = await readJson(ctx.req);
+    const { current, next, code } = await readJson(ctx.req);
     if (!await verifyPassword(String(current ?? ''), user.password_hash)) {
       throw new ApiError(401, 'bad_credentials', 'current password is wrong');
+    }
+    // A password change signs every device out, which makes it the one move
+    // that turns a borrowed session into a stolen account. If this account has
+    // a second factor, it is asked for here as well.
+    if (user.totp_secret) {
+      if (!String(code ?? '').trim()) {
+        throw new ApiError(401, 'totp_required', 'enter the six-digit code from your authenticator app');
+      }
+      if (!spendSecondFactor(user, code)) {
+        throw new ApiError(401, 'totp_invalid', 'that code is wrong or has already been used');
+      }
     }
     if (typeof next !== 'string' || next.length < K.PASSWORD_MIN) {
       throw new ApiError(400, 'invalid_password', `password must be at least ${K.PASSWORD_MIN} characters`);
@@ -646,6 +758,134 @@ export function createApi({ db, hub }) {
     db.sessions.destroyAllFor(user.id);
     json(ctx.res, 200, { ok: true, message: 'password changed — sign in again' },
       { 'set-cookie': cookieHeader(COOKIE, '', { clear: true }) });
+  });
+
+  /* ── Two-factor authentication ─────────────────────────────────────────────
+     Four routes: draw the secret, turn it on, turn it off, and mint a new set
+     of recovery codes. Everything that *changes* the state of the second factor
+     costs a password, because otherwise a borrowed session is enough to lock
+     the owner out of their own account.
+     ──────────────────────────────────────────────────────────────────────── */
+
+  /**
+   * Hands out a fresh secret and the URI a QR code encodes.
+   *
+   * Nothing is stored. The secret becomes real at `/auth/totp/enable`, and only
+   * once a code derived from it has been checked — an account that opened this
+   * card and wandered off is exactly as it was, rather than locked behind a
+   * secret nobody finished scanning.
+   */
+  r.post('/auth/totp/setup', async (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'auth', config.rateMaxAuth);
+    if (user.totp_secret) {
+      throw new ApiError(409, 'totp_already_on',
+        'two-factor is already on for this account — turn it off first');
+    }
+    const secret = newSecret();
+    ok(ctx.res, {
+      secret,
+      uri: otpauthUri({ secret, account: user.username }),
+      digits: TOTP_DIGITS,
+      period: TOTP_PERIOD,
+      issuer: 'Open Grunker',
+    });
+  });
+
+  /**
+   * Turns it on.
+   *
+   * The secret comes back from the client because that is the only copy of it
+   * that exists — this server deliberately did not keep one. It is safe: the
+   * route costs a password, so a hijacked session cannot swap in a secret of
+   * its own, and the code proves whoever is asking has actually scanned it.
+   */
+  r.post('/auth/totp/enable', async (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'auth', config.rateMaxAuth);
+    const { secret, code, password } = await readJson(ctx.req);
+    if (!await verifyPassword(String(password ?? ''), user.password_hash)) {
+      throw new ApiError(401, 'bad_credentials', 'your password is wrong');
+    }
+    if (user.totp_secret) {
+      throw new ApiError(409, 'totp_already_on', 'two-factor is already on for this account');
+    }
+    if (typeof secret !== 'string' || secret.length < 16) {
+      throw new ApiError(400, 'invalid_body', 'start again from the setup step');
+    }
+    const step = verifyTotp(secret, code);
+    if (step === null) {
+      throw new ApiError(400, 'totp_invalid',
+        'that code does not match — check your phone\'s clock and try the next one');
+    }
+
+    const { codes, hashes } = newRecoveryCodes();
+    db.totp.enable(user.id, secret, hashes);
+    db.totp.spendStep(user.id, step);            // the setup code is spent too
+    logger.info(`${user.username} switched two-factor on`);
+    event('totp.enable', { userId: user.id, name: user.username, value: codes.length });
+    ok(ctx.res, {
+      enabled: true,
+      // Shown once and never again — there is nowhere to look them up, which is
+      // the entire point of storing only their hashes.
+      recovery: codes,
+      user: publicUser(db.users.byId(user.id), db.stats.get(user.id), db.loadouts.get(user.id), { self: true }),
+    });
+  });
+
+  /** Turns it off. Costs the password *and* a live code, like every 2FA worth having. */
+  r.post('/auth/totp/disable', async (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'auth', config.rateMaxAuth);
+    const { password, code } = await readJson(ctx.req);
+    if (!user.totp_secret) throw new ApiError(409, 'totp_off', 'two-factor is not on for this account');
+    if (!await verifyPassword(String(password ?? ''), user.password_hash)) {
+      throw new ApiError(401, 'bad_credentials', 'your password is wrong');
+    }
+    if (!spendSecondFactor(user, code)) {
+      throw new ApiError(401, 'totp_invalid', 'that code is wrong or has already been used');
+    }
+    db.totp.disable(user.id);
+    logger.info(`${user.username} switched two-factor off`);
+    event('totp.disable', { userId: user.id, name: user.username });
+    ok(ctx.res, {
+      enabled: false,
+      user: publicUser(db.users.byId(user.id), db.stats.get(user.id), db.loadouts.get(user.id), { self: true }),
+    });
+  });
+
+  /**
+   * A fresh set of recovery codes, replacing whatever is left of the old ones.
+   *
+   * The old set stops working the moment this returns. That is the point: a
+   * player regenerating them is usually a player who thinks the old list has
+   * been seen by somebody else.
+   */
+  r.post('/auth/totp/recovery', async (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'auth', config.rateMaxAuth);
+    const { password, code } = await readJson(ctx.req);
+    if (!user.totp_secret) throw new ApiError(409, 'totp_off', 'two-factor is not on for this account');
+    if (!await verifyPassword(String(password ?? ''), user.password_hash)) {
+      throw new ApiError(401, 'bad_credentials', 'your password is wrong');
+    }
+    if (!spendSecondFactor(user, code)) {
+      throw new ApiError(401, 'totp_invalid', 'that code is wrong or has already been used');
+    }
+    const { codes, hashes } = newRecoveryCodes();
+    db.totp.resetRecovery(user.id, hashes);
+    logger.info(`${user.username} regenerated their recovery codes`);
+    ok(ctx.res, { recovery: codes });
+  });
+
+  /** How many recovery codes are left, for the panel to warn about. */
+  r.get('/auth/totp', (ctx) => {
+    const user = requireAuth(ctx);
+    ok(ctx.res, {
+      enabled: !!user.totp_secret,
+      since: user.totp_enabled_at ?? null,
+      recoveryLeft: user.totp_secret ? db.totp.recoveryLeft(user.id) : 0,
+    });
   });
 
   /* ── Profile picture ───────────────────────────────────────────────────── */

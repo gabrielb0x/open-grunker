@@ -83,9 +83,16 @@ function webp(w, h) {
 
 function makeDb({ failChallengesFor = null } = {}) {
   const accounts = new Map();
-  const log = { stats: [], progress: [], matchPlayers: [], mastery: [] };
+  const log = { stats: [], progress: [], matchPlayers: [], mastery: [], milestones: [] };
   const account = (id) => {
-    if (!accounts.has(id)) accounts.set(id, { id, xp: 0, gr: 0, level: 1 });
+    if (!accounts.has(id)) {
+      accounts.set(id, {
+        id, xp: 0, gr: 0, level: 1,
+        // The lifetime stats row, and which career milestones have been paid.
+        life: { kills: 0, wins: 0, headshots: 0, matches: 0, best_streak: 0, damage_dealt: 0, playtime_sec: 0 },
+        milestones: new Set(),
+      });
+    }
     return accounts.get(id);
   };
   return {
@@ -96,7 +103,32 @@ function makeDb({ failChallengesFor = null } = {}) {
       finish: () => {},
       addPlayer: (_id, p) => log.matchPlayers.push(p),
     },
-    stats: { bump: (userId, d) => log.stats.push({ userId, ...d }) },
+    stats: {
+      bump: (userId, d) => {
+        log.stats.push({ userId, ...d });
+        // The lifetime row a milestone check reads, kept in step with the
+        // deltas the room writes into it.
+        const a = account(userId);
+        for (const [k, col] of [['kills', 'kills'], ['wins', 'wins'], ['headshots', 'headshots'],
+          ['matches', 'matches'], ['damage', 'damage_dealt'], ['playtime', 'playtime_sec']]) {
+          a.life[col] = (a.life[col] ?? 0) + (d[k] ?? 0);
+        }
+        a.life.best_streak = Math.max(a.life.best_streak ?? 0, d.bestStreak ?? 0);
+      },
+      get: (userId) => account(userId).life,
+    },
+    // The career ledger. The set is the primary key: a milestone already in it
+    // reports no change, and the room pays nothing for it a second time.
+    milestones: {
+      claimedFor: (userId) => [...account(userId).milestones],
+      claim: (userId, id) => {
+        const set = account(userId).milestones;
+        if (set.has(id)) return false;
+        set.add(id);
+        log.milestones.push({ userId, id });
+        return true;
+      },
+    },
     mastery: { bump: (userId, kills) => log.mastery.push({ userId, kills: [...kills.entries()] }) },
     challenges: {
       forUser: (userId) => {

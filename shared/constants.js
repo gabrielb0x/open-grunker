@@ -224,30 +224,40 @@ export const RENAME_COST = 100;
 export const MAX_LEVEL = 999;
 
 /**
- * Where the ladder stops being generous.
+ * How much a level costs.
  *
- * Below `LEVEL_RAMP_FROM` the curve is *exactly* what it always was, because
- * the thing a new account needs is to watch the number move: the first ten
- * levels still cost what they cost, and the gates that live down there — chat
- * at 2, the report button and a clan at 5 — arrive on the same evening they
- * always did. Past it a second term takes over and grows far faster than the
- * first, so every level up the ladder costs meaningfully more than the one
- * under it: level 30 lands at roughly twice the old figure, level 50 at three
- * and a half times it, level 100 at eight.
+ * Two terms. The first is the whole curve up to `LEVEL_RAMP_FROM` and keeps the
+ * bottom of the ladder reachable: level 2 is one short match, and the gates
+ * that live down there — chat at 2, the report button and a clan at 5 — are
+ * still a first sitting away, because that is where people decide whether to
+ * come back at all. The second takes over above it and grows much faster than
+ * the first, so every level up the ladder costs meaningfully more than the one
+ * under it.
  *
- * That is the whole point of the shape. A single exponent that made the top of
- * the ladder respectable would have made the bottom of it a wall, and the
- * bottom of the ladder is where people decide whether to come back.
+ * The whole thing was lifted in v1.6 because it was being cleared far too fast.
+ * A match pays its own score back as XP — one to one, see `xpFromScore` — and a
+ * decent four-minute round is a couple of thousand points, which put level 10
+ * inside two matches and level 50 inside a hundred. A level nobody had to work
+ * for is a number, not an achievement. The figures below put level 10 at about
+ * an evening, level 30 at a few weeks and level 50 well beyond that, and they
+ * do it by making levels dearer rather than by paying matches less — the number
+ * on the end card is still exactly the number that was on the scoreboard.
+ *
+ * Existing accounts never lose a level to this: `regradeLevels` in the database
+ * layer tops their XP up to whatever the level they already hold now costs.
  */
 export const LEVEL_RAMP_FROM = 10;
-export const LEVEL_RAMP_COST = 9;
-export const LEVEL_RAMP_POWER = 2.6;
+export const LEVEL_BASE_COST = 260;
+export const LEVEL_BASE_POWER = 1.75;
+export const LEVEL_RAMP_COST = 46;
+export const LEVEL_RAMP_POWER = 2.75;
 
 /** Total XP required to reach `level`. Soft to LEVEL_RAMP_FROM, steep after it. */
 export const xpForLevel = (level) => {
   const l = Math.max(1, Math.min(MAX_LEVEL + 1, Math.floor(level)));
   const over = l - LEVEL_RAMP_FROM;
-  return Math.floor(120 * (l - 1) ** 1.55 + (over > 0 ? LEVEL_RAMP_COST * over ** LEVEL_RAMP_POWER : 0));
+  return Math.floor(LEVEL_BASE_COST * (l - 1) ** LEVEL_BASE_POWER
+    + (over > 0 ? LEVEL_RAMP_COST * over ** LEVEL_RAMP_POWER : 0));
 };
 
 /**
@@ -282,10 +292,14 @@ export const levelFromXp = (xp) => {
  * takes three evenings to earn and pays nothing is a level nobody chases. The
  * payout climbs with the level, so the expensive end of the ladder is also the
  * profitable one, and it is capped so it can never outrun what a match pays.
+ *
+ * Both figures went up with the v1.6 ladder. Levels arrive maybe a third as
+ * often as they used to, so each one has to be worth roughly three times as
+ * much or the whole ladder quietly becomes a worse way to earn than playing.
  */
 export const levelUpReward = (level) => {
   const l = Math.max(2, Math.floor(level));
-  return { gr: Math.min(600, 40 + (l - 1) * 12) };
+  return { gr: Math.min(1800, 90 + (l - 1) * 34) };
 };
 /**
  * GR earned from a finished match.
@@ -532,6 +546,128 @@ export function dailyChallenges(dayIndex) {
 
 /** UTC day number — the unit dailies roll over on. */
 export const dayIndex = (ms = Date.now()) => Math.floor(ms / 86400000);
+
+/* ── Weekly challenges ────────────────────────────────────────────────────── */
+
+/**
+ * Three a week, on top of the three a day.
+ *
+ * Dailies are a reason to play tonight; they are worth an evening and they are
+ * gone tomorrow whether or not anybody finished them. That makes them useless
+ * to the player who gets two evenings a week — the goal resets before they can
+ * reach it, so there is never anything to come back *to*.
+ *
+ * A week is the unit that fixes it. The goals below are deliberately out of
+ * reach of a single sitting: they are what a Tuesday session and a Saturday
+ * session add up to, and progress on them survives in between.
+ */
+export const WEEKLY_POOL = [
+  { id: 'w.kills200',   stat: 'kills',      goal: 200,   xp: 4000,  gr: 320, name: 'Standing Army',    desc: 'Get 200 kills this week' },
+  { id: 'w.kills500',   stat: 'kills',      goal: 500,   xp: 9000,  gr: 700, name: 'War of Attrition', desc: 'Get 500 kills this week' },
+  { id: 'w.heads100',   stat: 'headshots',  goal: 100,   xp: 5000,  gr: 400, name: 'Cold Eye',         desc: 'Land 100 headshots this week' },
+  { id: 'w.wins15',     stat: 'wins',       goal: 15,    xp: 5500,  gr: 450, name: 'Season Form',      desc: 'Win 15 matches this week' },
+  { id: 'w.score30k',   stat: 'score',      goal: 30000, xp: 5000,  gr: 400, name: 'Six Figures Soon', desc: 'Earn 30,000 match points this week' },
+  { id: 'w.matches40',  stat: 'matches',    goal: 40,    xp: 3500,  gr: 280, name: 'Clocked In',       desc: 'Finish 40 matches this week' },
+  { id: 'w.damage50k',  stat: 'damage',     goal: 50000, xp: 4500,  gr: 360, name: 'Sustained Fire',   desc: 'Deal 50,000 damage this week' },
+  { id: 'w.assists60',  stat: 'assists',    goal: 60,    xp: 3500,  gr: 280, name: 'Second Pair',      desc: 'Get 60 assists this week' },
+  { id: 'w.midairs25',  stat: 'midairs',    goal: 25,    xp: 4500,  gr: 380, name: 'Clay Pigeon',      desc: 'Kill 25 airborne enemies this week' },
+  { id: 'w.melees30',   stat: 'melees',     goal: 30,    xp: 4000,  gr: 340, name: 'Knife Work',       desc: 'Get 30 melee kills this week' },
+  { id: 'w.longshot25', stat: 'longshots',  goal: 25,    xp: 4500,  gr: 380, name: 'Across The Map',   desc: 'Land 25 longshot kills this week' },
+  { id: 'w.drifts30',   stat: 'drifts',     goal: 30,    xp: 4000,  gr: 340, name: 'Kept Moving',      desc: 'Kill 30 enemies while sliding this week' },
+];
+
+export const WEEKLIES_PER_WEEK = 3;
+
+/**
+ * UTC week number, rolling over on Monday.
+ *
+ * Day 0 of the epoch was a Thursday, and Monday is three days short of the next
+ * one — so +3 is what puts the boundary at Monday morning rather than in the
+ * middle of a weekend, which is when the week starts for everybody who is not a
+ * computer and, more to the point, when a weekend's worth of progress would be
+ * most annoying to lose.
+ */
+export const weekIndex = (ms = Date.now()) => Math.floor((dayIndex(ms) + 3) / 7);
+
+/** Deterministic weekly pick, so everybody is chasing the same three. */
+export function weeklyChallenges(week) {
+  const out = [];
+  let h = (week * 0x9e3779b1) >>> 0;
+  const used = new Set();
+  while (out.length < WEEKLIES_PER_WEEK && used.size < WEEKLY_POOL.length) {
+    h = (Math.imul(h ^ (h >>> 15), 0x2545f491) + 0x85ebca6b) >>> 0;
+    const i = h % WEEKLY_POOL.length;
+    if (used.has(i)) continue;
+    used.add(i);
+    out.push(WEEKLY_POOL[i]);
+  }
+  return out;
+}
+
+/**
+ * Where a weekly's progress is filed.
+ *
+ * Both kinds of challenge share one table, keyed by a period number. Dailies
+ * use the day index — currently around twenty thousand — and weeklies are
+ * pushed above a million so the two can never collide and, more importantly, so
+ * the daily cleanup (which deletes everything below the last few days) cannot
+ * sweep away a week that is still running.
+ */
+export const WEEKLY_PERIOD_BASE = 1_000_000;
+export const weeklyPeriod = (week) => WEEKLY_PERIOD_BASE + week;
+
+/* ── Career milestones ────────────────────────────────────────────────────── */
+
+/**
+ * The long game.
+ *
+ * Everything else this game pays out is measured in evenings: a daily resets
+ * overnight, a weekly resets on Monday, a level arrives and is spent. None of
+ * it gives an account a reason to still be here in three months, because none
+ * of it accumulates into anything a player can point at.
+ *
+ * These do. Each one is a threshold on a lifetime counter that only ever goes
+ * up, each pays once, and the set is deliberately front-loaded — the first rung
+ * of every track is inside a first evening, so a new account collects two or
+ * three of them immediately and learns that the list is worth reading. The top
+ * rungs are years of play and are meant to be.
+ *
+ * `stat` names a column on the account's lifetime stats row.
+ */
+export const MILESTONES = [
+  // Kills — the spine of the list.
+  { id: 'k.100',    stat: 'kills',      goal: 100,     name: 'Blooded',        desc: '100 kills',                 gr: 100,  xp: 600 },
+  { id: 'k.500',    stat: 'kills',      goal: 500,     name: 'Regular',        desc: '500 kills',                 gr: 250,  xp: 1800 },
+  { id: 'k.2500',   stat: 'kills',      goal: 2500,    name: 'Hardened',       desc: '2,500 kills',               gr: 700,  xp: 6000 },
+  { id: 'k.10000',  stat: 'kills',      goal: 10000,   name: 'Career Soldier', desc: '10,000 kills',              gr: 2000, xp: 20000 },
+  { id: 'k.25000',  stat: 'kills',      goal: 25000,   name: 'Institution',    desc: '25,000 kills',              gr: 5000, xp: 55000 },
+  // Wins.
+  { id: 'w.10',     stat: 'wins',       goal: 10,      name: 'Winner',         desc: 'Win 10 matches',            gr: 120,  xp: 700 },
+  { id: 'w.100',    stat: 'wins',       goal: 100,     name: 'Habitual',       desc: 'Win 100 matches',           gr: 600,  xp: 5000 },
+  { id: 'w.500',    stat: 'wins',       goal: 500,     name: 'Dynasty',        desc: 'Win 500 matches',           gr: 2400, xp: 24000 },
+  // Precision.
+  { id: 'h.100',    stat: 'headshots',  goal: 100,     name: 'Steady Hand',    desc: '100 headshots',             gr: 150,  xp: 900 },
+  { id: 'h.1000',   stat: 'headshots',  goal: 1000,    name: 'Marksman',       desc: '1,000 headshots',           gr: 800,  xp: 7000 },
+  { id: 'h.5000',   stat: 'headshots',  goal: 5000,    name: 'Surgeon',        desc: '5,000 headshots',           gr: 3000, xp: 30000 },
+  // Turning up.
+  { id: 'm.25',     stat: 'matches',    goal: 25,      name: 'Signed On',      desc: 'Finish 25 matches',         gr: 80,   xp: 500 },
+  { id: 'm.250',    stat: 'matches',    goal: 250,     name: 'Fixture',        desc: 'Finish 250 matches',        gr: 500,  xp: 4200 },
+  { id: 'm.1000',   stat: 'matches',    goal: 1000,    name: 'Landmark',       desc: 'Finish 1,000 matches',      gr: 2200, xp: 22000 },
+  // One very good round.
+  { id: 's.10',     stat: 'bestStreak', goal: 10,      name: 'On A Tear',      desc: 'Reach a 10 killstreak',     gr: 200,  xp: 1200 },
+  { id: 's.15',     stat: 'bestStreak', goal: 15,      name: 'Unanswered',     desc: 'Reach a 15 killstreak',     gr: 500,  xp: 3500 },
+  { id: 's.25',     stat: 'bestStreak', goal: 25,      name: 'Untouchable',    desc: 'Reach a 25 killstreak',     gr: 1500, xp: 12000 },
+  // Damage, and hours.
+  { id: 'd.100k',   stat: 'damage',     goal: 100000,  name: 'Heavy Weather',  desc: 'Deal 100,000 damage',       gr: 300,  xp: 2200 },
+  { id: 'd.1m',     stat: 'damage',     goal: 1000000, name: 'Artillery',      desc: 'Deal 1,000,000 damage',     gr: 1800, xp: 18000 },
+  { id: 't.10h',    stat: 'playtime',   goal: 36000,   name: 'Ten Hours In',   desc: 'Play for 10 hours',         gr: 250,  xp: 1600 },
+  { id: 't.100h',   stat: 'playtime',   goal: 360000,  name: 'A Hundred Hours', desc: 'Play for 100 hours',       gr: 1600, xp: 16000 },
+];
+
+/** How a milestone's target reads: hours for playtime, a plain figure otherwise. */
+export const milestoneProgressText = (m, value) => (m.stat === 'playtime'
+  ? `${Math.floor((value ?? 0) / 3600)} / ${Math.floor(m.goal / 3600)} h`
+  : `${Math.min(value ?? 0, m.goal).toLocaleString('en-GB')} / ${m.goal.toLocaleString('en-GB')}`);
 
 /* ── Coming back tomorrow ─────────────────────────────────────────────────── */
 

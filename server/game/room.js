@@ -106,9 +106,23 @@ export class Room {
     /** When the flash stops holding and the end card comes up. */
     this.nukeEndAt = 0;
     this.nukeStateAcc = 0;
+    /**
+     * Asleep until somebody is in it.
+     *
+     * A room with nobody in it has nothing to simulate, nothing to broadcast
+     * and no match worth recording — it used to run its clock anyway, rotate
+     * maps at four-minute intervals and write a `matches` row every time, so a
+     * server that nobody played on all night still filled the stats with
+     * hundreds of matches that never happened. Eight rooms doing that is eight
+     * tick loops burning CPU on an empty arena.
+     *
+     * A dormant room is still listed and still joinable: `wake()` runs on the
+     * first human through the door and starts a fresh match for them.
+     */
+    this.dormant = true;
     this.loadMap(mapId);
     this.startMatch();
-    logger.info(`room "${id}" (${this.code}) up — ${this.map.name} / ${this.mode.name}`);
+    logger.info(`room "${id}" (${this.code}) up — ${this.map.name} / ${this.mode.name} (idle)`);
   }
 
   /* ── Map & match lifecycle ─────────────────────────────────────────────── */
@@ -141,16 +155,23 @@ export class Room {
   startMatch() {
     this.state = 'live';
     this.matchStart = this.now;
+    /** Wall clock, for the database row this match may or may not deserve. */
+    this.matchStartedAt = Math.floor(Date.now() / 1000);
     this.matchEnd = this.now + this.mode.timeLimit;
     this.teamScore = { [K.TEAM.RED]: 0, [K.TEAM.BLUE]: 0 };
+    /*
+     * No row yet.
+     *
+     * The `matches` table used to get one the moment a room opened a match,
+     * which meant every empty room wrote a row every four minutes for a match
+     * with no players in it — most of the table, on a quiet server. The row is
+     * now written at the *end*, and only when somebody was actually in it, so
+     * "matches played" counts matches that were played.
+     */
     this.matchDbId = null;
     this.matchNumber++;
     this.firstBloodTaken = false;
     this.savedScores.clear();               // a new match starts everyone at zero
-    if (this.hub?.db) {
-      try { this.matchDbId = this.hub.db.matches.start(this.id, this.modeId, this.mapId); }
-      catch (e) { logger.warn('match row failed:', e.message); }
-    }
     this.buildObjectives();
     this.voteOptions = null;
     this.nuke = null;
@@ -363,8 +384,18 @@ export class Room {
     // carries into the next one.
     this.purgeChat();
 
-    this.counters.matches++;
+    /*
+     * Only a match somebody played is a match that happened.
+     *
+     * A dormant room never gets here, but a room that empties out mid-round
+     * still finishes the round it was in the middle of, and a round with
+     * nothing but bots left in it is not a record of anything: no row, no
+     * counter, no journal entry, no payouts.
+     */
     const humans = rows.filter((p) => !p.isBot);
+    if (!humans.length) return;
+
+    this.counters.matches++;
     this.logEvent(null, {
       kind: 'match.end',
       name: winner ?? null,
@@ -391,10 +422,15 @@ export class Room {
     if (!db) return;
     const playedSec = Math.max(0, this.now - this.matchStart);
 
+    // The row is written at the end rather than at the start, so an empty room
+    // can never leave one behind. `matchStartedAt` is the real clock time the
+    // match began, not the time this line runs.
     try {
-      if (this.matchDbId) db.matches.finish(this.matchDbId, winner);
+      this.matchDbId = db.matches.start(this.id, this.modeId, this.mapId, this.matchStartedAt);
+      db.matches.finish(this.matchDbId, winner);
     } catch (e) {
-      logger.warn('match row failed to close:', e.message);
+      this.matchDbId = null;
+      logger.warn('match row failed:', e.message);
     }
 
     for (const p of rows) {
@@ -448,11 +484,30 @@ export class Room {
     // disagree with the number the player watched climb all match.
     let xp = K.xpFromScore(sc.score);
 
-    // Weapon mastery, then the day's challenges. Both are pure progression:
-    // they pay out XP and GR and never touch a number that decides a fight.
+    // Weapon mastery, then the day's and the week's challenges, then whatever
+    // lifetime thresholds this match just carried the account over. All of it
+    // is pure progression: it pays XP and GR and never touches a number that
+    // decides a fight.
     db.mastery.bump(p.userId, p.weaponKills);
     const finished = this.settleChallenges(db, p, won);
     for (const c of finished) { xp += c.xp; gr += c.gr; }
+    /*
+     * After `stats.bump` above, so the thousandth kill pays on the match that
+     * landed it rather than on the one after it.
+     *
+     * In its own try/catch for the same reason every player is settled in one:
+     * this is a bonus on top of a match, and a milestone table that will not
+     * answer must cost the player their milestone, not the match they just
+     * played. The whole payout used to be one block, so one bad row took
+     * everything with it.
+     */
+    let passed = [];
+    try {
+      passed = this.settleMilestones(db, p);
+    } catch (e) {
+      logger.warn(`milestones failed for ${p.name}:`, e.message);
+    }
+    for (const m of passed) { xp += m.xp; gr += m.gr; }
 
     // Two bonuses that only exist to make tomorrow worth showing up for. Both
     // are claimed here rather than at login, so what they pay for is playing a
@@ -498,6 +553,9 @@ export class Room {
       totalXp: prog?.xp ?? null,
       totalGr: prog?.gr ?? null,
       challenges: finished.map((c) => ({ id: c.id, name: c.name, xp: c.xp, gr: c.gr })),
+      // Listed apart from the challenges: a milestone is a career line, not a
+      // daily, and the card says so rather than burying it among three dailies.
+      milestones: passed.map((m) => ({ id: m.id, name: m.name, desc: m.desc, xp: m.xp, gr: m.gr })),
       mastery: [...p.weaponKills.entries()].map(([id, n]) => ({ id, kills: n })),
       streak: { days: streak.streak, best: streak.best, fresh: streak.fresh, xp: streak.xp, gr: streak.gr },
       // What tomorrow is worth, on the card at the moment somebody is deciding
@@ -509,14 +567,15 @@ export class Room {
   }
 
   /**
-   * Rolls the match's contribution into today's challenges and returns the ones
-   * that just completed.
+   * What this match contributed, in the units every challenge is counted in.
+   *
+   * One object, shared by the dailies and the weeklies, because a kill is a
+   * kill on both boards and two functions that disagreed about that would be a
+   * bug waiting for somebody to notice.
    */
-  settleChallenges(db, p, won) {
-    const day = K.dayIndex();
-    const list = K.dailyChallenges(day);
+  challengeSource(p, won) {
     const sc = p.score;
-    const source = {
+    return {
       kills: sc.kills, headshots: sc.headshots, assists: sc.assists,
       midairs: sc.midairs, noscopes: sc.noscopes, drifts: sc.drifts, melees: sc.melees,
       longshots: sc.longshots, score: Math.max(0, sc.score), damage: Math.round(sc.damage),
@@ -524,9 +583,18 @@ export class Room {
       // A streak challenge is pass/fail per match rather than cumulative.
       bestStreak: 0,
     };
+  }
 
+  /**
+   * Rolls the match into one period's challenges and returns what completed.
+   *
+   * Dailies and weeklies are the same machinery over the same table: only the
+   * period number and the list differ. See `K.weeklyPeriod` for why a week's
+   * number is pushed above a million.
+   */
+  settlePeriod(db, p, period, list, source, sc) {
     const before = new Map();
-    for (const row of db.challenges.forUser(p.userId, day)) before.set(row.id, row);
+    for (const row of db.challenges.forUser(p.userId, period)) before.set(row.id, row);
 
     const deltas = {};
     for (const c of list) {
@@ -536,13 +604,59 @@ export class Room {
       if (d > 0) deltas[c.id] = d;
     }
     if (!Object.keys(deltas).length) return [];
-    db.challenges.bump(p.userId, day, deltas);
+    db.challenges.bump(p.userId, period, deltas);
 
     const done = [];
-    for (const row of db.challenges.forUser(p.userId, day)) {
+    for (const row of db.challenges.forUser(p.userId, period)) {
       const c = list.find((x) => x.id === row.id);
       if (!c || row.claimed || row.progress < c.goal) continue;
-      if (db.challenges.claim(p.userId, day, c.id)) done.push(c);
+      if (db.challenges.claim(p.userId, period, c.id)) done.push(c);
+    }
+    return done;
+  }
+
+  /**
+   * Both boards, in one call.
+   *
+   * Weeklies are what a daily cannot be: a goal that survives the night. A
+   * daily is worth one evening and is gone whether or not it was finished,
+   * which makes it useless to somebody who plays twice a week — the target
+   * resets before they can reach it, so there is never anything to come back
+   * *to*. A week's worth of progress is.
+   */
+  settleChallenges(db, p, won) {
+    const day = K.dayIndex();
+    const week = K.weekIndex();
+    const source = this.challengeSource(p, won);
+    return [
+      ...this.settlePeriod(db, p, day, K.dailyChallenges(day), source, p.score),
+      ...this.settlePeriod(db, p, K.weeklyPeriod(week), K.weeklyChallenges(week), source, p.score),
+    ];
+  }
+
+  /**
+   * Career milestones the account has just crossed.
+   *
+   * Read off the lifetime stats row *after* this match has been added to it, so
+   * the thousandth kill pays on the match that landed it rather than the one
+   * after. Each is claimed through a primary key rather than a check-then-write,
+   * which is what stops two matches ending at the same instant paying the same
+   * one twice.
+   */
+  settleMilestones(db, p) {
+    const stats = db.stats.get?.(p.userId);
+    if (!stats || !db.milestones) return [];
+    const value = {
+      kills: stats.kills, wins: stats.wins, headshots: stats.headshots,
+      matches: stats.matches, bestStreak: stats.best_streak,
+      damage: stats.damage_dealt, playtime: stats.playtime_sec,
+    };
+    const already = new Set(db.milestones.claimedFor(p.userId));
+    const done = [];
+    for (const m of K.MILESTONES) {
+      if (already.has(m.id)) continue;
+      if ((value[m.stat] ?? 0) < m.goal) continue;
+      if (db.milestones.claim(p.userId, m.id)) done.push(m);
     }
     return done;
   }
@@ -676,6 +790,17 @@ export class Room {
 
   /** Humans actually playing. Spectators watching from the menu don't count. */
   get playerCount() { if (this._rosterDirty) this._refreshRoster(); return this._counts.players; }
+  /**
+   * Everybody in the room who is not a bot — seated or watching.
+   *
+   * This, and not `playerCount`, is what decides whether the room runs: a
+   * spectator is a person looking at the arena, and an arena that stopped
+   * moving underneath them would be a bug rather than a saving.
+   */
+  get humanCount() {
+    if (this._rosterDirty) this._refreshRoster();
+    return this._counts.players + this._counts.spectators;
+  }
   get botCount() { if (this._rosterDirty) this._refreshRoster(); return this._counts.bots; }
   get spectatorCount() { if (this._rosterDirty) this._refreshRoster(); return this._counts.spectators; }
   get isFull() { return this.playerCount >= config.maxPlayersPerRoom; }
@@ -688,9 +813,64 @@ export class Room {
    */
   get roster() { if (this._rosterDirty) this._refreshRoster(); return this._roster; }
 
+  /* ── Sleeping and waking ───────────────────────────────────────────────
+     A room only simulates while somebody is in it. Everything below is about
+     the two moments that changes: the first person through the door, and the
+     last one out. ─────────────────────────────────────────────────────── */
+
+  /**
+   * Somebody arrived: start a match for them.
+   *
+   * Whatever clock the room was carrying when it went to sleep is thrown away.
+   * Handing an arrival forty seconds of a match that nobody played is worse
+   * than handing them a fresh one, and a stale intermission would sit them in
+   * front of an end card for a match that never happened.
+   */
+  wake() {
+    if (!this.dormant) return;
+    this.dormant = false;
+    this.savedScores.clear();
+    this.startMatch();
+    // Staffed here rather than at the next housekeeping pass: bots exist so
+    // that somebody walking into a quiet room has something to shoot at, and
+    // five seconds of empty arena is exactly the first impression they are for.
+    if (this.mode.practice) this.fillBots(config.practiceBots);
+    else if (config.botsEnabled) this.fillBots(config.botCount);
+    logger.info(`room "${this.id}" (${this.code}) woke up`);
+  }
+
+  /**
+   * The last person left: stop.
+   *
+   * The match in progress is abandoned rather than ended. It has no row to
+   * close — rows are written by `persistMatch`, at the end, only for matches
+   * somebody played — and nobody is left to pay, because a player's scorecard
+   * is parked by `remove` the moment they go.
+   */
+  sleep() {
+    if (this.dormant) return;
+    this.dormant = true;
+    this.fillBots(0);
+    this.nuke = null;
+    this.nukeEndAt = 0;
+    this.projectiles.length = 0;
+    this.purgeChat();
+    logger.info(`room "${this.id}" (${this.code}) went idle — nobody left in it`);
+  }
+
+  /** Re-checks the two membership facts that decide whether the room runs. */
+  settleOccupancy() {
+    if (this.humanCount > 0) this.wake();
+    else this.sleep();
+  }
+
   add(player) {
     this.players.set(player.id, player);
     this.invalidateRoster();
+    // Before anything else: a dormant room has a stale clock and a stale
+    // scoreboard, and seating somebody into either would show them a match
+    // that was over before they arrived.
+    if (!player.isBot) this.wake();
     // A spectator is just a socket watching the map from the menu: no spawn,
     // no announcement, invisible to everyone in the match.
     if (player.spectator) return player;
@@ -884,7 +1064,12 @@ export class Room {
     if (this.nuke && this.nuke.by === playerId) this.cancelNuke('the caller left');
     this.players.delete(playerId);
     this.invalidateRoster();
-    if (p.spectator) return;                    // never joined the match
+    if (p.spectator) {                          // never joined the match
+      // …but a watcher is still a person in the room, and the last one out
+      // turns the lights off exactly like the last player does.
+      if (!p.isBot && this.humanCount === 0) this.sleep();
+      return;
+    }
     // Park the scorecard: a disconnect or a trip through the menu must not
     // cost anyone the match they are in the middle of.
     if (!p.isBot && this.state === 'live') {
@@ -897,6 +1082,7 @@ export class Room {
     if (!p.isBot) {
       this.counters.leaves++;
       this.pushSystemChat(`${p.name} left`);
+      if (this.humanCount === 0) this.sleep();
     }
   }
 
@@ -2193,6 +2379,10 @@ export class Room {
   /* ── Simulation ────────────────────────────────────────────────────────── */
 
   tick(dt) {
+    // Nobody in it: no clock, no physics, no projectiles, no map rotation and
+    // no match to record. This is the whole of what "the room list scales with
+    // the player count" means for a room that is listed but empty.
+    if (this.dormant) return;
     this.now += dt;
 
     for (const p of this.players.values()) {
@@ -2321,6 +2511,7 @@ export class Room {
    * room instead of 512, and the room list is no longer a fixed eight.
    */
   sendSnapshots() {
+    if (this.dormant) return;            // nobody to send to, nothing to say
     const roster = this.roster;
     const ids = this._snapIds ?? (this._snapIds = []);
     const parts = this._snapParts ?? (this._snapParts = []);
@@ -2385,9 +2576,15 @@ export class Room {
 
   /* ── Bots ──────────────────────────────────────────────────────────────── */
 
-  /** Keeps roughly `target` bots in the room, capped by the player limit. */
+  /**
+   * Keeps roughly `target` bots in the room, capped by the player limit.
+   *
+   * A dormant room is staffed by nobody: bots exist so that a player who walks
+   * into a quiet room has something to shoot at, and there is no such player.
+   */
   fillBots(target) {
-    const want = Math.max(0, Math.min(target, config.maxPlayersPerRoom - this.playerCount));
+    const wanted = this.dormant ? 0 : target;
+    const want = Math.max(0, Math.min(wanted, config.maxPlayersPerRoom - this.playerCount));
     let bots = this.botCount;
     while (bots < want) { this.addBot(); bots++; }
     while (bots > want) {
@@ -2415,7 +2612,9 @@ export class Room {
       mode: this.modeId, modeName: this.mode.name,
       players: this.playerCount, bots: this.botCount,
       capacity: config.maxPlayersPerRoom,
-      phase: this.state,
+      // Listed and joinable, but not simulating: nobody is in it.
+      idle: this.dormant,
+      phase: this.dormant ? 'idle' : this.state,
       endsIn: Math.max(0, Math.round(this.matchEnd - this.now)),
       teamScore: this.mode.teams ? { red: this.teamScore[K.TEAM.RED], blue: this.teamScore[K.TEAM.BLUE] } : null,
       mapSize: this.map.size,

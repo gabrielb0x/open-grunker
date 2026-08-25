@@ -74,10 +74,19 @@
         <button class="btn" id="btnStatReload">REFRESH</button>
       </div>
 
-      <!-- Right now -->
+      <!-- ── Right now ──────────────────────────────────────────────────
+           Eight figures on a four-across block, so they read as two rows of
+           four rather than as one long smear of numbers whose count changes
+           with the width of the window. -->
+      <h3 class="stats-section">RIGHT NOW<small>the live server, this second</small></h3>
       <div class="tile-grid" id="statTiles"></div>
 
-      <!-- Who is here -->
+      <!-- ── Who is here ────────────────────────────────────────────────
+           Every section below fills its row exactly: the grid is four columns
+           wide and each card declares how many of them it takes, so no
+           section ends on a lone card stretched across the page and the cards
+           in one section line up with the cards in every other. -->
+      <h3 class="stats-section">WHO IS HERE<small>seats, watchers and the rooms holding them</small></h3>
       <div class="card-grid">
         <article class="chart-card wide">
           <header><h3>PLAYERS ONLINE</h3>
@@ -89,7 +98,7 @@
 
         <article class="chart-card">
           <header><h3>ROOMS</h3>
-            <p>The floor never moves; everything above it is opened and closed by demand.</p>
+            <p>Live rooms carry players; idle ones are listed but not simulated.</p>
             <div class="legend-host" id="lgRooms"></div>
           </header>
           <div class="chart-host" id="chRooms"></div>
@@ -103,11 +112,12 @@
         </article>
       </div>
 
-      <!-- What they did -->
+      <!-- ── What they did ─────────────────────────────────────────────── -->
+      <h3 class="stats-section">WHAT THEY DID<small>combat, per sampling interval</small></h3>
       <div class="card-grid">
         <article class="chart-card wide">
           <header><h3>COMBAT</h3>
-            <p>Per sampling interval. Kills and headshots share an axis because they are the same unit — nothing here is ever plotted against a second scale.</p>
+            <p>Kills and headshots share an axis because they are the same unit — nothing here is ever plotted against a second scale.</p>
             <div class="legend-host" id="lgCombat"></div>
           </header>
           <div class="chart-host" id="chCombat"></div>
@@ -122,13 +132,14 @@
 
         <article class="chart-card">
           <header><h3>MATCHES FINISHED</h3>
-            <p>One bar per bucket, from the match rows themselves.</p>
+            <p>One bar per bucket. Matches nobody played are not recorded at all.</p>
           </header>
           <div class="chart-host" id="chMatches"></div>
         </article>
       </div>
 
-      <!-- Accounts -->
+      <!-- ── Accounts ──────────────────────────────────────────────────── -->
+      <h3 class="stats-section">ACCOUNTS<small>who signed up, who came back</small></h3>
       <div class="card-grid">
         <article class="chart-card">
           <header><h3>NEW ACCOUNTS</h3>
@@ -144,7 +155,7 @@
           <div class="chart-host" id="chLogins"></div>
         </article>
 
-        <article class="chart-card">
+        <article class="chart-card wide">
           <header><h3>PLAYERS WHO FINISHED A MATCH</h3>
             <p>Distinct accounts per day — the only honest version of "active".</p>
           </header>
@@ -152,7 +163,8 @@
         </article>
       </div>
 
-      <!-- Retention & the ladder -->
+      <!-- ── Retention & the ladder ────────────────────────────────────── -->
+      <h3 class="stats-section">RETENTION &amp; THE LADDER<small>whether any of it is working</small></h3>
       <div class="card-grid">
         <article class="chart-card">
           <header><h3>RETENTION</h3>
@@ -161,7 +173,7 @@
           <div class="meter-list" id="stRetention"></div>
         </article>
 
-        <article class="chart-card">
+        <article class="chart-card wide">
           <header><h3>THE LADDER</h3>
             <p>How the population is spread across the levels, in bands of five.</p>
           </header>
@@ -176,7 +188,8 @@
         </article>
       </div>
 
-      <!-- What gets played -->
+      <!-- ── What gets played ──────────────────────────────────────────── -->
+      <h3 class="stats-section">WHAT GETS PLAYED<small>maps, modes and classes</small></h3>
       <div class="card-grid">
         <article class="chart-card">
           <header><h3>MAPS PLAYED</h3><p>Matches started, by level.</p></header>
@@ -188,7 +201,7 @@
           <div class="chart-host" id="chModes"></div>
         </article>
 
-        <article class="chart-card">
+        <article class="chart-card wide">
           <header><h3>CLASSES</h3>
             <p>Pick rate says what is popular; the win rate beside it says whether that is a problem.</p>
           </header>
@@ -196,7 +209,8 @@
         </article>
       </div>
 
-      <!-- When they play, and how the machine held up -->
+      <!-- ── When they play, and how the machine held up ───────────────── -->
+      <h3 class="stats-section">THE MACHINE<small>when it is busy, and what that costs</small></h3>
       <div class="card-grid">
         <article class="chart-card wide">
           <header><h3>BUSIEST HOURS (UTC)</h3>
@@ -219,7 +233,8 @@
         </article>
       </div>
 
-      <!-- The journal -->
+      <!-- ── The journal ──────────────────────────────────────────────── -->
+      <h3 class="stats-section">THE JOURNAL<small>the things that happened once</small></h3>
       <div class="card-grid">
         <article class="chart-card">
           <header><h3>WHAT HAPPENED</h3>
@@ -228,7 +243,7 @@
           <div class="chart-host" id="chEventMix"></div>
         </article>
 
-        <article class="chart-card wide">
+        <article class="chart-card wider">
           <header><h3>EVENT LOG</h3>
             <p>The things that happened once, newest first.</p>
           </header>

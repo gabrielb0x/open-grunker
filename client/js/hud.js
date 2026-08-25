@@ -340,21 +340,30 @@ export class Hud {
   update(state, dt) {
     const { health, ammo, reserve, weapon, slot, reloading, reloadFrac, spread, scoped,
       matchTime, teamScore, teamMode, ping, name, level, verified, speed, accuracy,
-      hideCrosshair = false } = state;
+      hideCrosshair = false, hasBody = true } = state;
 
     // Health, with a ghost bar that drains behind the real one after a hit.
     const pct = Math.max(0, Math.min(100, health));
     this._style(this.el.hpFill, 'hp.w', 'width', `${pct}%`);
     this._className(this.el.hpFill, 'hp.cls', pct <= 25 ? 'crit' : pct <= 55 ? 'low' : '');
-    this._text(this.el.hpNum, 'hp.num', Math.ceil(pct));
+    this._text(this.el.hpNum, 'hp.num', hasBody ? Math.ceil(pct) : '\u2014');
     if (pct > this.ghostHealth) this.ghostHealth = pct;
     else this.ghostHealth += (pct - this.ghostHealth) * Math.min(1, dt * 3.2);
     // The ghost drains continuously, so it is quantised: a bar 280px wide has
     // no more than 280 distinct widths, and writing four decimals of a percent
     // sixty times a second only ever repainted the same pixels.
     this._style(this.el.hpGhost, 'hp.ghost', 'width', `${Math.max(pct, this.ghostHealth).toFixed(1)}%`);
+    /*
+     * The red edges of nearly dying — and only of nearly dying.
+     *
+     * `hasBody` is false for a spectator whose camera has nobody to sit on:
+     * between matches, or with everybody down at once. There is no health to
+     * read there, and reading the zero it defaults to used to paint the whole
+     * screen red for a watcher who was not in any danger because they were not
+     * in the match.
+     */
     this._style(this.el.lowHealth, 'hp.low', 'opacity',
-      pct <= 35 ? Math.min(0.85, (35 - pct) / 30).toFixed(2) : '0');
+      hasBody && pct <= 35 ? Math.min(0.85, (35 - pct) / 30).toFixed(2) : '0');
 
     // Ammo — reserves are unlimited, so the second number is a symbol.
     this._text(this.el.ammoMag, 'ammo.mag', weapon?.melee ? '∞' : ammo);
@@ -363,18 +372,21 @@ export class Hud {
     this._toggle(this.el.ammoWrap, 'ammo.empty', 'empty', !weapon?.melee && ammo === 0);
     this._text(this.el.weaponName, 'weapon.name',
       WEAPON_LABEL[weapon?.id] ?? (weapon?.name ?? '').toUpperCase());
-    this._toggle(this.el.reloadHint, 'reload.hidden', 'hidden', !reloading);
-    if (reloading) {
-      this._style(this.el.reloadFill, 'reload.w', 'width', `${Math.round((reloadFrac ?? 0) * 100)}%`);
-    }
+    // `on` rather than `hidden`: the row keeps its place in the panel whether it
+    // is drawn or not, so a reload cannot resize the box around it.
+    this._toggle(this.el.reloadHint, 'reload.on', 'on', !!reloading);
+    this._style(this.el.reloadFill, 'reload.w', 'width',
+      reloading ? `${Math.round((reloadFrac ?? 0) * 100)}%` : '0%');
     if (this._dom['slot.active'] !== slot) {
       this._dom['slot.active'] = slot;
       for (const s of this.el.slots) s.classList.toggle('active', Number(s.dataset.slot) === slot);
     }
 
-    this._text(this.el.playerNameTag, 'me.name', name ?? 'Guest');
-    this._toggle(this.el.playerVerified, 'me.verified', 'hidden', !verified);
-    this._text(this.el.playerLevel, 'me.level', `LVL ${level ?? 1}`);
+    // With no body under the camera the panel says why rather than drawing a
+    // level-1 nobody on zero health.
+    this._text(this.el.playerNameTag, 'me.name', hasBody ? (name ?? 'Guest') : 'NOBODY ALIVE');
+    this._toggle(this.el.playerVerified, 'me.verified', 'hidden', !verified || !hasBody);
+    this._text(this.el.playerLevel, 'me.level', hasBody ? `LVL ${level ?? 1}` : '');
 
     // Speedometer, for anyone learning the movement.
     if (settings.showSpeed) {
@@ -774,10 +786,10 @@ export class Hud {
 
   /** The two switches the spectator bar owns, kept honest in both places. */
   setSpectatorView({ firstPerson = true, xray = false } = {}) {
-    if (this.el.specViewLabel) this.el.specViewLabel.textContent = firstPerson ? 'FIRST PERSON' : 'THIRD PERSON';
-    if (this.el.specXrayLabel) this.el.specXrayLabel.textContent = xray ? 'X-RAY ON' : 'X-RAY OFF';
-    $('btnSpecXray')?.classList.toggle('on', !!xray);
-    $('btnSpecView')?.classList.toggle('on', !firstPerson);
+    this._text(this.el.specViewLabel, 'spec.view', firstPerson ? 'FIRST PERSON' : 'THIRD PERSON');
+    this._text(this.el.specXrayLabel, 'spec.xray', xray ? 'X-RAY ON' : 'X-RAY OFF');
+    this._toggle($('btnSpecXray'), 'spec.xrayOn', 'on', !!xray);
+    this._toggle($('btnSpecView'), 'spec.viewOn', 'on', !firstPerson);
   }
 
   /* ── Death & match ─────────────────────────────────────────────────────── */
@@ -871,7 +883,8 @@ export class Hud {
     this.el.meGuest?.classList.add('hidden');
     this.el.meRewards.innerHTML = `<span class="me-reward-line">${escapeHtml(text)}</span>`
       + (challenges ?? []).map((c) => `
-        <span class="me-challenge">✔ ${escapeHtml(c.name)} <i>+${c.xp} XP · +${c.gr} GR</i></span>`).join('')
+        <span class="me-challenge${c.career ? ' career' : ''}">${c.career ? '★' : '✔'} ${
+        escapeHtml(c.name)} <i>+${fmtNum(c.xp)} XP · +${fmtNum(c.gr)} GR</i></span>`).join('')
       // Drawn in its own register: everything to its left was earned, this is
       // an offer, and a card that let the two look alike would be selling.
       + (tomorrow ? `<span class="me-tomorrow">${escapeHtml(tomorrow)}</span>` : '');

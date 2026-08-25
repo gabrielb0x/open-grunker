@@ -17,7 +17,7 @@
  * wrote it: what they can now do, or what stopped going wrong.
  */
 
-export const GAME_VERSION = '1.5.0';
+export const GAME_VERSION = '1.6.0';
 
 export const PATCH_KINDS = {
   new: { label: 'NEW', color: '#4ddb7a' },
@@ -26,6 +26,26 @@ export const PATCH_KINDS = {
 };
 
 export const PATCH_NOTES = [
+  {
+    version: '1.6.0',
+    date: '2026-08-25',
+    title: 'Two-factor authentication, a career worth having, weekly challenges — and a server that stops running matches nobody is in',
+    changes: [
+      { kind: 'new', text: 'Two-factor authentication. Turn it on under ACCOUNT \u25b8 SECURITY, scan the code with any authenticator app, and signing in asks for six digits as well as your password. Ten single-use recovery codes come with it for the day the phone is gone. The QR code is drawn on your own machine \u2014 nothing about your secret is ever sent anywhere to make a picture of it.' },
+      { kind: 'new', text: 'Career milestones. Twenty-one lifetime goals \u2014 kills, wins, headshots, matches, killstreaks, damage, hours \u2014 each paid once, each worth real GR and XP. The first few land on your first evening; the last ones are years away. They are on the CHALLENGES tab, closest first, and they are named on the end-of-match card when you cross one.' },
+      { kind: 'new', text: 'Weekly challenges. Three a week alongside the three a day, resetting Monday morning and worth several evenings each. A daily is gone by morning whether or not you finished it, which makes it useless if you play twice a week; a week\u2019s progress is still there when you come back.' },
+      { kind: 'change', text: 'Levelling is much slower, right across the ladder. A match pays its score back as XP one for one and a good round is a couple of thousand points \u2014 which put level 10 inside two matches and level 50 inside a hundred. Level 10 is now an evening, level 30 is weeks and level 50 is a long way past that. Nobody lost a level they had already earned: every account was topped up to exactly what the level on its card now costs. Levels pay about three times as much GR to match.' },
+      { kind: 'change', text: 'The server stops simulating rooms nobody is in. A quiet night used to run every room\u2019s clock anyway \u2014 rotating maps every four minutes and writing a match record every time \u2014 so most of the match history was rounds that nobody played. Rooms now sleep until somebody walks in and go back to sleep behind the last person out. They are still listed and still joinable.' },
+      { kind: 'change', text: 'Matches with no players in them do not count. Nothing empty is recorded, paid out or graphed, so \u201cmatches played\u201d finally means matches that were played.' },
+      { kind: 'change', text: 'The room list scales against the number of people actually here, not against the ceiling. A brief rush can no longer leave a quiet server carrying a dozen rooms.' },
+      { kind: 'fix', text: 'The ammo panel in the bottom-right corner stops changing size. Reloading used to make it jump a line taller and 150 pixels wider, then jump back when the reload finished.' },
+      { kind: 'fix', text: 'The interface no longer falls apart in spectator mode. The health panel jumped out of its corner and landed on top of the match clock the moment you started watching, the spectator bar ran off both edges of a narrow window, and with nobody alive to watch the screen turned red as though you were dying.' },
+      { kind: 'fix', text: 'Your clan tag is on your account card in the top-left of the menu. It was drawn everywhere else and missing there.' },
+      { kind: 'fix', text: 'A verified clan is gold in the admin panel\u2019s player list, the way it is everywhere else.' },
+      { kind: 'change', text: 'The admin panel\u2019s STATS tab is readable. Seventeen charts in one undifferentiated column, each row a different width from the row above it, is now six named sections on one four-column grid \u2014 so every card lines up with every other card, and you can find the thing you came for.' },
+      { kind: 'change', text: 'The STATS tab counts rooms that have somebody in them, rather than rooms that exist.' },
+    ],
+  },
   {
     version: '1.5.0',
     date: '2026-08-25',

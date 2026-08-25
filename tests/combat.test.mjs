@@ -11,6 +11,9 @@ import { suite, check, info } from './harness.mjs';
 
 export default function run() {
   const room = new Room({ id: 'test-combat', mapId: 'subzero', modeId: 'ffa' });
+  // Rooms open dormant. These bodies are placed straight into the map rather
+  // than seated through `add`, so nothing here has woken it.
+  room.wake();
   room.broadcast = room.broadcastNear = () => {};
   const events = [];
   room.sendTo = (p, m) => { if (m.o === K.S2C.HIT) events.push(m); };
