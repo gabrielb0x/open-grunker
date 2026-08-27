@@ -30,7 +30,7 @@
  */
 import * as THREE from 'three';
 import { SKINS, gloveColor } from '/shared/weapons.js';
-import { buildWeaponMesh, skinnedBoxGeometry } from './gunskin.js';
+import { buildWeaponMesh, collapseStatic, skinnedBoxGeometry } from './gunskin.js';
 import { settings } from './settings.js';
 
 /** Where the gun rests when hip-firing, before per-weapon and per-player offsets. */
@@ -214,7 +214,10 @@ function buildArm({ pose, side, glove, tiltX = 1.3, tiltY = 0.4 }) {
   bone(fore, m.sleeve, side, 0.094, 0.098, 0.18, 0, 0, 0.3);
   bone(fore, m.cuff, side, 0.098, 0.03, 0.085, 0, 0.05, 0.27);
   g.add(fore);
-  return g;
+  // Nothing on a hand moves once it is built: the fingers are placed on the
+  // grip and stay there. Welding the dozen boxes into four meshes takes the
+  // pair of arms from roughly thirty draw calls a frame to eight.
+  return collapseStatic(g);
 }
 
 /** Which hand shape holds what. */
@@ -319,7 +322,10 @@ export class ViewModel {
     const scale = model.scale ?? 1;
     const glove = gloveColor(skin);
 
-    const primary = buildWeaponMesh(def, skin);
+    // Everything but the moving parts is welded into one mesh per material —
+    // about forty draw calls a frame back, on the one object that is on screen
+    // for the whole match. `_applyTagged` still gets its own magazine.
+    const primary = buildWeaponMesh(def, skin, { collapse: 'static' });
     for (const [tag, mesh] of primary.userData.tagged) {
       if (!this.tagged[tag]) continue;
       this.tagged[tag].push(mesh);
@@ -352,7 +358,8 @@ export class ViewModel {
     }
 
     if (def.akimbo) {
-      this.gunB = buildWeaponMesh(def, skin);
+      // The off hand's gun is never animated — only the primary registers tags.
+      this.gunB = buildWeaponMesh(def, skin, { collapse: 'all' });
       this.gunB.scale.setScalar(scale);
       this.root.add(this.gunB);
       // The second gun carries its own hand, so the pair reads as two weapons

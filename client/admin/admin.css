@@ -332,6 +332,18 @@ table.list tr.unread td { background: rgba(255, 176, 46, .045); }
 .tag.open { border-color: rgba(255, 176, 46, .5); color: var(--accent); background: rgba(255, 176, 46, .1); }
 .tag.actioned { border-color: rgba(63, 224, 138, .42); color: var(--green); background: rgba(63, 224, 138, .09); }
 .tag.rejected { border-color: var(--line-2); color: var(--dim); }
+/* Somebody with no account, on the list only while their socket is open. */
+.tag.guest { border-color: rgba(126, 178, 255, .45); color: #7eb2ff; background: rgba(126, 178, 255, .1); }
+.tag.live { border-color: rgba(63, 224, 138, .42); color: var(--green); background: rgba(63, 224, 138, .09); }
+
+/* A guest row is a live connection sitting above the accounts, so it is drawn
+   as one: a cool rule down its edge, and an id column that says so. */
+table.list tr.guest td:first-child {
+  box-shadow: inset 3px 0 0 rgba(126, 178, 255, .55);
+  font-size: 9px; letter-spacing: .14em; color: #7eb2ff; text-transform: uppercase;
+}
+/* Selection still has to be the loudest thing on the row. */
+table.list tr.guest.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 
 .pager {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;

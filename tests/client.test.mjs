@@ -35,6 +35,7 @@ const {
 } = await import('/js/settings.js');
 const { surfaceTexture, SURFACE_TILE, SURFACE_SHADING } = await import('/js/textures.js');
 const { GameWorld } = await import('/js/world.js');
+const { collapseStatic, skinnedBoxGeometry } = await import('/js/gunskin.js');
 const { Menu } = await import('/js/menu.js');
 // Only the class: the boot at the bottom of main.js runs on DOMContentLoaded,
 // which this shim never fires, so importing it builds no game.
@@ -948,6 +949,46 @@ export default async function run() {
     }
   })());
 
+  check('the player card reads across, not down', await (async () => {
+    /*
+     * It used to be a 400px column: hero, then twelve stat tiles, then the
+     * match list, all stacked, in a card that `.modal-card` was quietly
+     * overriding the width of. The layout is now a hero band with the figures
+     * beside the name and two columns under it — so what is checked here is
+     * that both columns are actually built, and that the card is the wide one.
+     */
+    const real = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        user: {
+          username: 'Vole', level: 12, xp: 4200, levelXp: 4000, nextLevelXp: 5000,
+          verified: false, clan: null, clanVerified: false, role: 'player',
+          createdAt: 1740000000, avatar: null,
+          stats: { score: 900, kills: 40, deaths: 20, kd: 2, headshots: 5, accuracy: 30,
+            wins: 3, matches: 9, bestStreak: 6, damage: 4000, assists: 7, playtime: 3600 },
+        },
+        recent: [{ map: 'Burgtown', mode: 'ffa', kills: 9, deaths: 2, score: 900, won: 1, started_at: 1 }],
+      }),
+    });
+    try {
+      await menu.openPlayerCard('Vole');
+      const card = document.getElementById('playerCard');
+      const html = document.getElementById('playerCardBody').innerHTML;
+      const cols = document.getElementById('playerCardBody').querySelectorAll('.pc-col').length;
+      const figures = document.getElementById('playerCardBody').querySelectorAll('.pc-big').length;
+      menu.closePlayerCard();
+      info(`${cols} columns · ${figures} headline figures · ${html.length}b`);
+      return cols === 2 && figures === 3
+        && card.querySelector('.pc-card').className.includes('modal-card')
+        && html.includes('pc-hero') && html.includes('pcm-row won');
+    } finally {
+      globalThis.fetch = real;
+    }
+  })());
+
   check('a nickname anywhere opens the same player card', (() => {
     // The card is opened by one delegated listener, so this also proves a name
     // rendered after the listener was installed still works.
@@ -1511,6 +1552,97 @@ export default async function run() {
     gfx.render(1 / 60, null);
     return renderer.draws === 1;
   })(), `${renderer.draws} draw pass`);
+
+  check('bloom at zero costs nothing at all', (() => {
+    // The bright pass and the two blurs exist to feed one texture read. With
+    // the slider at zero that read is compiled out, so the passes behind it
+    // have nothing left to produce.
+    gfx.post.enabled = true;
+    gfx.post.configure({ enabled: true, quality: 'high', bloom: 0 });
+    renderer.draws = 0;
+    gfx.render(1 / 60, null);
+    const off = renderer.draws;
+    gfx.post.configure({ enabled: true, quality: 'high', bloom: 0.62 });
+    renderer.draws = 0;
+    gfx.render(1 / 60, null);
+    info(`${off} passes without bloom, ${renderer.draws} with`);
+    return off === 2 && renderer.draws === 5 && 'OG_BLOOM' in gfx.post.compositeMat.defines;
+  })());
+
+  check('welding an assembly moves nothing — only the number of draw calls', (() => {
+    /*
+     * The gun and the hands are dozens of little boxes, none of which moves
+     * relative to its neighbours, so they are baked into one buffer per
+     * material at build time. What has to hold is that the bake is a pure
+     * change of representation: the same triangles, in the same places.
+     *
+     * Checked on a nested, rotated, offset hierarchy — which is what a hand
+     * is, and where a transform composed in the wrong order would show up.
+     */
+    const built = () => {
+      const root = new THREE.Group();
+      const mat = new THREE.MeshBasicMaterial({ color: 0x888888 });
+      const other = new THREE.MeshBasicMaterial({ color: 0x224466 });
+      for (let i = 0; i < 3; i++) {
+        const m = new THREE.Mesh(skinnedBoxGeometry(0.1 + i * 0.02, 0.08, 0.3), i === 1 ? other : mat);
+        m.position.set(0.04 * i, -0.1, 0.07 * i);
+        m.rotation.set(0.3 * i, -0.2 * i, 0.15);
+        root.add(m);
+      }
+      const wrist = new THREE.Group();
+      wrist.position.set(0.03, -0.1, 0.07);
+      wrist.rotation.set(1.3, 0.4, 0);
+      for (let i = 0; i < 4; i++) {
+        const m = new THREE.Mesh(skinnedBoxGeometry(0.09, 0.09, 0.17), mat);
+        m.position.set(0, 0.05 * i, 0.03 + i * 0.1);
+        wrist.add(m);
+      }
+      root.add(wrist);
+      return root;
+    };
+
+    const loose = built();
+    const welded = collapseStatic(built());
+    const box = (o) => { o.updateMatrixWorld(true); return new THREE.Box3().setFromObject(o); };
+    const a = box(loose), b = box(welded);
+    const drift = Math.max(...['x', 'y', 'z'].flatMap((k) =>
+      [Math.abs(a.min[k] - b.min[k]), Math.abs(a.max[k] - b.max[k])]));
+    const tris = (o) => { let n = 0; o.traverse((x) => { if (x.isMesh) n += x.geometry.index.count / 3; }); return n; };
+    const meshes = (o) => { let n = 0; o.traverse((x) => { if (x.isMesh) n++; }); return n; };
+    info(`${meshes(loose)} meshes → ${meshes(welded)} · drift ${drift.toExponential(1)} units`);
+    return drift < 1e-5 && tris(loose) === tris(welded) && meshes(welded) === 2;
+  })());
+
+  check('the sky is drawn after the world it sits behind', (() => {
+    // Drawn first it shaded a full screen of texture that the level then
+    // covered; last, with the depth test on and no depth write of its own, it
+    // only fills the pixels nothing else reached.
+    gfx.setMap(getMap('burgtown'));
+    const dome = gfx.skyDome;
+    return dome.renderOrder > 0 && dome.material.depthWrite === false
+      && dome.material.depthTest !== false;
+  })(), `renderOrder ${gfx.skyDome?.renderOrder}`);
+
+  check('the shadow map redraws on a clock, not on every frame', (() => {
+    /*
+     * The shadow pass draws the whole level a second time. It is armed by
+     * hand at the quality preset's rate, so a 144 Hz screen stops paying for
+     * it twice per displayed frame — and a stale map stays pinned where it
+     * was, because three computes the depth buffer and its matrix together.
+     */
+    renderer.shadowMap.enabled = true;
+    gfx.invalidateShadows();
+    const armed = [];
+    for (let i = 0; i < 6; i++) {
+      renderer.shadowMap.needsUpdate = false;
+      gfx.render(1 / 240, null);                       // four frames per 60 Hz tick
+      armed.push(renderer.shadowMap.needsUpdate);
+    }
+    renderer.shadowMap.enabled = false;
+    const drawn = armed.filter(Boolean).length;
+    info(`${drawn} shadow pass(es) in six frames at 240 fps`);
+    return armed[0] === true && drawn < 3;
+  })());
 
   suite('Client — gunplay maths');
 

@@ -646,6 +646,150 @@ export default async function run() {
 
     check('an unbanned address is not banned', real.ipBans.active('203.0.113.1') === null);
 
+    /* ── Guests on the players list ──────────────────────────────────────── */
+
+    suite('Moderating a guest (admin API)');
+
+    /*
+     * A guest has no account, so until now the panel could not see them: the
+     * players table is a view of the users table, and the one player a
+     * moderator most often has to remove was never in it. A connected guest is
+     * now a row for as long as their socket is, addressed as `guest:<n>` — and
+     * the sanction it offers is the only one that means anything without an
+     * account to mark, a ban on the address.
+     *
+     * The router is driven directly here, with a stand-in hub and the real
+     * database: what is under test is the route wiring, the id form, and what
+     * actually lands in `ip_bans`.
+     */
+    const { createAdminApi } = await import('../server/api/admin.js');
+
+    const guestRoom = { id: 'town-ffa', code: 'FRA:AAAA', mapId: 'burgtown', modeId: 'ffa' };
+    const banished = [];
+    guestRoom.applyBan = (player, info) => { banished.push({ name: player.name, info }); };
+
+    const seats = new Map();
+    const seat = (player) => {
+      seats.set(player.id, { player, room: guestRoom });
+      return player;
+    };
+    const fakeHub = {
+      playersById: seats,
+      get: (id) => seats.get(id) ?? null,
+      findConnections({ userId = null, ip = null } = {}) {
+        const out = [];
+        for (const entry of seats.values()) {
+          if (userId && entry.player.userId === userId) { out.push(entry); continue; }
+          if (ip && entry.player.ip === ip) out.push(entry);
+        }
+        return out;
+      },
+    };
+
+    const anon = seat(new Player({ name: 'Guest-Vole', ip: '203.0.113.55' }));
+    anon.score.kills = 7;
+    anon.score.deaths = 2;
+    const holder = seat(new Player({ name: 'SignedIn', userId: 'a-real-account', ip: '203.0.113.61' }));
+    seat(new Player({ name: 'Bot Hank', isBot: true }));
+
+    const guestApi = createAdminApi({
+      db: real,
+      hub: fakeHub,
+      banPayload: (info) => ({ o: 'ban', ...info }),
+    });
+
+    let adminToken = '';
+    /** A request the admin router will accept: loopback, no forwarding headers. */
+    const request = async (method, path, body = null, query = '') => {
+      const chunks = body === null ? [] : [Buffer.from(JSON.stringify(body))];
+      const req = {
+        headers: adminToken ? { 'x-admin-token': adminToken } : {},
+        socket: { remoteAddress: '127.0.0.1' },
+        on(event, fn) {
+          if (event === 'data') for (const c of chunks) fn(c);
+          if (event === 'end') fn();
+          return this;
+        },
+      };
+      let payload = null;
+      const res = {
+        headersSent: false,
+        writeHead() { this.headersSent = true; return this; },
+        end(text) { payload = JSON.parse(text); return this; },
+      };
+      const handled = await guestApi.handle({
+        method, path, req, res, ip: '127.0.0.1', query: new URLSearchParams(query),
+      });
+      return { handled, body: payload };
+    };
+
+    const adminWas = { enabled: config.adminEnabled, password: config.adminPassword };
+    config.adminEnabled = true;
+    config.adminPassword = 'a-throwaway-admin-password';
+    try {
+      adminToken = (await request('POST', '/admin/login',
+        { password: config.adminPassword })).body?.token ?? '';
+
+      const listed = (await request('GET', '/admin/players')).body;
+      const row = listed.players.find((p) => p.username === 'Guest-Vole');
+      check('a guest is on the players list while they are connected',
+        listed.guests === 1 && row?.guest === true && row.id === `guest:${anon.id}`
+        && row.stats.kills === 7 && row.lastIp === '203.0.113.55'
+        // Above the accounts, always: they are the people playing right now.
+        && listed.players[0].id === row.id,
+        `${listed.guests} guest(s) · ${row?.id} · ${row?.stats.kills}/${row?.stats.deaths}`);
+
+      const guestNames = listed.players.filter((p) => p.guest).map((p) => p.username);
+      check('a signed-in player and a bot are not guests',
+        guestNames.length === 1 && guestNames[0] === 'Guest-Vole', guestNames.join(', '));
+
+      const detail = (await request('GET', `/admin/players/guest:${anon.id}`)).body;
+      check('their row opens, carrying the connection rather than a history',
+        detail.player.guest === true && detail.matches.length === 0 && detail.sessions === 0
+        && detail.reports === null && detail.liveIps[0] === '203.0.113.55'
+        && detail.player.live.map === 'burgtown',
+        `${detail.player.live.room} · ${detail.liveIps.join(', ')}`);
+
+      const edit = (await request('PATCH', `/admin/players/guest:${anon.id}`, { level: 40 })).body;
+      check('editing one is refused with a reason rather than a 404',
+        edit.ok === false && edit.error === 'guest_has_no_account', edit.message ?? edit.error);
+
+      const stranger = (await request('GET', `/admin/players/guest:${holder.id}`)).body;
+      check('a guest id can never reach a signed-in player',
+        stranger.ok === false && stranger.error === 'guest_gone', stranger.error);
+
+      banished.length = 0;
+      const banned = (await request('POST', `/admin/players/guest:${anon.id}/ban`,
+        { days: 0, reason: 'aimbot' })).body;
+      const ipRow = real.ipBans.active('203.0.113.55');
+      check('banning one writes an address ban and drops the connection',
+        banned.ok === true && banned.guest === true && banned.dropped === 1
+        && ipRow?.until === -1 && ipRow.reason === 'aimbot'
+        // The name is kept so the IP BANS tab can say who it was, but no
+        // account is claimed for somebody who never had one.
+        && ipRow.username === 'Guest-Vole' && ipRow.user_id === null
+        // Told as a network ban, which is what it is: nobody on that address
+        // is accused of anything, they are simply on a banned one.
+        && banished.length === 1 && banished[0].info.payload.scope === 'ip',
+        `${banned.dropped} dropped · ${ipRow?.username} · ${ipRow?.reason}`);
+
+      // The socket closes; the row goes with it. The ban does not.
+      seats.delete(anon.id);
+      check('the ban is on the address, so it outlives the connection',
+        real.ipBans.active('203.0.113.55')?.until === -1);
+
+      const stale = (await request('POST', `/admin/players/guest:${anon.id}/ban`, { days: 0 })).body;
+      check('and the row they left with can no longer be acted on',
+        stale.ok === false && stale.error === 'guest_gone', stale.error);
+
+      const empty = (await request('GET', '/admin/players')).body;
+      check('a list with nobody watching lists no guests', empty.guests === 0);
+    } finally {
+      real.ipBans.remove('203.0.113.55');
+      config.adminEnabled = adminWas.enabled;
+      config.adminPassword = adminWas.password;
+    }
+
     /* ── The room → SQLite contract ──────────────────────────────────────── */
 
     suite('Match settlement (real database)');

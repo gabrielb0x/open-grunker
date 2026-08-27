@@ -89,18 +89,24 @@ void main() {
   vec2 d = uv - 0.5;
   float r2 = dot(d, d);
 
+  // Every grade below is switched on by a #define rather than by a branch.
+  // A player who turns chromatic aberration off is not paying for two extra
+  // full-screen texture fetches to multiply them by zero — the taps are not
+  // in the program at all.
   vec3 col;
-  if (chroma > 0.0001) {
-    // Lens fringing that only shows at the edge of the frame, never on the dot.
-    vec2 off = d * chroma * r2;
-    col.r = texture2D(tDiffuse, uv + off).r;
-    col.g = texture2D(tDiffuse, uv).g;
-    col.b = texture2D(tDiffuse, uv - off).b;
-  } else {
-    col = texture2D(tDiffuse, uv).rgb;
-  }
+#ifdef OG_CHROMA
+  // Lens fringing that only shows at the edge of the frame, never on the dot.
+  vec2 off = d * chroma * r2;
+  col.r = texture2D(tDiffuse, uv + off).r;
+  col.g = texture2D(tDiffuse, uv).g;
+  col.b = texture2D(tDiffuse, uv - off).b;
+#else
+  col = texture2D(tDiffuse, uv).rgb;
+#endif
 
+#ifdef OG_BLOOM
   col += texture2D(tBloom, uv).rgb * bloom;
+#endif
   col *= exposure;
   col = acesFilm(col);
 
@@ -122,10 +128,10 @@ void main() {
 
   col *= 1.0 - vignette * smoothstep(0.18, 0.82, r2 * 1.7);
 
-  if (grain > 0.0001) {
-    float n = fract(sin(dot(uv * 1024.0 + time, vec2(12.9898, 78.233))) * 43758.5453);
-    col += (n - 0.5) * grain;
-  }
+#ifdef OG_GRAIN
+  float n = fract(sin(dot(uv * 1024.0 + time, vec2(12.9898, 78.233))) * 43758.5453);
+  col += (n - 0.5) * grain;
+#endif
 
   gl_FragColor = vec4(sRGB(max(col, 0.0)), 1.0);
 }`;
@@ -167,6 +173,7 @@ export class PostFX {
     });
     this.compositeMat = new THREE.ShaderMaterial({
       vertexShader: QUAD_VS, fragmentShader: COMPOSITE_FS, depthTest: false, depthWrite: false,
+      defines: { OG_BLOOM: '', OG_CHROMA: '', OG_GRAIN: '' },
       uniforms: {
         tDiffuse: { value: null }, tBloom: { value: null },
         bloom: { value: 0.62 }, exposure: { value: 1.16 }, gamma: { value: 1.16 },
@@ -182,6 +189,17 @@ export class PostFX {
         damage: { value: 0 },
       },
     });
+
+    /**
+     * Which grades are compiled into the composite right now.
+     *
+     * Recompiling a shader is a hitch, so the defines are only rewritten on
+     * the frame a setting actually moves — never from `configure` running with
+     * the same values it ran with last time.
+     */
+    this._defineKey = 'bcg';
+    /** Does the bright/blur pair need to run at all? */
+    this.bloomOn = true;
 
     /** Transient screen wash, driven by the game layer. */
     this.flash = 0;
@@ -218,6 +236,20 @@ export class PostFX {
     u.chroma.value = chroma;
     u.exposure.value = exposure;
     u.gamma.value = Math.max(0.6, gamma);
+
+    // Bloom off is three draws off: the bright pass, both blur passes and the
+    // extra full-screen fetch in the composite all go away together.
+    this.bloomOn = bloom > 0.001;
+    const key = `${this.bloomOn ? 'b' : ''}${chroma > 0.001 ? 'c' : ''}${grain > 0.001 ? 'g' : ''}`;
+    if (key !== this._defineKey) {
+      this._defineKey = key;
+      const d = this.compositeMat.defines;
+      for (const name of ['OG_BLOOM', 'OG_CHROMA', 'OG_GRAIN']) delete d[name];
+      if (this.bloomOn) d.OG_BLOOM = '';
+      if (chroma > 0.001) d.OG_CHROMA = '';
+      if (grain > 0.001) d.OG_GRAIN = '';
+      this.compositeMat.needsUpdate = true;
+    }
     this.setSize(this.width, this.height, true);
   }
 
@@ -227,8 +259,8 @@ export class PostFX {
     if (!force && w === this.width && h === this.height) return;
     this.width = w; this.height = h;
     this.sceneRT.setSize(w, h);
-    const bw = Math.max(1, Math.floor(w / this.div));
-    const bh = Math.max(1, Math.floor(h / this.div));
+    const bw = this.bloomOn ? Math.max(1, Math.floor(w / this.div)) : 1;
+    const bh = this.bloomOn ? Math.max(1, Math.floor(h / this.div)) : 1;
     this.brightRT.setSize(bw, bh);
     this.blurRT.setSize(bw, bh);
     this.brightMat.uniforms.texel.value.set(1 / w, 1 / h);
@@ -252,26 +284,29 @@ export class PostFX {
   end(dt = 0.016) {
     const r = this.renderer;
 
-    // Bright pass at 1/div resolution.
-    this.brightMat.uniforms.tDiffuse.value = this.sceneRT.texture;
-    r.setRenderTarget(this.brightRT);
-    this._blit(this.brightMat);
+    if (this.bloomOn) {
+      // Bright pass at 1/div resolution.
+      this.brightMat.uniforms.tDiffuse.value = this.sceneRT.texture;
+      r.setRenderTarget(this.brightRT);
+      this._blit(this.brightMat);
 
-    const bw = this.brightRT.width, bh = this.brightRT.height;
-    this.blurMat.uniforms.tDiffuse.value = this.brightRT.texture;
-    this.blurMat.uniforms.dir.value.set(1 / bw, 0);
-    r.setRenderTarget(this.blurRT);
-    this._blit(this.blurMat);
+      const bw = this.brightRT.width, bh = this.brightRT.height;
+      this.blurMat.uniforms.tDiffuse.value = this.brightRT.texture;
+      this.blurMat.uniforms.dir.value.set(1 / bw, 0);
+      r.setRenderTarget(this.blurRT);
+      this._blit(this.blurMat);
 
-    this.blurMat.uniforms.tDiffuse.value = this.blurRT.texture;
-    this.blurMat.uniforms.dir.value.set(0, 1 / bh);
-    r.setRenderTarget(this.brightRT);
-    this._blit(this.blurMat);
+      this.blurMat.uniforms.tDiffuse.value = this.blurRT.texture;
+      this.blurMat.uniforms.dir.value.set(0, 1 / bh);
+      r.setRenderTarget(this.brightRT);
+      this._blit(this.blurMat);
+    }
 
     const u = this.compositeMat.uniforms;
     u.tDiffuse.value = this.sceneRT.texture;
     u.tBloom.value = this.brightRT.texture;
-    u.time.value = (u.time.value + dt * 60) % 1000;
+    // Only the grain reads the clock, and only when it is switched on.
+    if (u.grain.value > 0.001) u.time.value = (u.time.value + dt * 60) % 1000;
     this.flash = Math.max(0, this.flash - dt * 6.5);
     this.damage = Math.max(0, this.damage - dt * 3.2);
     u.flash.value = Math.min(0.6, this.flash);

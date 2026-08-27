@@ -33,6 +33,16 @@ const logger = log.child('admin');
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (v) => UUID_RE.test(String(v ?? ''));
 
+/**
+ * How a connected guest is addressed: `guest:<connection id>`.
+ *
+ * A connection id is a small integer handed out by the process and reused
+ * after a restart, which is exactly right for something that only means
+ * anything while the socket is open. It cannot collide with a UUID or with a
+ * nickname — no name may contain a colon.
+ */
+const GUEST_RE = /^guest:(\d+)$/i;
+
 /* ── Sessions ────────────────────────────────────────────────────────────── */
 
 /** token -> expiry (ms). Cleared on restart, which is the point. */
@@ -160,6 +170,72 @@ const adminUser = (u, s, ipBans = null, chatBan = null, reportBan = null) => ({
     accuracy: s?.shots_fired ? Math.round((s.shots_hit / s.shots_fired) * 1000) / 10 : 0,
   },
 });
+
+/**
+ * A guest, as a row in the players table.
+ *
+ * Guests have no account, so there is nothing in the database to moderate —
+ * and until now that meant the one player a moderator most often needs to
+ * remove was the one player the panel could not see. A connected guest is put
+ * on the list for exactly as long as they are connected, under the id
+ * `guest:<connection>`, carrying the same field names an account row does so
+ * the table, the search box and the status tag all keep working unchanged.
+ *
+ * Nothing about this is persisted. The row *is* the connection: it appears
+ * when they join and is gone the moment they leave, which is also why the only
+ * sanction it offers is one that outlives the socket — a ban on the address.
+ */
+const adminGuest = ({ player, room }, ipBan = null) => {
+  const sc = player.score ?? {};
+  const joined = Math.floor((player.joinedAt ?? nowMs()) / 1000);
+  return {
+    id: `guest:${player.id}`,
+    guest: true,
+    username: player.name,
+    email: null,
+    emailVerified: false,
+    level: player.level ?? 1,
+    xp: 0,
+    gr: 0,
+    verified: false,
+    avatar: null,
+    avatarAt: null,
+    clan: null,
+    clanId: null,
+    clanVerified: false,
+    role: 'guest',
+    bannedUntil: ipBan?.until ?? 0,
+    banReason: ipBan?.reason ?? null,
+    banned: !!ipBan,
+    createdAt: joined,
+    lastLogin: joined,
+    lastIp: player.ip ?? null,
+    ipBans: ipBan ? [ipBan] : [],
+    chatBan: null,
+    muted: false,
+    reportBan: null,
+    reportsBlocked: false,
+    /** Where they are right now — the only history a guest has. */
+    live: {
+      room: room?.code ?? null,
+      roomId: room?.id ?? null,
+      map: room?.mapId ?? null,
+      mode: room?.modeId ?? null,
+      spectator: !!player.spectator,
+      since: joined,
+    },
+    // The current match's scorecard, not a career: there is nowhere to keep one.
+    stats: {
+      kills: sc.kills ?? 0, deaths: sc.deaths ?? 0, assists: sc.assists ?? 0,
+      headshots: sc.headshots ?? 0, wins: 0, losses: 0, matches: 0,
+      damage: sc.damage ?? 0, score: sc.score ?? 0, bestStreak: sc.bestStreak ?? 0,
+      playtime: Math.max(0, Math.round(nowMs() / 1000) - joined),
+      shotsFired: sc.shotsFired ?? 0, shotsHit: sc.shotsHit ?? 0,
+      kd: Math.round(((sc.kills ?? 0) / Math.max(1, sc.deaths ?? 0)) * 100) / 100,
+      accuracy: sc.shotsFired ? Math.round((sc.shotsHit / sc.shotsFired) * 1000) / 10 : 0,
+    },
+  };
+};
 
 /** One report as the panel renders it. The chat snapshot travels separately. */
 const reportPayload = (rep) => ({
@@ -291,6 +367,17 @@ export function createAdminApi({ db, hub, telemetry = null, banPayload = null })
     return token;
   };
 
+  /** The live connection behind a `guest:<n>` id, or null for anything else. */
+  const findGuest = (id) => {
+    const m = GUEST_RE.exec(String(id ?? ''));
+    if (!m) return null;
+    const entry = hub.get(Number(m[1]));
+    // An account that happens to hold that connection id is not a guest, and a
+    // bot is not a person — neither may be reached through this door.
+    if (!entry || entry.player.userId || entry.player.isBot) return null;
+    return entry;
+  };
+
   /**
    * `:id` is either an account's UUID or its nickname — the panel links by id
    * and a moderator types a name, and both have to land on the same row. A
@@ -298,9 +385,40 @@ export function createAdminApi({ db, hub, telemetry = null, banPayload = null })
    */
   const findUser = (ctx) => {
     const raw = String(ctx.params.id ?? '');
+    if (GUEST_RE.test(raw)) {
+      // Two different failures wearing the same id: the guest is still here
+      // and this route has nothing to do with them, or they have left and the
+      // row the panel is holding no longer refers to anybody.
+      if (!findGuest(raw)) {
+        throw new ApiError(404, 'guest_gone',
+          'that guest has left — a guest is on the list only while they are connected');
+      }
+      throw new ApiError(409, 'guest_has_no_account',
+        'that is a guest: there is no account to act on. Ban the address, or kick them.');
+    }
     const user = (isUuid(raw) ? db.users.byId(raw) : null) ?? db.users.byName(raw);
     if (!user) throw new ApiError(404, 'not_found', 'no such account');
     return user;
+  };
+
+  /**
+   * Every guest connected right now, newest first, optionally filtered by name.
+   *
+   * Deduplicated by connection, not by address: two guests behind one router
+   * are two people, and banning one of them by hand should be a decision made
+   * with both of them visible.
+   */
+  const liveGuests = (q = '') => {
+    const needle = q.trim().toLowerCase();
+    const out = [];
+    for (const entry of hub.playersById.values()) {
+      const p = entry.player;
+      if (p.userId || p.isBot) continue;
+      if (needle && !p.name.toLowerCase().includes(needle)) continue;
+      out.push(adminGuest(entry, p.ip ? db.ipBans.active(p.ip) : null));
+    }
+    out.sort((a, b) => b.createdAt - a.createdAt);
+    return out;
   };
 
   const findReport = (ctx) => {
@@ -383,17 +501,48 @@ export function createAdminApi({ db, hub, telemetry = null, banPayload = null })
 
   r.get('/admin/players', (ctx) => {
     requireAdmin(ctx);
+    const q = ctx.query.get('q') ?? '';
+    const offset = num(ctx.query.get('offset'), 0, 1e6, 0);
     const { rows, total } = db.users.list({
-      q: ctx.query.get('q') ?? '',
+      q,
       limit: num(ctx.query.get('limit'), 1, 200, 50),
-      offset: num(ctx.query.get('offset'), 0, 1e6, 0),
+      offset,
       sort: ctx.query.get('sort') ?? 'id',
     });
-    ok(ctx.res, { total, players: rows.map((u) => adminUser(u, u)) });
+    /*
+     * Guests sit above the accounts, on the first page, in every sort order.
+     *
+     * They are not rows in the users table and cannot be paged or sorted with
+     * them — but they are the people playing *right now*, which is what a
+     * moderator opening this screen is usually looking for. Pinning them to
+     * the top of the first page is the one placement that never buries them.
+     */
+    const guests = liveGuests(q);
+    ok(ctx.res, {
+      total,
+      guests: guests.length,
+      players: [...(offset === 0 ? guests : []), ...rows.map((u) => adminUser(u, u))],
+    });
   });
 
   r.get('/admin/players/:id', (ctx) => {
     requireAdmin(ctx);
+    const guest = findGuest(ctx.params.id);
+    if (guest) {
+      const ip = guest.player.ip;
+      ok(ctx.res, {
+        player: adminGuest(guest, ip ? db.ipBans.active(ip) : null),
+        // A guest has no history to show: no finished matches under their
+        // name, no sessions, and no report queue — reporting needs an account
+        // on both ends. Sending the empty shapes keeps the panel's one
+        // renderer honest instead of teaching it two payloads.
+        matches: [],
+        reports: null,
+        sessions: 0,
+        liveIps: ip ? [ip] : [],
+      });
+      return;
+    }
     const user = findUser(ctx);
     ok(ctx.res, {
       player: adminUser(user, db.stats.get(user.id), db.ipBans.forUser(user.id),
@@ -482,8 +631,40 @@ export function createAdminApi({ db, hub, telemetry = null, banPayload = null })
    */
   r.post('/admin/players/:id/ban', async (ctx) => {
     requireAdmin(ctx);
-    const user = findUser(ctx);
     const { days, reason, ip: alsoIp = true } = await readJson(ctx.req);
+
+    /*
+     * Banning a guest is banning an address, because that is all a guest is.
+     *
+     * There is no row to mark, no session to destroy and no name that means
+     * anything after the socket closes — so the sanction is written against
+     * the address they are playing from, carrying the name they were playing
+     * under so the ip-bans list says who it was. Lifting it afterwards is done
+     * from the IP BANS tab: the guest row itself is gone the moment they drop.
+     */
+    const guest = findGuest(ctx.params.id);
+    if (guest) {
+      const { player } = guest;
+      if (!player.ip) {
+        throw new ApiError(409, 'no_address', `${player.name} has no address on this connection`);
+      }
+      const gd = Number(days);
+      const gUntil = Number.isFinite(gd) && gd > 0
+        ? Math.floor(nowMs() / 1000) + Math.round(gd * 86400)
+        : -1;
+      const gWhy = reason ? String(reason).slice(0, 200) : null;
+      const row = db.ipBans.add({
+        ip: player.ip, reason: gWhy, days: gd > 0 ? gd : 0, userId: null, username: player.name,
+      });
+      const gDropped = enforce({ scope: 'ip', reason: gWhy, until: gUntil }, { ips: [player.ip] });
+      audit('guest.ban', player.name,
+        `${player.ip} · ${gUntil === -1 ? 'permanent' : `${gd} day(s)`}`
+        + `${gDropped ? ` · dropped ${gDropped}` : ''}${gWhy ? ` · ${gWhy}` : ''}`);
+      ok(ctx.res, { guest: true, ipBan: row, ipBans: [player.ip], dropped: gDropped });
+      return;
+    }
+
+    const user = findUser(ctx);
     // days <= 0 (or missing) means permanent.
     const d = Number(days);
     const until = Number.isFinite(d) && d > 0
@@ -516,6 +697,14 @@ export function createAdminApi({ db, hub, telemetry = null, banPayload = null })
 
   r.post('/admin/players/:id/unban', (ctx) => {
     requireAdmin(ctx);
+    // A guest is only ever banned by address, so lifting it is lifting that.
+    const guest = findGuest(ctx.params.id);
+    if (guest) {
+      const lifted = guest.player.ip ? db.ipBans.remove(guest.player.ip) : 0;
+      audit('guest.unban', guest.player.name, guest.player.ip ?? null);
+      ok(ctx.res, { guest: true, lifted });
+      return;
+    }
     const user = findUser(ctx);
     db.users.ban(user.id, 0, null);
     // Lifting an account ban lifts the address bans it created, so an appeal
@@ -664,6 +853,14 @@ export function createAdminApi({ db, hub, telemetry = null, banPayload = null })
 
   r.post('/admin/players/:id/kick', (ctx) => {
     requireAdmin(ctx);
+    // One guest is one socket: there is no account to sweep other sessions for.
+    const guest = findGuest(ctx.params.id);
+    if (guest) {
+      try { guest.player.ws?.close(4001, 'kicked by an administrator'); } catch { /* already gone */ }
+      audit('guest.kick', guest.player.name, guest.player.ip ?? null);
+      ok(ctx.res, { guest: true, kicked: 1 });
+      return;
+    }
     const user = findUser(ctx);
     let kicked = 0;
     for (const { player } of hub.playersById.values()) {

@@ -21,6 +21,9 @@ const $ = (id) => document.getElementById(id);
 /** Thin-spaced thousands, so a four-figure reward reads as one. */
 const fmtNum = (n) => Number(n ?? 0).toLocaleString('en-GB').replace(/,/g, '\u202f');
 
+/** Shortest gap between two minimap redraws — see `drawMinimap`. */
+const MINIMAP_INTERVAL = 1 / 60 - 0.0008;
+
 /** A tiny glyph per weapon family for the killfeed — drawn, not fetched. */
 const WEAPON_GLYPH = {
   ar: 'M2 9h13l2-3h3v3h2v3h-4l-2 3H8l-1-3H2z',
@@ -143,6 +146,8 @@ export class Hud {
      */
     this.lastBoardKey = '';
     this.sbHolding = false;
+    /** When the minimap last redrew, in the game's seconds clock. */
+    this.mmDrawnAt = -1;
     /**
      * Whose HUD this is.
      *
@@ -1237,6 +1242,15 @@ export class Hud {
    */
   drawMinimap(me, entities, teamMode, myTeam, nowSec, objectives = [], skipId = 0) {
     if (!settings.showMinimap || !this.map) return;
+    /*
+     * A 2D canvas redraw is not free — a clip, a bitmap blit, an arc and a
+     * tick per player, and four compass letters — and it is the same picture
+     * twice over on a screen refreshing faster than the eye reads a map. Sixty
+     * a second is already more than the rotation needs; past that it is work
+     * thrown at pixels that never change.
+     */
+    if (nowSec - this.mmDrawnAt < MINIMAP_INTERVAL) return;
+    this.mmDrawnAt = nowSec;
     const g = this.mmCtx;
     const W = this.el.minimap.width, H = this.el.minimap.height;
     const cx = W / 2, cy = H / 2;

@@ -37,6 +37,9 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const RECOVER_DELAY = 0.12;
 /** A round passing closer than this makes an audible snap. */
 const WHIZZ_RADIUS = 3.2;
+/** Frame rate the live match is drawn at behind the menu, and behind a panel. */
+const MENU_BACKDROP_HZ = 60;
+const MENU_COVERED_HZ = 30;
 
 /** The match code someone shared with us, e.g. ?game=FRA:7K2Q. */
 function matchFromUrl() {
@@ -76,6 +79,8 @@ export class Game {
     this.lastFrame = performance.now();
     this.inputFlushAcc = 0;
     this.frameBudget = 0;
+    /** Time owed to the menu's backdrop since it last drew a frame. */
+    this.backdropAcc = 0;
 
     this.weapons = loadoutFor('triggerman');
     this.slot = 0;
@@ -2220,6 +2225,32 @@ export class Game {
     }
 
     if (this.state !== 'playing') {
+      /*
+       * The menu's backdrop does not need the display's full frame rate.
+       *
+       * An open settings panel or modal is an 84%-opaque sheet over the whole
+       * screen, so what is behind it is drawn at `MENU_COVERED_HZ` — one 3D
+       * frame in five on a 144 Hz display, shadow pass and post chain
+       * included, and still smooth enough to judge a video setting by. With
+       * only the menu itself up, the match *is* the background and stays
+       * smooth, capped at the rate a screen refreshing faster than that cannot
+       * show anyway.
+       *
+       * The skipped time is carried, not dropped: the frame that does run
+       * interpolates and ages particles over the whole interval, so nothing
+       * runs in slow motion.
+       */
+      this.menu.tickStats(dt, this.net.rtt * 1000);
+      const backdropHz = this.menu.visible
+        ? (this.menu.coveredByPanel ? MENU_COVERED_HZ : MENU_BACKDROP_HZ)
+        : 0;
+      if (backdropHz > 0) {
+        this.backdropAcc += dt;
+        if (this.backdropAcc < 1 / backdropHz - 0.0008) return;
+        dt = this.backdropAcc;
+        this.backdropAcc = 0;
+      }
+
       // The menu sits on top of a live match: keep drawing it.
       if (this.map) {
         // Bodies first, camera second: in spectator mode the camera *is* one of
@@ -2233,7 +2264,6 @@ export class Game {
       // A watcher gets the whole interface, drawn from the body they are on.
       if (this.specWatching) this.updateSpectatorHud(dt);
       else this.updateNukeCountdown(performance.now() / 1000);
-      this.menu.tickStats(dt, this.net.rtt * 1000);
       this.gfx.render(dt);
       return;
     }

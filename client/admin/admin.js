@@ -141,19 +141,25 @@ async function loadPlayers() {
     const res = await call('GET',
       `/players?q=${encodeURIComponent(q)}&limit=${pageSize}&offset=${page * pageSize}&sort=${sort}`);
     total = res.total;
-    $('playerCount').textContent = `${res.total} account${res.total === 1 ? '' : 's'}`;
+    const guests = res.guests ?? 0;
+    $('playerCount').textContent = `${res.total} account${res.total === 1 ? '' : 's'}`
+      + (guests ? ` · ${guests} guest${guests === 1 ? '' : 's'} playing` : '');
     $('pageInfo').textContent = `${Math.min(total, page * pageSize + 1)}–${Math.min(total, (page + 1) * pageSize)} of ${total}`;
     $('btnPrev').disabled = page === 0;
     $('btnNext').disabled = (page + 1) * pageSize >= total;
 
+    // A guest is a live connection, not a row: they are drawn the same way so
+    // the table reads as one list, and marked so nobody mistakes one for an
+    // account they can edit.
     $('playerRows').innerHTML = res.players.map((p) => `
-      <tr data-id="${p.id}" class="${selected?.id === p.id ? 'sel' : ''}">
-        <td title="${p.id}">${shortId(p.id)}</td>
+      <tr data-id="${esc(p.id)}" class="${p.guest ? 'guest ' : ''}${selected?.id === p.id ? 'sel' : ''}">
+        <td title="${esc(p.id)}">${p.guest ? 'live' : shortId(p.id)}</td>
         <td><span class="p-name">${esc(p.username)}
           ${p.verified ? '<img src="/check.png" width="13" height="13" alt="verified">' : ''}
+          ${p.guest ? '<span class="tag guest">GUEST</span>' : ''}
           ${p.clan ? `<span class="p-clan${p.clanVerified ? ' gold' : ''}">[${esc(p.clan)}]</span>` : ''}</span></td>
-        <td>${p.level}</td>
-        <td>${p.gr}</td>
+        <td>${p.guest ? '—' : p.level}</td>
+        <td>${p.guest ? '—' : p.gr}</td>
         <td>${p.stats.kd}</td>
         <td>${statusTag(p)}</td>
       </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--muted)">No accounts match.</td></tr>';
@@ -168,8 +174,9 @@ async function loadPlayers() {
 
 const statusTag = (p) => (p.banned
   ? '<span class="tag ban">BANNED</span>'
-  : p.role !== 'player' ? `<span class="tag admin">${p.role.toUpperCase()}</span>`
-    : '<span class="tag ok">ACTIVE</span>');
+  : p.guest ? `<span class="tag live">${p.live?.spectator ? 'WATCHING' : 'PLAYING'}</span>`
+    : p.role !== 'player' ? `<span class="tag admin">${p.role.toUpperCase()}</span>`
+      : '<span class="tag ok">ACTIVE</span>');
 
 async function selectPlayer(id) {
   try {
@@ -188,6 +195,7 @@ function renderDetail({ player: p, matches, sessions, liveIps = [], reports = nu
   $('detailEmpty').classList.add('hidden');
   const body = $('detailBody');
   body.classList.remove('hidden');
+  if (p.guest) { renderGuestDetail(body, p); return; }
 
   const s = p.stats;
   const openAgainst = (reports?.against ?? []).filter((r) => r.status === 'open').length;
@@ -385,6 +393,99 @@ async function blockReporting(id) {
 }
 
 /** Address bans currently attached to this account. */
+/**
+ * The panel for somebody with no account.
+ *
+ * Deliberately short. There is nothing to edit — no level to set, no password
+ * to reset, no clan, no history — so the panel shows the two things that do
+ * exist (where they are connected from and what they have done in the match
+ * they are in) and offers the two sanctions that mean anything: drop the
+ * socket, or ban the address they are playing from.
+ */
+export function renderGuestDetail(body, p) {
+  const s = p.stats ?? {};
+  const live = p.live ?? {};
+  const where = live.room
+    ? `${esc(live.room)} · ${esc(live.map ?? '?')} · ${esc(String(live.mode ?? '').toUpperCase())}`
+    : 'not in a room';
+
+  body.innerHTML = `
+    <div class="subject">
+      <div class="pic letter">${esc((p.username || 'G')[0].toUpperCase())}</div>
+      <div class="who"><b>${esc(p.username)}</b> <span class="tag guest">GUEST</span>
+        <div>${live.spectator ? 'watching a match' : 'playing right now'}</div></div>
+    </div>
+    <div class="sub">${where} · connected ${fmtDate(live.since)} · ${esc(p.lastIp ?? 'no ip')}</div>
+
+    <div class="hint">A guest has no account: nothing about them is stored, and this row
+      exists only while their connection does. There is no name to ban — the sanction that
+      outlives the socket is a ban on the address, which is what the button below writes.</div>
+
+    <h3>THIS MATCH</h3>
+    <div class="grid2">
+      <div class="mini"><b>${s.kills ?? 0}</b><span>KILLS</span></div>
+      <div class="mini"><b>${s.deaths ?? 0}</b><span>DEATHS</span></div>
+      <div class="mini"><b>${s.kd ?? 0}</b><span>K/D</span></div>
+      <div class="mini"><b>${s.score ?? 0}</b><span>SCORE</span></div>
+      <div class="mini"><b>${s.headshots ?? 0}</b><span>HEADSHOTS</span></div>
+      <div class="mini"><b>${s.accuracy ?? 0}%</b><span>ACCURACY</span></div>
+    </div>
+
+    <h3>MODERATION</h3>
+    ${p.banned
+    ? `<div class="field"><label>STATUS</label><span class="tag ban">ADDRESS BANNED${
+      p.bannedUntil > 0 ? ` until ${fmtDate(p.bannedUntil)}` : ' permanently'}</span></div>
+       ${p.banReason ? `<div class="field"><label>REASON</label><span style="font-size:12px">${esc(p.banReason)}</span></div>` : ''}
+       ${ipBanList(p.ipBans)}
+       <div class="row"><button class="btn" id="btnUnban">LIFT ADDRESS BAN</button></div>`
+    : `<div class="field"><label>DURATION</label><input id="fBanDays" type="number" min="0" step="1" value="0" placeholder="0 = permanent"></div>
+       <div class="field"><label>REASON</label><input id="fBanReason" placeholder="cheating, griefing…"></div>
+       <div class="hint">Bans <b>${esc(p.lastIp ?? 'this address')}</b> and drops everyone playing
+         from it. Lift it afterwards from the IP BANS tab — this row disappears with the
+         connection.</div>
+       <div class="row"><button class="btn danger" id="btnBan">BAN ADDRESS</button>
+         <button class="btn" id="btnKick">KICK FROM MATCH</button></div>`}`;
+
+  $('btnBan')?.addEventListener('click', () => banGuest(p.id, p.username));
+  $('btnKick')?.addEventListener('click', () => dropGuest(p.id, 'kick', 'Kicked'));
+  $('btnUnban')?.addEventListener('click', () => dropGuest(p.id, 'unban', 'Address ban lifted', true));
+}
+
+/** Bans the address a guest is playing from, and forgets the row it came off. */
+async function banGuest(id, name) {
+  const days = Number($('fBanDays').value) || 0;
+  const reason = $('fBanReason').value.trim();
+  const span = days > 0 ? `for ${days} day(s)` : 'permanently';
+  if (!confirm(`Ban the address ${name} is playing from, ${span}?\n\n`
+    + 'A guest has no account, so this is an IP ban — anyone else on that address goes too.')) return;
+  try {
+    const res = await call('POST', `/players/${id}/ban`, { days, reason });
+    toast(`Address banned${res.dropped ? ` · ${res.dropped} session(s) dropped` : ''}`, 'good');
+    clearDetail();
+    await loadPlayers();
+  } catch (err) { toast(err.message, 'bad'); }
+}
+
+/**
+ * Kicking or unbanning a guest, either of which usually takes their row with
+ * it: the connection is what the row *is*, so there is nothing to reselect.
+ */
+async function dropGuest(id, path, okMessage, keep = false) {
+  try {
+    await call('POST', `/players/${id}/${path}`);
+    toast(okMessage, 'good');
+    if (!keep) clearDetail();
+    await loadPlayers();
+    if (keep) await selectPlayer(id);
+  } catch (err) { toast(err.message, 'bad'); }
+}
+
+function clearDetail() {
+  selected = null;
+  $('detailBody').classList.add('hidden');
+  $('detailEmpty').classList.remove('hidden');
+}
+
 const ipBanList = (rows) => (rows?.length
   ? `<div class="field"><label>IP BANS</label><span style="font-size:12px;font-family:var(--mono)">${
     rows.map((b) => `${esc(b.ip)}${b.until > 0 ? ` (until ${fmtDate(b.until)})` : ''}`).join('<br>')
@@ -464,9 +565,7 @@ async function deletePlayer(p) {
   if (!confirm(`Delete ${p.username} (#${shortId(p.id)}) and every trace of them? This cannot be undone.`)) return;
   try {
     await call('DELETE', `/players/${p.id}`);
-    selected = null;
-    $('detailBody').classList.add('hidden');
-    $('detailEmpty').classList.remove('hidden');
+    clearDetail();
     toast('Account deleted', 'good');
     await loadPlayers();
   } catch (err) { toast(err.message, 'bad'); }

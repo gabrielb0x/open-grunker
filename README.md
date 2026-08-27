@@ -552,9 +552,14 @@ rather than waiting for a reconnect.
 
 **Every nickname in the game is a link to that player's profile** — on the
 scoreboard, in the chat, on the end-of-match card, on the leaderboard and in a
-clan roster. It opens the same card everywhere: picture, level, clan tag,
-lifetime stats and the last few matches. Guests and bots have no profile behind
-them, so neither gets a link that could only ever fail.
+clan roster. It opens the same card everywhere. Guests and bots have no profile
+behind them, so neither gets a link that could only ever fail.
+
+The card reads **across**, not down: a hero band with the picture, the name, the
+clan tag and the level bar on the left and the three figures anybody actually
+looks for — K/D, kills, wins — on the right, then the career in one column and
+the last six matches in the other. Below 900px wide it folds back into a single
+column.
 
 This is also why the scoreboard key **pins the board open and hands the mouse
 back** rather than showing it only while held — the same gesture that makes the
@@ -1168,6 +1173,14 @@ game was doing that produced no pixels, or produced the same pixels twice.
 | Every one of those thirty-one parts cast a shadow, doubling the character cost in the shadow pass | Fifteen parts whose shadow was already strictly *inside* somebody else's — the mask inside the head, the crown on the helmet, the pouches flush on the plate carrier — came out of it. A directional light casts a contained solid's shadow inside its container's, so this removes fifteen draws per player per frame and removes nothing anybody can see |
 | Both particle clouds re-uploaded their entire capacity every frame — about twelve thousand floats — even with nothing alive, and the high-water mark never came back down | The upload is skipped when the cloud is empty, and the watermark follows the live tail rather than the write head |
 | A closure allocated per frame for `requestAnimationFrame`, a `Vector2` per frame in the post chain, two `Vector3`s per frame in the death camera | Bound once, scratch objects reused |
+| The shadow map redrew every casting solid in the level, from the light, on **every frame** — a second pass over as much geometry as the visible one, 144 times a second on a screen that fast | It is armed on a clock instead, at the quality preset's `shadowHz` (30–60). The sun's *direction* never changes as it follows the player, and three computes a shadow map and its matrix together — so a map one frame old is still pinned exactly where it was rather than swimming |
+| The sky dome was drawn **first**, shading a full screen of texture that the level then covered up | Drawn last among the opaques, still writing no depth. The depth test rejects it wherever the map already stands, so only the sky you can actually see costs anything |
+| With post-processing on, the canvas was still asked for a multisampled back buffer — which never sees a triangle of the world, because the world renders into the HDR buffer. It antialiased the two triangles of the composite quad and charged a full-screen resolve for it, every frame, at up to 2× device pixel ratio | The buffer is only asked for when the frame really does go straight to the canvas |
+| Chromatic aberration, film grain and bloom were `if`s inside the composite shader: switching one off still ran its branch over every pixel, and bloom still cost a bright pass and two blurs to be multiplied by zero | Each is a `#define`. Turning one off recompiles the shader without it — and with bloom at zero the three passes behind it do not run at all |
+| Four HUD panels and every killfeed row carried `backdrop-filter: blur()`. Behind them is a canvas that repaints every frame, so each one was a hidden second render pass — a backdrop copy and a blur — for the lifetime of every match, and the full-screen sheets over the menu were the same thing at full-screen size | Gone, with the panel tint carrying the legibility the frost was there for |
+| A rifle is forty little boxes and a hand is a dozen, each its own draw call: about sixty a frame for the viewmodel alone, and another fifteen per body on screen | Every part that never moves relative to its neighbours is welded into one buffer per material at build time, and the result is cached per weapon-and-finish so eight players carrying the same rifle share the buffers rather than uploading eight copies. The magazine, bolt and cylinder stay separate, because the reload moves them |
+| Every remote body was posed every frame — forty transform writes each, and thirty matrices for `updateMatrixWorld` to recompute — including the ones standing behind you | Bodies outside the camera frustum and more than 26 m away are left as they are. Inside that radius they are posed regardless, because a player just off the edge of the screen still throws a shadow across it |
+| The minimap redrew on every frame, and the menu drew the live match behind itself at the display's full rate even with a settings panel or a modal covering it | Both are capped: the minimap at 60 Hz, the menu's backdrop at 60 Hz, and at 30 Hz when a full-screen sheet is over it. The skipped time is carried, not dropped, so the frame that does run ages everything over the whole interval |
 
 **On the server**
 
@@ -1306,8 +1319,9 @@ spawn is a failing test rather than a bug report.
 **Objectives** are the Domination capture points, ordered A → B → C. Leave the
 array out and the map simply never comes up in that mode.
 
-To try it: `npm start`, then open the map by name from the room list, or
-`?map=mymap` on the URL.
+To try it without waiting for a rotation, add a permanent room for it in `.env`
+and restart: `ROOMS=…,mymap:ffa`. Once it is in `MAP_IDS` it also comes up on
+its own, in the rotation and in the intermission vote.
 
 ### Weapons and their models
 
@@ -1542,7 +1556,7 @@ request that arrived via a proxy. Sign in with `POST /api/v1/admin/login`
 | `GET` | `/admin/status` | Whether the panel is enabled, configured and reachable |
 | `POST` | `/admin/login` · `/admin/logout` | Password from `ADMIN_PASSWORD` |
 | `GET` | `/admin/overview` | Database, room and process health |
-| `GET` | `/admin/players?q=&sort=&limit=&offset=` | Search and page accounts |
+| `GET` | `/admin/players?q=&sort=&limit=&offset=` | Search and page accounts. Every connected guest rides at the top of the first page as `guest: true`, with `guests` counting them |
 | `GET` | `/admin/players/:id` | One account, its stats and recent matches |
 | `PATCH` | `/admin/players/:id` | Username, email, email confirmation, role, verified badge, GR, level, XP, stats. `clan: null` pulls the account out of its clan — the tag is a membership row, not a free-text field |
 | `POST` | `/admin/players/:id/ban` · `/unban` | `{ days, reason, ip }` — `days: 0` is permanent, `ip: true` (default) bans every address the account plays from |
@@ -1564,6 +1578,7 @@ request that arrived via a proxy. Sign in with `POST /api/v1/admin/login`
 | `DELETE` | `/admin/clans/:id/avatar` · `/admin/clans/:id` | Take the picture, or disband the clan |
 | `POST` | `/admin/players/:id/password` · `/kick` | Reset a password, or drop live sockets |
 | `DELETE` | `/admin/players/:id` | Delete the account and everything it owns |
+| — | `:id` = `guest:<n>` | A guest, addressed by their live connection. `GET`, `/ban`, `/unban` and `/kick` accept it; a ban on one is a ban on the address, and every other route answers `guest_has_no_account`. The id stops resolving the moment they disconnect (`guest_gone`) |
 | `GET` | `/admin/logs?level=&limit=` | Server log ring buffer plus the admin audit trail |
 | `GET` | `/admin/stats?hours=` | The whole STATS tab in one request: live health, every sampled series bucketed to ~200 points, match/map/mode/class mix, retention, the level histogram and the economy |
 | `GET` | `/admin/stats/series` | Every series the sampler writes, with its label and how a chart should aggregate it |
@@ -1717,7 +1732,8 @@ Set `ADMIN_PASSWORD` in `.env` and restart. Five tabs:
   or permanently, remove a profile picture, pull the account out of its clan,
   reset a password, kick live sockets, or delete the account outright. Each
   account also shows what has been reported about it and what it has reported
-  about others.
+  about others. **Guests appear here too, at the top of the first page, for as
+  long as they are connected** — see below.
 - **Reports** — the moderation queue, with the count of open reports on the tab
   itself. See below.
 - **Clans** — every clan with its owner, roster and outstanding invitations.
@@ -1812,6 +1828,36 @@ from right now. It takes effect immediately, in this order:
 Lifting the ban also lifts the address bans it created, so an appeal never
 leaves someone locked out by a leftover row. Timed address bans expire on their
 own and are swept hourly.
+
+### Banning a guest
+
+Guests have no account, which used to mean the panel could not see them: the
+players table is a view of the users table, and the one player a moderator most
+often has to remove was never in it.
+
+A connected guest is now **a row on the players list for exactly as long as
+their socket is open**, pinned above the accounts in every sort order, marked
+`GUEST`, and searchable by the name the server assigned them. Nothing about it
+is stored — the row *is* the connection — so it carries the two things that
+exist: where they are playing from, and what they have done in the match they
+are in.
+
+Opening one gives a short panel, because there is nothing to edit. No level, no
+password, no clan, no history, and no chat ban (a guest cannot write into the
+chat in the first place). What it offers is:
+
+- **KICK FROM MATCH** — closes the socket. They can come straight back.
+- **BAN ADDRESS** — writes an IP ban for the address they are playing from,
+  timed or permanent, and drops everyone connected from it. The guest's assigned
+  name is stored on the row so the **IP bans** list can say who it was, but no
+  account is claimed for somebody who never had one.
+
+That second one is the whole point: a ban has to outlive the socket, and an
+address is the only thing about a guest that does. Everything after it is the
+ordinary address-ban path — the room is told, the ban card goes up, the socket
+closes, and every later handshake from that address is refused. Lift it from
+the **IP bans** tab, not from the guest's row: the row disappears with the
+connection the ban just closed.
 
 ### What a chat ban does
 

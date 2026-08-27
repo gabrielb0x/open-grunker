@@ -19,22 +19,33 @@ import { settings } from './settings.js';
 import { surfaceTexture, SURFACE_SHADING, SURFACE_TILE, configureTextures } from './textures.js';
 import { PostFX } from './postfx.js';
 
+/**
+ * `shadowHz` caps how often the shadow map is re-rendered.
+ *
+ * The shadow pass draws every casting solid in the level a second time, from
+ * the light — on a busy map that is as much geometry as the visible frame. It
+ * does not have to happen 144 times a second: the sun's *direction* never
+ * changes (see `followSun`), so a map rendered a frame or two ago is still
+ * correct in world space, it is only a couple of milliseconds behind the bodies
+ * moving through it. Nothing on a 60 Hz screen can tell; a 144 Hz screen gets
+ * more than half its shadow passes back.
+ */
 const QUALITY = {
   low: {
     shadowMap: 0, pixelRatio: 1, antialias: false, shadowRange: 0, sky: 24,
-    texture: 128, aniso: 1, post: false, phong: false, fillLight: false,
+    texture: 128, aniso: 1, post: false, phong: false, fillLight: false, shadowHz: 30,
   },
   medium: {
     shadowMap: 1024, pixelRatio: 1.2, antialias: false, shadowRange: 48, sky: 40,
-    texture: 256, aniso: 4, post: true, phong: true, fillLight: false,
+    texture: 256, aniso: 4, post: true, phong: true, fillLight: false, shadowHz: 45,
   },
   high: {
     shadowMap: 2048, pixelRatio: 1.6, antialias: true, shadowRange: 70, sky: 56,
-    texture: 256, aniso: 8, post: true, phong: true, fillLight: true,
+    texture: 256, aniso: 8, post: true, phong: true, fillLight: true, shadowHz: 60,
   },
   ultra: {
     shadowMap: 4096, pixelRatio: 2, antialias: true, shadowRange: 92, sky: 80,
-    texture: 512, aniso: 16, post: true, phong: true, fillLight: true,
+    texture: 512, aniso: 16, post: true, phong: true, fillLight: true, shadowHz: 60,
   },
 };
 
@@ -103,15 +114,40 @@ export class GameWorld {
     this.canvas = canvas;
     const q = quality();
 
+    /*
+     * Multisampling on the *canvas* is only worth asking for when the world is
+     * drawn straight onto it.
+     *
+     * With the post chain on, every triangle lands in `PostFX.sceneRT` and the
+     * default framebuffer only ever sees one full-screen quad — so an MSAA back
+     * buffer antialiases the edges of two triangles that have no visible edges,
+     * and charges a multisample resolve of the whole screen for it, every
+     * frame, at up to twice the device pixel ratio. It is pure cost with
+     * nothing on the other side of it.
+     *
+     * Read once, at construction, because a WebGL context cannot change its
+     * sample count afterwards: somebody who plays with post-processing off gets
+     * the buffer from the moment the page loads, and toggling the setting
+     * mid-session moves the antialiasing at the next reload.
+     */
+    const wantsPost = q.post && settings.postProcessing !== false;
+
     this.renderer = renderer ?? new THREE.WebGLRenderer({
-      canvas, antialias: q.antialias, powerPreference: 'high-performance',
+      canvas, antialias: q.antialias && !wantsPost, powerPreference: 'high-performance',
       stencil: false, depth: true,
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.pixelRatio));
     this.renderer.shadowMap.enabled = settings.shadows && q.shadowMap > 0;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // PCFSoft is a deprecated alias that three downgrades to PCF on the first
+    // frame anyway; naming the real one skips the warning and the recompile.
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    // Driven by hand from `render`, at `shadowHz` rather than at frame rate.
+    this.renderer.shadowMap.autoUpdate = false;
+    this.renderer.shadowMap.needsUpdate = true;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.autoClear = true;
+    /** Seconds since the shadow map was last redrawn — see `render`. */
+    this._shadowAcc = 1;
 
     configureTextures({ resolution: q.texture, aniso: Math.min(q.aniso, this.renderer.capabilities.getMaxAnisotropy()) });
 
@@ -268,6 +304,7 @@ export class GameWorld {
     this._configureShadow();
     this._buildGround(map);
     this._buildBoxes(map);
+    this.invalidateShadows();
   }
 
   /**
@@ -360,7 +397,17 @@ export class GameWorld {
     const geo = new THREE.SphereGeometry(600, Math.max(16, q.sky / 2), Math.max(12, q.sky / 3));
     const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false, depthWrite: false });
     const dome = new THREE.Mesh(geo, mat);
-    dome.renderOrder = -1;
+    /*
+     * Drawn *after* the world, not before it.
+     *
+     * The dome used to render first, which meant shading a full screen of sky
+     * texture and then covering nearly all of it with the level — a whole
+     * frame's worth of overdraw thrown away every frame. Sorted last among the
+     * opaques it still writes no depth, so it cannot occlude anything, but the
+     * depth test rejects it wherever the map already stands: only the sky you
+     * can actually see costs anything to draw.
+     */
+    dome.renderOrder = 1000;
     dome.frustumCulled = false;
     this.mapGroup.add(dome);
     this.skyDome = dome;
@@ -388,6 +435,10 @@ export class GameWorld {
     mesh.rotation.x = -Math.PI / 2;
     mesh.position.y = 0;
     mesh.receiveShadow = this.renderer.shadowMap.enabled;
+    // The floor is where it is for the life of the map; nothing has to walk it
+    // through `updateMatrixWorld` sixty times a second to find that out.
+    mesh.updateMatrix();
+    mesh.matrixAutoUpdate = false;
     this.mapGroup.add(mesh);
     this.ground = mesh;
   }
@@ -482,6 +533,8 @@ export class GameWorld {
       }
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.updateMatrix();
+      mesh.matrixAutoUpdate = false;              // static for the life of the map
       this.mapGroup.add(mesh);
       this.batches.push(mesh);
     }
@@ -534,6 +587,7 @@ export class GameWorld {
       this.scene.traverse((o) => { if (o.isMesh && o.material) markDirty(o.material); });
     }
     this._configureShadow();
+    this.invalidateShadows();
     this._applyToneMapping();
     this.camera.fov = settings.fov;
     this.camera.updateProjectionMatrix();
@@ -561,12 +615,39 @@ export class GameWorld {
   get postEnabled() { return this.post.enabled; }
 
   /**
+   * Decides whether this frame redraws the shadow map.
+   *
+   * `shadowMap.autoUpdate` is off, so three only runs the depth pass on the
+   * frames this arms it for. Skipping one leaves the *previous* map in place
+   * along with the matrix it was rendered with — three computes both together
+   * — so a stale shadow stays pinned to the world exactly where it was rather
+   * than swimming, which is what makes the saving free.
+   */
+  _tickShadow(dt) {
+    if (!this.renderer.shadowMap.enabled) return;
+    const hz = quality().shadowHz ?? 60;
+    this._shadowAcc += dt;
+    // The same slack the frame cap uses: a display running at exactly `hz`
+    // must not drop every other update to floating-point noise.
+    if (this._shadowAcc < 1 / hz - 0.0008) return;
+    this._shadowAcc = 0;
+    this.renderer.shadowMap.needsUpdate = true;
+  }
+
+  /** Redraws the shadow map on the next frame, whatever the clock says. */
+  invalidateShadows() {
+    this._shadowAcc = 1;
+    this.renderer.shadowMap.needsUpdate = true;
+  }
+
+  /**
    * Draws the world, then hands the buffer to the viewmodel to draw its gun on
    * top with a cleared depth buffer, then resolves post-processing.
    * @param {?function} drawOverlay called with the render target still bound
    */
   render(dt = 0.016, drawOverlay = null) {
     if (this.skyDome) this.skyDome.position.copy(this.camera.position);
+    this._tickShadow(dt);
 
     if (this.post.enabled) {
       this.post.begin();

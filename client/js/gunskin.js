@@ -29,6 +29,9 @@ import { MAT, paintFor } from '/shared/weapons.js';
 
 const TILE = 128;
 
+/** Welded part lists, keyed by weapon + finish + detail level. */
+const recipes = new Map();
+
 /** Shading per model material — this is what separates steel from polymer. */
 export const FINISH = {
   [MAT.METAL]: { shininess: 78, specular: 0x8b939c, emissive: 0x05070a },
@@ -481,25 +484,203 @@ export function gunMaterial(part, skin) {
   return mat;
 }
 
-/** Builds one weapon's meshes. `fine: false` drops the detail work (third person). */
-export function buildWeaponMesh(def, skin, { fine = true, clone = false } = {}) {
-  const group = new THREE.Group();
-  const tagged = [];
+/* ── Batching ────────────────────────────────────────────────────────────── */
+
+/**
+ * The parts list for one weapon, one finish and one detail level — welded.
+ *
+ * Cached, because the geometry that comes out of a weld depends only on those
+ * three things: eight players carrying the same rifle carry byte-identical
+ * buffers, and building them per body meant eight uploads on every join. The
+ * *materials* still get cloned per body where the caller asks for it (a death
+ * fade moves opacity), which costs nothing — a material is a handful of
+ * numbers pointing at a texture everybody already shares.
+ *
+ * @returns {Array<{geo: THREE.BufferGeometry, mat: THREE.Material,
+ *                  p: ?number[], r: ?number[], tag: ?string}>}
+ */
+function weaponRecipe(def, skin, fine, collapse) {
+  const key = `${def?.id ?? '?'}|${skin?.id ?? 'default'}|${fine ? 1 : 0}|${collapse}`;
+  const hit = recipes.get(key);
+  if (hit) return hit;
+
+  const loose = [];
+  /** material -> the baked geometries that will become one mesh. */
+  const batches = new Map();
+  const m4 = new THREE.Matrix4();
+  const euler = new THREE.Euler();
+
   for (const p of def?.model?.parts ?? []) {
     if (!fine && p.fine) continue;
-    const base = gunMaterial(p, skin);
-    // A clone belongs to whoever asked for it, so it must not inherit the
-    // cache's "leave me alone" flag — the texture behind it still carries one.
-    const mat = clone ? base.clone() : base;
-    if (clone) mat.userData = {};
-    const m = new THREE.Mesh(skinnedBoxGeometry(p.s[0], p.s[1], p.s[2]), mat);
-    m.position.set(p.p[0], p.p[1], p.p[2]);
-    if (p.r) m.rotation.set(p.r[0], p.r[1], p.r[2]);
+    const mat = gunMaterial(p, skin);
+    const geo = skinnedBoxGeometry(p.s[0], p.s[1], p.s[2]);
+    // `static` keeps the tagged parts — a magazine, a bolt, a cylinder — as
+    // meshes of their own, because the reload animation moves them. Everything
+    // else on the gun is welded to everything else and can be one buffer.
+    if (collapse === 'none' || (collapse === 'static' && p.tag)) {
+      loose.push({ geo, mat, p: p.p, r: p.r ?? null, tag: p.tag ?? null });
+      continue;
+    }
+    euler.set(p.r?.[0] ?? 0, p.r?.[1] ?? 0, p.r?.[2] ?? 0);
+    m4.makeRotationFromEuler(euler);
+    m4.setPosition(p.p[0], p.p[1], p.p[2]);
+    // `clone` copies `userData` by reference, and the cached box geometries
+    // carry `shared: true` — inheriting it would make the baked copy immortal.
+    const baked = geo.clone();
+    baked.userData = {};
+    baked.applyMatrix4(m4);
+    let list = batches.get(mat);
+    if (!list) batches.set(mat, (list = []));
+    list.push(baked);
+  }
+
+  const recipe = loose;
+  for (const [mat, list] of batches) {
+    const geo = list.length === 1 ? list[0] : weldGeometries(list);
+    if (list.length > 1) for (const g of list) g.dispose();
+    // Cached for the life of the page like every other geometry here, so the
+    // teardown walkers know to leave it alone.
+    geo.userData.shared = true;
+    recipe.push({ geo, mat, p: null, r: null, tag: null });
+  }
+  recipes.set(key, recipe);
+  return recipe;
+}
+
+/**
+ * One weapon, built as meshes.
+ *
+ * `collapse` decides how much of it is welded into shared buffers: `none`
+ * leaves every part its own mesh, `static` welds all but the parts a reload
+ * animates, and `all` welds the lot.
+ */
+export function buildWeaponMesh(def, skin, { fine = true, clone = false, collapse = 'none' } = {}) {
+  const group = new THREE.Group();
+  const tagged = [];
+  /**
+   * One clone per cached material, not one per part.
+   *
+   * A clone is per-weapon so a death fade can move its opacity without
+   * touching anybody else's gun — but two parts cut from the same steel are
+   * still the same steel, and separate clones would keep them in separate
+   * draw calls for the rest of the match.
+   */
+  const clones = clone ? new Map() : null;
+
+  for (const part of weaponRecipe(def, skin, fine, collapse)) {
+    let mat = part.mat;
+    if (clones) {
+      mat = clones.get(part.mat);
+      if (!mat) {
+        mat = part.mat.clone();
+        // The clone belongs to whoever asked for it, so it must not inherit
+        // the cache's "leave me alone" flag — its texture still carries one.
+        mat.userData = {};
+        clones.set(part.mat, mat);
+      }
+    }
+    const m = new THREE.Mesh(part.geo, mat);
+    if (part.p) m.position.set(part.p[0], part.p[1], part.p[2]);
+    if (part.r) m.rotation.set(part.r[0], part.r[1], part.r[2]);
     group.add(m);
-    if (p.tag) tagged.push([p.tag, m]);
+    if (part.tag) tagged.push([part.tag, m]);
   }
   group.userData.tagged = tagged;
   return group;
+}
+
+/**
+ * Welds several indexed box geometries into one.
+ *
+ * Deliberately narrow: every geometry it is ever handed comes out of
+ * `skinnedBoxGeometry`, so they all carry exactly position/normal/uv and an
+ * index, and there is no attribute reconciliation to do. Shipping three's
+ * `BufferGeometryUtils` for this would be a second copy of a library the
+ * client does not otherwise need.
+ */
+function weldGeometries(list) {
+  let verts = 0, indices = 0;
+  for (const g of list) {
+    verts += g.attributes.position.count;
+    indices += g.index.count;
+  }
+  const position = new Float32Array(verts * 3);
+  const normal = new Float32Array(verts * 3);
+  const uv = new Float32Array(verts * 2);
+  const index = verts > 65535 ? new Uint32Array(indices) : new Uint16Array(indices);
+
+  let v = 0, i = 0;
+  for (const g of list) {
+    position.set(g.attributes.position.array, v * 3);
+    normal.set(g.attributes.normal.array, v * 3);
+    uv.set(g.attributes.uv.array, v * 2);
+    const src = g.index.array;
+    for (let k = 0; k < src.length; k++) index[i + k] = src[k] + v;
+    v += g.attributes.position.count;
+    i += src.length;
+  }
+
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(position, 3));
+  out.setAttribute('normal', new THREE.BufferAttribute(normal, 3));
+  out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  out.setIndex(new THREE.BufferAttribute(index, 1));
+  return out;
+}
+
+/**
+ * Collapses an assembly of little boxes into one mesh per material.
+ *
+ * A rifle is forty parts and a hand is a dozen, and every one of them used to
+ * be its own draw call — for the viewmodel that is sixty draws a frame before
+ * the world has been touched, and for eight bodies on screen it is another
+ * hundred and twenty. None of those parts ever move relative to each other, so
+ * their transforms can be baked into the vertices once, at build time, and the
+ * whole gun handed to the GPU in four or five calls instead.
+ *
+ * @param {THREE.Object3D} root the assembly, modified in place
+ * @param {?function} keep returns true for a mesh that must stay on its own
+ *        because something animates it
+ */
+export function collapseStatic(root, keep = null) {
+  root.updateMatrixWorld(true);
+  const toLocal = new THREE.Matrix4().copy(root.matrixWorld).invert();
+  const local = new THREE.Matrix4();
+  /** material -> the baked geometries that will become one mesh. */
+  const batches = new Map();
+  const merged = [];
+  const empties = [];
+
+  root.traverse((o) => {
+    if (o === root) return;
+    if (!o.isMesh) { if (o.isGroup) empties.push(o); return; }
+    if (keep && keep(o)) return;
+    const geo = o.geometry;
+    const a = geo?.attributes;
+    if (!geo?.index || !a?.position || !a?.normal || !a?.uv) return;
+    local.multiplyMatrices(toLocal, o.matrixWorld);
+    // `clone` copies `userData` by reference, and the cached box geometries
+    // carry `shared: true` — inheriting it would make the baked copy immortal.
+    const baked = geo.clone();
+    baked.userData = {};
+    baked.applyMatrix4(local);
+    let list = batches.get(o.material);
+    if (!list) batches.set(o.material, (list = []));
+    list.push(baked);
+    merged.push(o);
+  });
+  if (!merged.length) return root;
+
+  for (const mesh of merged) mesh.parent?.remove(mesh);
+  for (const [material, list] of batches) {
+    const geo = list.length === 1 ? list[0] : weldGeometries(list);
+    if (list.length > 1) for (const g of list) g.dispose();
+    root.add(new THREE.Mesh(geo, material));
+  }
+  // Whatever sub-group the parts hung off is now an empty node in the middle
+  // of every matrix walk; nothing is left for it to hold.
+  for (const g of empties) if (!g.children.length) g.parent?.remove(g);
+  return root;
 }
 
 /** Every finish the shop can offer, painted once so a card can show the real thing. */
@@ -508,4 +689,4 @@ export function skinSwatchCss(skin) {
   return `linear-gradient(135deg, ${hex(c[0])} 0%, ${hex(c[1])} 52%, ${hex(c[2] ?? c[0])} 100%)`;
 }
 
-export default { gunMaterial, skinnedBoxGeometry, buildWeaponMesh, FINISH, skinSwatchCss };
+export default { gunMaterial, skinnedBoxGeometry, buildWeaponMesh, collapseStatic, FINISH, skinSwatchCss };

@@ -312,6 +312,23 @@ export class Menu {
     this._padMove(dir);
   }
 
+  /**
+   * Is a full-screen sheet sitting over the backdrop right now?
+   *
+   * The menu renders a live match behind itself, and behind a settings panel
+   * or a modal that match is a couple of dark, blurred strips down the edges
+   * of the screen. Drawing it at the display's full rate there is a whole 3D
+   * frame — shadow pass, post chain and all — spent on something nobody is
+   * looking at, so the loop slows the backdrop down instead. See `Game.loop`.
+   */
+  get coveredByPanel() {
+    for (const id of ['reportCard', 'playerCard', 'classModal', 'authModal', 'menuPanel']) {
+      const el = $(id);
+      if (el && !el.classList.contains('hidden')) return true;
+    }
+    return false;
+  }
+
   /** The surface a pad is currently inside: the topmost open thing. */
   _padScope() {
     for (const id of ['reportCard', 'playerCard', 'classModal', 'authModal']) {
@@ -990,18 +1007,18 @@ export class Menu {
     sfx.ui();
     this.cardName = name;
     card.classList.remove('hidden');
-    body.innerHTML = `<div class="pc-head"><h3>${escapeHtml(name)}</h3></div>
-      <p class="empty">Loading…</p>`;
+    body.innerHTML = `<div class="pc-stub"><h3>${escapeHtml(name)}</h3>
+      <p class="empty">Loading…</p></div>`;
 
     let data;
     try {
       data = await api.player(name);
     } catch (ex) {
       if (this.cardName !== name) return;               // a later click won
-      body.innerHTML = `<div class="pc-head"><h3>${escapeHtml(name)}</h3></div>
+      body.innerHTML = `<div class="pc-stub"><h3>${escapeHtml(name)}</h3>
         <p class="empty">${escapeHtml(ex.status === 404
     ? 'That name has no account behind it — a guest, or a player who has since been removed.'
-    : ex.message || 'That profile is unavailable right now.')}</p>`;
+    : ex.message || 'That profile is unavailable right now.')}</p></div>`;
       return;
     }
     if (this.cardName !== name) return;
@@ -2213,7 +2230,7 @@ export class Menu {
     const level = user.level ?? 1;
     const span = Math.max(1, (user.nextLevelXp ?? 0) - (user.levelXp ?? 0));
     const into = Math.max(0, (user.xp ?? 0) - (user.levelXp ?? 0));
-    const pct = Math.max(0, Math.min(100, (into / span) * 100));
+    const pct = Math.max(0, Math.min(100, (into / span) * 100)).toFixed(1);
     $('progLevel').textContent = level;
     $('progXpFill').style.width = `${pct}%`;
     $('progXpText').textContent = `${fmtNum(into)} / ${fmtNum(span)} XP`;
@@ -2859,28 +2876,39 @@ const clanPic = (c) => (c.avatar
 function playerCardHtml({ user, recent = [] }) {
   const s = user.stats ?? {};
   const span = Math.max(1, (user.nextLevelXp ?? 1) - (user.levelXp ?? 0));
-  const pct = Math.max(0, Math.min(100, ((user.xp - (user.levelXp ?? 0)) / span) * 100));
+  const into = Math.max(0, (user.xp ?? 0) - (user.levelXp ?? 0));
+  const pct = Math.max(0, Math.min(100, (into / span) * 100)).toFixed(1);
 
-  const cells = [
-    ['SCORE', fmtNum(s.score ?? 0)], ['KILLS', fmtNum(s.kills ?? 0)], ['DEATHS', fmtNum(s.deaths ?? 0)],
-    ['K/D', s.kd ?? 0], ['HEADSHOTS', fmtNum(s.headshots ?? 0)], ['ACCURACY', `${s.accuracy ?? 0}%`],
-    ['WINS', s.wins ?? 0], ['MATCHES', s.matches ?? 0], ['BEST STREAK', s.bestStreak ?? 0],
-    ['DAMAGE', fmtNum(s.damage ?? 0)], ['ASSISTS', fmtNum(s.assists ?? 0)], ['PLAYTIME', fmtDuration(s.playtime ?? 0)],
+  // Three figures carry the hero band. They are the ones a player looks for
+  // first, and putting them beside the name is what makes the card read
+  // across rather than down.
+  const headline = [
+    ['K/D', s.kd ?? 0],
+    ['KILLS', fmtNum(s.kills ?? 0)],
+    ['WINS', fmtNum(s.wins ?? 0)],
   ];
 
-  const matches = recent.slice(0, 5).map((m) => `
-    <div class="match-row ${m.won ? 'won' : 'lost'}">
-      <span class="m-map">${escapeHtml(m.map)}</span>
-      <span class="m-mode">${escapeHtml(String(m.mode).toUpperCase())}</span>
-      <span class="m-kd">${m.kills}<i>/</i>${m.deaths}</span>
-      <span class="m-score">${fmtNum(m.score)}<small>pts</small></span>
-      <span class="m-when">${fmtAgo(m.started_at)}</span>
+  const cells = [
+    ['SCORE', fmtNum(s.score ?? 0)], ['DEATHS', fmtNum(s.deaths ?? 0)],
+    ['ASSISTS', fmtNum(s.assists ?? 0)], ['HEADSHOTS', fmtNum(s.headshots ?? 0)],
+    ['ACCURACY', `${s.accuracy ?? 0}%`], ['DAMAGE', fmtNum(s.damage ?? 0)],
+    ['MATCHES', fmtNum(s.matches ?? 0)], ['BEST STREAK', s.bestStreak ?? 0],
+    ['PLAYTIME', fmtDuration(s.playtime ?? 0)],
+  ];
+
+  const matches = recent.slice(0, 6).map((m) => `
+    <div class="pcm-row ${m.won ? 'won' : 'lost'}">
+      <span class="pcm-flag">${m.won ? 'W' : 'L'}</span>
+      <span class="pcm-map">${escapeHtml(m.map)}<i>${escapeHtml(String(m.mode).toUpperCase())}</i></span>
+      <span class="pcm-kd">${m.kills}<i>/</i>${m.deaths}</span>
+      <span class="pcm-score">${fmtNum(m.score)}<i>pts</i></span>
+      <span class="pcm-when">${fmtAgo(m.started_at)}</span>
     </div>`).join('');
 
   return `
     <div class="pc-hero">
       <span class="pc-avatar av-frame">
-        <img class="av-img hidden" alt="" width="86" height="86"><span class="av-initial">?</span>
+        <img class="av-img hidden" alt="" width="96" height="96"><span class="av-initial">?</span>
       </span>
       <div class="pc-id">
         <h3>${clanTag(user.clan, user.clanVerified)}<span class="pc-name">${escapeHtml(user.username)}</span>${
@@ -2891,15 +2919,29 @@ function playerCardHtml({ user, recent = [] }) {
           ${user.clan ? `<span class="pill${user.clanVerified ? ' gold' : ''}">CLAN ${escapeHtml(user.clan)}${
   user.clanVerified ? ' · VERIFIED' : ''}</span>` : ''}
         </div>
-        <div class="ph-level">
-          <div class="ph-lv"><b>${user.level}</b><small>LEVEL</small></div>
-          <div class="ph-bar"><i style="width:${pct}%"></i><span>${fmtNum(user.xp - (user.levelXp ?? 0))} / ${fmtNum(span)} XP</span></div>
+        <div class="pc-xp">
+          <span class="pc-lv"><b>${user.level}</b><small>LEVEL</small></span>
+          <span class="pc-bar"><i style="width:${pct}%"></i></span>
+          <span class="pc-xp-num">${fmtNum(into)} / ${fmtNum(span)} XP</span>
         </div>
       </div>
+      <div class="pc-headline">${headline.map(([k, v]) =>
+    `<div class="pc-big"><b>${v}</b><span>${k}</span></div>`).join('')}</div>
     </div>
-    <div class="stat-grid pc-stats">${cells.map(([k, v]) =>
-    `<div class="stat-cell"><b>${v}</b><span>${k}</span></div>`).join('')}</div>
-    ${matches ? `<h4 class="pc-sub">RECENT MATCHES</h4><div class="match-list">${matches}</div>` : ''}`;
+
+    <div class="pc-cols">
+      <section class="pc-col">
+        <h4 class="pc-sub">CAREER</h4>
+        <div class="pc-grid">${cells.map(([k, v]) =>
+    `<div class="pc-cell"><b>${v}</b><span>${k}</span></div>`).join('')}</div>
+      </section>
+      <section class="pc-col">
+        <h4 class="pc-sub">RECENT MATCHES</h4>
+        ${matches
+    ? `<div class="pcm-list">${matches}</div>`
+    : '<p class="empty small">No matches on record yet.</p>'}
+      </section>
+    </div>`;
 }
 
 function escapeHtml(s) {

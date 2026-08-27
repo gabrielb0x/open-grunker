@@ -17,7 +17,7 @@
  * wrote it: what they can now do, or what stopped going wrong.
  */
 
-export const GAME_VERSION = '1.7.0';
+export const GAME_VERSION = '1.8.0';
 
 export const PATCH_KINDS = {
   new: { label: 'NEW', color: '#4ddb7a' },
@@ -26,6 +26,20 @@ export const PATCH_KINDS = {
 };
 
 export const PATCH_NOTES = [
+  {
+    version: '1.8.0',
+    date: '2026-08-27',
+    title: 'A faster frame everywhere, a profile card worth opening, and guests you can moderate',
+    changes: [
+      { kind: 'change', text: 'The game runs faster and looks exactly the same. Nothing was turned down: no draw distance was shortened, no effect was cut and no texture got smaller. What went away is work that produced no pixels \u2014 the shadow map redrawing the entire level from the sun on every single frame, and the sky being painted across the whole screen before the town was painted on top of it.' },
+      { kind: 'change', text: 'Weapons and hands are drawn in a handful of pieces instead of sixty. Every part of a gun that never moves is welded together when the gun is built, and eight players carrying the same rifle share one copy of it rather than uploading eight. The magazine, the bolt and the cylinder are still their own pieces, because the reload moves them.' },
+      { kind: 'change', text: 'Turning an effect off now actually turns it off. Chromatic aberration and film grain were still being computed and multiplied by zero, and with the bloom slider at zero three whole render passes were running to produce nothing.' },
+      { kind: 'change', text: 'The interface no longer frosts the game behind it. That blur was a second, hidden render of whatever was behind every HUD panel and every killfeed line, sixty times a second, for the length of every match. The panels are a shade darker instead, so a white health number is still readable against a white house.' },
+      { kind: 'change', text: 'Bodies standing behind you are no longer animated, and the menu stops drawing the match behind it at full speed while a settings panel or a window is covering it.' },
+      { kind: 'change', text: 'The profile card reads across instead of down. Picture, name, clan tag and level along one band with your K/D, kills and wins beside them, then your career and your last six matches side by side. It used to be a narrow strip you had to scroll to the bottom of.' },
+      { kind: 'new', text: 'Guests can be moderated. Anybody playing without an account now appears at the top of the admin panel\u2019s player list for as long as they are connected \u2014 with the room they are in and what they have done in it \u2014 and can be kicked, or banned by address, which is the only kind of ban that outlives somebody who has no account to ban.' },
+    ],
+  },
   {
     version: '1.7.0',
     date: '2026-08-27',

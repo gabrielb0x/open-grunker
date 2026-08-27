@@ -1,6 +1,6 @@
 {
   "name": "open-grunker",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Open Grunker \u2014 an open-source, self-hostable 3D FPS arena shooter heavily inspired by krunker.io",
   "type": "module",
   "license": "MIT",

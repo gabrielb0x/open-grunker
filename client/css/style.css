@@ -308,9 +308,9 @@ kbd {
 }
 .kf-row {
   display: flex; align-items: center; gap: 6px;
-  background: rgba(9,12,18,.74); border-right: 3px solid var(--line-2);
+  background: rgba(9,12,18,.84); border-right: 3px solid var(--line-2);
   padding: 5px 11px; font-size: 12.5px; border-radius: var(--r-sm);
-  box-shadow: var(--shadow-sm); backdrop-filter: blur(6px);
+  box-shadow: var(--shadow-sm);
   animation: kfIn .2s ease-out; max-width: 100%;
 }
 .kf-row.mine { border-right-color: var(--accent); background: rgba(245, 166, 35, .18); }
@@ -448,12 +448,20 @@ kbd {
 /*
  * The bottom corners are read at a glance, mid-fight, against a bright sunlit
  * world. A translucent dark panel behind them is what keeps a white health
- * number legible over a white house — the blur is not decoration.
+ * number legible over a white house.
+ *
+ * It used to be a frosted one. `backdrop-filter` makes the compositor copy the
+ * region behind the element and blur it *every frame*, and behind this element
+ * is a WebGL canvas that repaints every frame — so the frost was a second,
+ * hidden render pass running for the lifetime of every match, on the panels
+ * and on every full-screen sheet over them. The gradient below is a shade
+ * heavier than the flat tint the blur sat on, which buys back the legibility
+ * the blur was there for and costs nothing to composite.
  */
 #bottomLeft {
   position: absolute; left: 20px; bottom: 20px;
   padding: 12px 16px 13px; border-radius: var(--r);
-  background: rgba(9,12,18,.42); backdrop-filter: blur(10px);
+  background: linear-gradient(180deg, rgba(11,15,22,.62), rgba(6,9,14,.72));
   box-shadow: var(--shadow-sm), var(--ring);
 }
 .hp-wrap { display: flex; align-items: center; gap: 12px; }
@@ -490,7 +498,7 @@ kbd {
   position: absolute; right: 20px; bottom: 20px; text-align: right;
   min-width: 196px;
   padding: 10px 16px 12px; border-radius: var(--r);
-  background: rgba(9,12,18,.42); backdrop-filter: blur(10px);
+  background: linear-gradient(180deg, rgba(11,15,22,.62), rgba(6,9,14,.72));
   box-shadow: var(--shadow-sm), var(--ring);
 }
 .ammo { font-size: 44px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums;
@@ -530,7 +538,7 @@ kbd {
 #perf {
   position: absolute; left: 20px; top: 14px; display: flex; gap: 12px;
   padding: 6px 11px; border-radius: var(--r-pill);
-  background: rgba(9,12,18,.5); backdrop-filter: blur(8px);
+  background: rgba(9,12,18,.66);
   font: 600 11px/1 var(--mono); color: var(--muted); letter-spacing: .06em;
   text-shadow: 0 1px 3px #000;
 }
@@ -1139,7 +1147,7 @@ kbd {
 
 #menuPanel {
   position: absolute; inset: 0; z-index: 4; display: grid; place-items: center;
-  padding: 20px; background: rgba(4,6,10,.72); backdrop-filter: blur(3px);
+  padding: 20px; background: rgba(4,6,10,.84);
   animation: panelIn .16s ease-out;
 }
 .panel-card {
@@ -1776,22 +1784,121 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
 
 /* ═══ Player card ══════════════════════════════════════════════════════
    The one profile view, opened from anywhere a name is drawn.
+
+   Laid out across rather than down. A profile is three things — who somebody
+   is, what their career says, and what they have been playing — and stacking
+   them made a column tall enough to scroll on a laptop for a card whose whole
+   job is to be read at a glance and dismissed. So: one hero band with the
+   identity on the left and the three figures anybody actually looks for on
+   the right, then two columns side by side under it. Below 900px wide there
+   is no room for two columns and it folds back into one.
    ═══════════════════════════════════════════════════════════════════════ */
 
-.pc-card { width: min(640px, 94vw); max-height: 88vh; overflow: auto; padding: 22px; }
-.pc-hero { display: grid; grid-template-columns: 86px 1fr; gap: 18px; align-items: center; }
+/* Both classes, because `.modal-card` is declared later in this file and would
+   otherwise win the width and the padding on source order alone. The card that
+   lost that argument rendered at four hundred pixels with its name centred —
+   which is most of what made this thing read as a narrow vertical strip. */
+.modal-card.pc-card { width: min(1080px, 96vw); max-height: 90vh; overflow: auto; padding: 0; }
+.pc-body { display: flex; flex-direction: column; }
+
+/* — The hero band — */
+.pc-hero {
+  display: grid; grid-template-columns: 96px minmax(0, 1fr) auto;
+  gap: 22px; align-items: center;
+  padding: 26px 30px 24px;
+  background:
+    radial-gradient(120% 180% at 0% 0%, rgba(245,166,35,.13), transparent 58%),
+    linear-gradient(180deg, var(--panel-2), var(--panel));
+  border-bottom: 1px solid var(--line);
+}
 .pc-avatar {
-  position: relative; width: 86px; height: 86px; border-radius: 50%; overflow: hidden;
+  position: relative; width: 96px; height: 96px; border-radius: 50%; overflow: hidden;
   display: grid; place-items: center; flex: none;
-  border: 1px solid var(--line-2);
+  border: 1px solid var(--line-2); box-shadow: 0 10px 26px rgba(0,0,0,.45), var(--ring);
 }
 .pc-avatar .av-img { width: 100%; height: 100%; object-fit: cover; }
-.pc-avatar .av-initial { font: 800 34px/1 var(--hud-font); color: rgba(255,255,255,.9); }
-.pc-id h3 { display: flex; align-items: center; gap: 4px; margin: 0 0 8px;
-  font-size: 20px; letter-spacing: .04em; text-align: left; }
-.pc-name { letter-spacing: .02em; }
-.pc-stats { margin-top: 18px; }
-.pc-sub { margin: 20px 0 8px; font-size: 11px; letter-spacing: .2em; color: var(--muted); }
+.pc-avatar .av-initial { font: 800 38px/1 var(--hud-font); color: rgba(255,255,255,.9); }
+.pc-id { min-width: 0; }
+.pc-hero .pc-id h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 10px;
+  font-size: 24px; letter-spacing: .03em; text-align: left; }
+.pc-name { letter-spacing: .02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-id .ph-tags { flex-wrap: wrap; margin-bottom: 12px; }
+
+/* Level, XP bar and the count, all on one line under the name. */
+.pc-xp { display: flex; align-items: center; gap: 12px; }
+.pc-lv { display: flex; align-items: baseline; gap: 5px; flex: none; }
+.pc-lv b { font-size: 22px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.pc-lv small { font-size: 9px; letter-spacing: .18em; color: var(--muted); }
+.pc-bar {
+  position: relative; flex: 1; min-width: 80px; height: 8px; overflow: hidden;
+  background: rgba(255,255,255,.07); border-radius: var(--r-pill);
+}
+.pc-bar i { position: absolute; inset: 0 auto 0 0; border-radius: var(--r-pill);
+  background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.pc-xp-num { flex: none; font: 600 10.5px/1 var(--mono); color: var(--muted);
+  font-variant-numeric: tabular-nums; }
+
+/* The three figures on the right of the band. */
+.pc-headline { display: flex; gap: 10px; flex: none; }
+.pc-big {
+  min-width: 92px; padding: 12px 16px; text-align: center;
+  background: rgba(255,255,255,.035); border: 1px solid var(--line);
+  border-radius: var(--r); box-shadow: var(--ring);
+}
+.pc-big b { display: block; font: 700 24px/1.1 var(--hud-font); font-variant-numeric: tabular-nums; }
+.pc-big span { font-size: 9px; letter-spacing: .18em; color: var(--muted); }
+
+/* — The two columns — */
+.pc-cols { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); }
+.pc-col { padding: 20px 26px 26px; min-width: 0; }
+.pc-col + .pc-col { border-left: 1px solid var(--line); }
+.pc-sub { margin: 0 0 12px; font-size: 10.5px; letter-spacing: .22em; color: var(--muted); }
+
+.pc-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.pc-cell {
+  padding: 11px 8px; text-align: center; border-radius: var(--r-sm);
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+.pc-cell b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; }
+.pc-cell span { font-size: 8.5px; letter-spacing: .14em; color: var(--muted); }
+
+.pcm-list { display: flex; flex-direction: column; gap: 6px; }
+.pcm-row {
+  display: grid; grid-template-columns: 26px minmax(0, 1fr) auto auto auto;
+  gap: 12px; align-items: center;
+  padding: 9px 12px; border-radius: var(--r-sm);
+  background: var(--panel-2); border: 1px solid var(--line);
+  font-size: 12.5px;
+}
+.pcm-flag {
+  display: grid; place-items: center; width: 22px; height: 22px; border-radius: var(--r-xs);
+  font: 700 11px/1 var(--hud-font);
+}
+.pcm-row.won .pcm-flag { color: var(--green); background: rgba(77,219,122,.14); }
+.pcm-row.lost .pcm-flag { color: var(--red); background: rgba(255,77,77,.13); }
+.pcm-map { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-weight: 600; }
+.pcm-map i { font-style: normal; font-size: 9px; letter-spacing: .16em; color: var(--dim); }
+.pcm-kd, .pcm-score { font-variant-numeric: tabular-nums; }
+.pcm-kd i { font-style: normal; color: var(--dim); margin: 0 1px; }
+.pcm-score i { font-style: normal; font-size: 9px; letter-spacing: .1em; color: var(--dim); margin-left: 3px; }
+.pcm-when { font-size: 10.5px; color: var(--dim); white-space: nowrap; }
+
+/* Loading and "no such account" wear the card without pretending to fill it. */
+.pc-stub { padding: 40px 30px; text-align: center; }
+.pc-body .pc-stub h3 { margin: 0 0 6px; font-size: 20px; letter-spacing: .04em; }
+.empty.small { padding: 8px 0; text-align: left; }
+
+@media (max-width: 900px) {
+  .pc-hero { grid-template-columns: 72px minmax(0, 1fr); gap: 16px; padding: 20px; }
+  .pc-avatar { width: 72px; height: 72px; }
+  .pc-avatar .av-initial { font-size: 30px; }
+  .pc-headline { grid-column: 1 / -1; }
+  .pc-big { flex: 1; min-width: 0; }
+  .pc-cols { grid-template-columns: minmax(0, 1fr); }
+  .pc-col + .pc-col { border-left: 0; border-top: 1px solid var(--line); }
+  .pc-col { padding: 18px 20px 22px; }
+}
+
 .pill.gold { color: var(--clan-gold); border-color: rgba(245,197,66,.5); background: rgba(245,197,66,.1); }
 
 /* ═══ Clans ════════════════════════════════════════════════════════════ */
@@ -1907,7 +2014,7 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
 /* ═══ Modals & overlays ════════════════════════════════════════════════ */
 
 .modal { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center;
-  background: rgba(4,6,10,.8); backdrop-filter: blur(3px); }
+  background: rgba(4,6,10,.88); }
 .modal-card { position: relative; width: min(400px, 92vw); padding: 26px;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow);
   animation: meIn .22s ease-out; }
@@ -1952,7 +2059,7 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
    ═══════════════════════════════════════════════════════════════════════ */
 #banScreen {
   position: fixed; inset: 0; z-index: 70; display: grid; place-items: center;
-  background: rgba(3,5,8,.86); backdrop-filter: blur(3px);
+  background: rgba(3,5,8,.93);
   animation: fadeIn .2s;
 }
 .ban-card {
@@ -1991,7 +2098,7 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
    ═══════════════════════════════════════════════════════════════════════ */
 #gateScreen {
   position: fixed; inset: 0; z-index: 68; display: grid; place-items: center;
-  background: rgba(3,5,8,.86); backdrop-filter: blur(3px);
+  background: rgba(3,5,8,.93);
   animation: fadeIn .2s;
 }
 .gate-card {
@@ -2021,7 +2128,7 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
 }
 
 #pause { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center;
-  background: rgba(4,6,10,.72); backdrop-filter: blur(2px); }
+  background: rgba(4,6,10,.84); }
 .pause-card { width: min(300px, 92vw); padding: 26px; text-align: center;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow); }
 .pause-card h2 { margin: 0 0 20px; font-size: 15px; letter-spacing: .3em; color: var(--muted); }
@@ -2047,7 +2154,7 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
   display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
   gap: 10px 14px; padding: 10px 14px;
   background: rgba(13,17,24,.92); border: 1px solid var(--line-2); border-radius: var(--r-lg);
-  box-shadow: 0 10px 30px rgba(0,0,0,.55); backdrop-filter: blur(3px);
+  box-shadow: 0 10px 30px rgba(0,0,0,.55);
   animation: toastIn .22s ease-out;
 }
 .spec-eye { color: #4fd0e8; font-size: 13px; animation: pulse 2.4s infinite; }

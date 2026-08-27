@@ -20,6 +20,18 @@ const BUFFER_MS = 1200;
 const DEATH_TIME = 2.2;
 const SKIN_TONES = [0xc99a72, 0x9d6a45, 0x71472c, 0xe0b593, 0x54341f];
 
+/** Bounding sphere used to decide whether a body is worth posing this frame. */
+const POSE_RADIUS = 1.6;
+/**
+ * Bodies closer than this are always posed, in view or not.
+ *
+ * A player just outside the edge of the screen still throws a shadow across
+ * it, and the sun is low on half the maps. Inside this radius the pose is
+ * cheap insurance; past it the shadow of a frozen leg lands somewhere nobody
+ * is looking.
+ */
+const POSE_ALWAYS_DISTANCE = 26;
+
 /**
  * Every box geometry a character is made of, shared across every character.
  *
@@ -205,7 +217,10 @@ function buildCharacter(teamColor, classDef, skinIdx = 0, weaponSkin = 'default'
     // several hundred draw calls a frame that buy exactly nothing. `clone`
     // because a death fade mutates opacity, and the cached material is shared
     // with every other player wearing the same finish.
-    const g2 = buildWeaponMesh(def, skinDef, { fine: false, clone: true });
+    // `collapse: 'all'` welds what is left into one mesh per material: a
+    // third-person gun has no reload animation to keep parts apart for, and
+    // eight bodies' worth of loose receiver furniture is a hundred draw calls.
+    const g2 = buildWeaponMesh(def, skinDef, { fine: false, clone: true, collapse: 'all' });
     g2.scale.setScalar(0.86);
     g2.position.set(0.3, 1.25, -0.4);
     g2.visible = false;
@@ -359,6 +374,16 @@ export class EntityManager {
     this.xray = false;
     this._fwd = new THREE.Vector3();
     this._to = new THREE.Vector3();
+    /**
+     * The camera's frustum, rebuilt once per frame.
+     *
+     * Posing a body is thirty rotations and thirty matrix recomputes; running
+     * it for someone standing behind you buys nothing, because three culls
+     * them out of the draw list on the very next line. See `_worthPosing`.
+     */
+    this._frustum = new THREE.Frustum();
+    this._viewProj = new THREE.Matrix4();
+    this._bounds = new THREE.Sphere(new THREE.Vector3(), POSE_RADIUS);
     this.visAcc = 0;
   }
 
@@ -512,7 +537,11 @@ export class EntityManager {
     const span = newer.t - older.t;
     const alpha = span > 0 ? Math.max(0, Math.min(1, (renderTime - older.t) / span)) : 0;
 
-    if (camera) camera.getWorldDirection(this._fwd);
+    if (camera) {
+      camera.getWorldDirection(this._fwd);
+      this._viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      this._frustum.setFromProjectionMatrix(this._viewProj);
+    }
 
     for (const e of this.players.values()) {
       const a = older.entries.get(e.id);
@@ -566,7 +595,7 @@ export class EntityManager {
       // Kept so local shot prediction uses the same hitbox the server rewinds.
       e.height = (crouching || sliding) ? K.PLAYER_CROUCH_HEIGHT : K.PLAYER_HEIGHT;
 
-      this._pose(e, dt, { crouching, sliding, grounded });
+      if (this._worthPosing(e, camera)) this._pose(e, dt, crouching, sliding, grounded);
 
       e.group.position.copy(e.pos);
       e.group.rotation.set(0, e.yaw, 0);
@@ -764,8 +793,24 @@ export class EntityManager {
       : 1;
   }
 
+  /**
+   * Is this body on screen — or close enough that its shadow might be?
+   *
+   * Everything `_pose` writes is invisible for a body the renderer is about to
+   * cull, and it is the most expensive thing done per player per frame: forty
+   * transform writes that each dirty a matrix `updateMatrixWorld` then has to
+   * recompute. With eight players behind you that is most of a millisecond
+   * spent animating limbs nobody can see.
+   */
+  _worthPosing(e, camera) {
+    if (!camera) return true;
+    if (e.pos.distanceToSquared(camera.position) < POSE_ALWAYS_DISTANCE * POSE_ALWAYS_DISTANCE) return true;
+    this._bounds.center.set(e.pos.x, e.pos.y + 1, e.pos.z);
+    return this._frustum.intersectsSphere(this._bounds);
+  }
+
   /** Leg swing, crouch squash, and aiming the torso/arms at the view pitch. */
-  _pose(e, dt, { crouching, sliding, grounded }) {
+  _pose(e, dt, crouching, sliding, grounded) {
     const u = e.group.userData;
     const moving = e.speed > 0.6;
 

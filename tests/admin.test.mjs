@@ -196,4 +196,41 @@ export default async function run() {
     info(notes.filter(Boolean).length + ' of 4 said so');
     return notes.every(Boolean);
   })());
+
+  /* ── The guest panel ───────────────────────────────────────────────────── */
+
+  suite('Admin panel — a guest with no account');
+
+  /** A guest row, shaped exactly as `/admin/players/guest:<n>` returns one. */
+  const guest = (over = {}) => ({
+    id: 'guest:41', guest: true, username: 'Guest-Vole', level: 1, gr: 0,
+    verified: false, avatar: null, clan: null, clanVerified: false, role: 'guest',
+    banned: false, bannedUntil: 0, banReason: null, lastIp: '203.0.113.55', ipBans: [],
+    live: { room: 'FRA:AAAA', roomId: 'town-ffa', map: 'burgtown', mode: 'ffa',
+      spectator: false, since: 1756200000 },
+    stats: { kills: 7, deaths: 2, kd: 3.5, score: 900, headshots: 3, accuracy: 28.4 },
+    ...over,
+  });
+
+  check('the guest panel offers the two sanctions that apply, and no account fields', (() => {
+    const body = document.createElement('div');
+    admin.renderGuestDetail(body, guest());
+    const has = (id) => !!body.querySelector(`#${id}`);
+    info(`${body.innerHTML.length}b · ${body.querySelectorAll('.mini').length} live figures`);
+    return has('btnBan') && has('btnKick') && has('fBanDays') && has('fBanReason')
+      // Nothing here can be edited: there is no row behind it.
+      && !has('btnSave') && !has('fName') && !has('fGr') && !has('btnMute')
+      && !has('btnDelete') && !has('fPassword')
+      && body.innerHTML.includes('203.0.113.55');
+  })());
+
+  check('a guest already banned by address is offered the lift instead', (() => {
+    const body = document.createElement('div');
+    admin.renderGuestDetail(body, guest({
+      banned: true, bannedUntil: 0, banReason: 'aimbot',
+      ipBans: [{ ip: '203.0.113.55', until: -1 }],
+    }));
+    return !!body.querySelector('#btnUnban') && !body.querySelector('#btnBan')
+      && body.innerHTML.includes('aimbot');
+  })());
 }
