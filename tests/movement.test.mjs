@@ -301,6 +301,65 @@ export default function run() {
     return turned < 45;
   })());
 
+  suite('Movement — god mode flight');
+
+  {
+    const flyWorld = new World(getMap('crossfire'));
+    const hover = () => {
+      const s = M.createState(0, 6, 0, 0);
+      for (let i = 0; i < 120; i++) M.step(s, { keys: 0, yaw: 0, pitch: 0 }, flyWorld, K.TICK_DT, { fly: true });
+      return s;
+    };
+
+    check('gravity is off — a flyer holding nothing stays where it is', (() => {
+      const s = hover();
+      info(`y ${s.y.toFixed(3)}, vy ${s.vy.toFixed(3)}`);
+      return Math.abs(s.y - 6) < 0.02 && Math.abs(s.vy) < 0.05;
+    })());
+
+    check('jump climbs and crouch descends', (() => {
+      const up = M.createState(0, 6, 0, 0);
+      for (let i = 0; i < 60; i++) M.step(up, { keys: M.KEY.JUMP, yaw: 0, pitch: 0 }, flyWorld, K.TICK_DT, { fly: true });
+      const down = M.createState(0, 20, 0, 0);
+      for (let i = 0; i < 60; i++) M.step(down, { keys: M.KEY.CROUCH, yaw: 0, pitch: 0 }, flyWorld, K.TICK_DT, { fly: true });
+      info(`up ${up.y.toFixed(1)} · down ${down.y.toFixed(1)}`);
+      return up.y > 12 && down.y < 14;
+    })());
+
+    check('forward follows the crosshair, not the floor', (() => {
+      const s = M.createState(0, 8, 0, 0);
+      for (let i = 0; i < 60; i++) {
+        M.step(s, { keys: M.KEY.FWD, yaw: 0, pitch: 0.9 }, flyWorld, K.TICK_DT, { fly: true });
+      }
+      info(`climbed to y ${s.y.toFixed(1)} while flying forward`);
+      return s.y > 12;
+    })());
+
+    check('a flyer is never grounded, so nothing downstream calls it a landing', (() => {
+      const s = M.createState(0, 0.2, 0, 0);
+      let landed = false;
+      for (let i = 0; i < 120; i++) {
+        M.step(s, { keys: M.KEY.CROUCH, yaw: 0, pitch: 0 }, flyWorld, K.TICK_DT, { fly: true });
+        if (s.landed || s.onGround) landed = true;
+      }
+      return !landed && M.fallDamage(s.fallSpeed) === 0;
+    })());
+
+    check('collision still applies — flight is not noclip', (() => {
+      const s = M.createState(0, 1.2, 0, 0);
+      const start = { x: s.x, z: s.z };
+      // Straight at the map for two seconds; something has to stop it.
+      let hitSomething = false;
+      for (let i = 0; i < 800; i++) {
+        M.step(s, { keys: M.KEY.FWD, yaw: 0, pitch: 0 }, flyWorld, K.TICK_DT, { fly: true });
+        if (flyWorld.overlapsAny(s.x - K.PLAYER_RADIUS, s.y, s.z - K.PLAYER_RADIUS,
+          s.x + K.PLAYER_RADIUS, s.y + s.height, s.z + K.PLAYER_RADIUS)) hitSomething = true;
+      }
+      info(`travelled ${Math.hypot(s.x - start.x, s.z - start.z).toFixed(1)} u, never inside geometry: ${!hitSomething}`);
+      return !hitSomething;
+    })());
+  }
+
   suite('Movement performance');
   const bodies = Array.from({ length: 12 }, (_, i) => M.createState(i * 3 - 18, 4, 0, 0));
   const t0 = performance.now();

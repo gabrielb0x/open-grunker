@@ -139,6 +139,7 @@ export class Net {
       case K.S2C.REPORT: this.emit('report', msg); break;
       case K.S2C.REPORTSTATE: this.emit('reportstate', msg); break;
       case K.S2C.NUKE: this.emit('nuke', msg); break;
+      case K.S2C.GOD: this.emit('god', msg); break;
       case K.S2C.SCORE: this.emit('score', msg); break;
       case K.S2C.POINTS: this.emit('points', msg); break;
       case K.S2C.MATCH: this.emit('match', msg); break;
@@ -226,6 +227,11 @@ export class Net {
   spectateMode(on) { this.send({ o: K.C2S.SPECMODE, v: on ? 1 : 0 }); }
   /** Spend an earned killstreak. The room decides whether it was earned. */
   nuke() { this.send({ o: K.C2S.NUKE }); }
+  /**
+   * Ask for god mode. The server re-checks the rank, so this is a request and
+   * never a permission — the client only ever draws what the server answered.
+   */
+  god(on) { this.send({ o: K.C2S.GOD, v: on ? 1 : 0 }); }
 }
 
 const round4 = (v) => Math.round(v * 10000) / 10000;

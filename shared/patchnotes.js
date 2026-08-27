@@ -17,7 +17,7 @@
  * wrote it: what they can now do, or what stopped going wrong.
  */
 
-export const GAME_VERSION = '1.6.0';
+export const GAME_VERSION = '1.7.0';
 
 export const PATCH_KINDS = {
   new: { label: 'NEW', color: '#4ddb7a' },
@@ -26,6 +26,22 @@ export const PATCH_KINDS = {
 };
 
 export const PATCH_NOTES = [
+  {
+    version: '1.7.0',
+    date: '2026-08-27',
+    title: 'Weapons you can actually look at, skins that are worth owning, and hands that hold the gun',
+    changes: [
+      { kind: 'change', text: 'Every weapon has been rebuilt. Slide serrations, ejection ports, charging handles, vented handguards, curved magazines, scope turrets, belt drums with brass coming out of them, a knife with a spine and a bevelled edge — roughly three times the detail on all eleven, and each one now reads as the gun it is meant to be rather than a stack of boxes.' },
+      { kind: 'change', text: 'The arms and hands are new. Two forearms, sleeves, cuffs, bare wrists and gloves with four fingers, a thumb and an index finger laid on the trigger. They are placed on each weapon’s own grips, so the fingers land on the actual grip and the support hand holds the actual handguard — or the pump, or the foregrip, or the butt of a pistol.' },
+      { kind: 'fix', text: 'The gun no longer disappears into the camera. A rifle’s butt stock used to sit behind your eye, which is why it was invisible, and anything that reached the near plane smeared across the screen. Every weapon is now framed for its own length: a rifle sits into the shoulder, a pistol is held out and higher, and the knife is turned so you can see the blade.' },
+      { kind: 'change', text: 'Skins are not tints any more. A finish now paints the gun by zone — receiver, working steel, furniture, hardware — so Gold Rush gilds the receiver and leaves the butt pad black rubber, and Carbon Fibre weaves the furniture and leaves the barrel blued. No finish ever touches a lens, a reticle or a tritium dot, so a gold rifle still has glass in its optic.' },
+      { kind: 'new', text: 'Every finish has a real pattern: pixel camouflage, splinter, four-tone woodland, sand-blasted wear, acid splatter, racing stripes, carbon weave, engraved scroll, folded damascus steel, glowing circuit traces, a stencilled issue number. All sixteen are painted on your own machine at load time — nothing extra is downloaded.' },
+      { kind: 'new', text: 'Your finish is on your gloves too, in first person and in third. A skin is something you wear as well as something you carry.' },
+      { kind: 'fix', text: 'Everybody else sees the finish you actually equipped. Third-person weapons were always factory grey, and changing class did not change the skin with it.' },
+      { kind: 'fix', text: 'Reloading a pistol no longer pulls the grip off the gun. The grip and the magazine were the same box; they are two things now, and only one of them leaves.' },
+      { kind: 'new', text: 'God mode, for administrators. There is a switch in the scoreboard’s footer: nothing can hurt you, and SPACE and CTRL fly you up and down while the crosshair steers. Walls still stop you. It lasts as long as the connection, is re-checked on every press, and both directions are written to the admin log.' },
+    ],
+  },
   {
     version: '1.6.0',
     date: '2026-08-25',

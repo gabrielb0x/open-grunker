@@ -11,29 +11,214 @@
  * pose is simply the transform that puts that point dead centre. Add a gun,
  * mark its rear notch, and it aims correctly the first time.
  *
+ * ── The hands ──────────────────────────────────────────────────────────────
+ * The arms are not decoration parked near the weapon. Every model declares
+ * where its two hands go — `model.grip` for the trigger hand, `model.fore` for
+ * the support hand, with `gripTilt` raking the first one along the grip and
+ * `foreKind` saying what the second one is holding on to. An articulated hand
+ * is built at each anchor: palm, four fingers, a thumb, an index finger laid on
+ * the trigger, a bare wrist and a sleeved forearm running out of frame toward
+ * the shoulder. Change a gun's grip and the fingers follow it, because they are
+ * placed from the same numbers the grip is.
+ *
+ * The gloves take their colour from the equipped finish, so a skin is something
+ * the player wears as well as something they carry.
+ *
  * Reloads are staged rather than a single swing — magazine out, magazine in,
  * action cycled — with a per-weapon flavour, because the reload is the
  * animation a player watches more than any other.
  */
 import * as THREE from 'three';
-import { SKINS, MAT } from '/shared/weapons.js';
+import { SKINS, gloveColor } from '/shared/weapons.js';
+import { buildWeaponMesh, skinnedBoxGeometry } from './gunskin.js';
 import { settings } from './settings.js';
 
-/** Where the gun rests when hip-firing, before per-player offsets. */
-const HIP = { x: 0.24, y: -0.2, z: -0.46 };
+/** Where the gun rests when hip-firing, before per-weapon and per-player offsets. */
+const HIP = { x: 0.2, y: -0.19, z: -0.46 };
 /** How far in front of the eye the aligned sight sits when aiming. */
 const ADS_Z = -0.42;
 const AKIMBO_OFFSET = 0.5;
 
-/** Shading per model material — this is what separates steel from polymer. */
-const FINISH = {
-  [MAT.METAL]: { shininess: 78, specular: 0x8b939c, emissive: 0x05070a },
-  [MAT.ALLOY]: { shininess: 46, specular: 0xa9b2bd, emissive: 0x070a0d },
-  [MAT.POLY]: { shininess: 14, specular: 0x2a2e33, emissive: 0x050607 },
-  [MAT.WOOD]: { shininess: 26, specular: 0x4a3a28, emissive: 0x0a0705 },
-  [MAT.RUBBER]: { shininess: 3, specular: 0x101214, emissive: 0x030405 },
-  [MAT.GLASS]: { shininess: 110, specular: 0xcfe8ff, emissive: 0x0a1a24 },
+/**
+ * Where each class of weapon rests, on top of `HIP`.
+ *
+ * A rifle is long and is held into the shoulder; a pistol is short and is held
+ * out at arm's length, higher and closer to the sight line. Framing them
+ * identically is what used to push a rifle's butt stock behind the camera and
+ * leave a pistol's hands below the bottom of the screen.
+ *
+ * `[x, y, z]`, plus an optional `[pitch, yaw, roll]` for the two weapons that
+ * are not pointed at anything: a knife held square to the camera is a blade
+ * seen end-on, and a rocket tube is carried across the shoulder rather than
+ * levelled. Both are turned so you can see what you are holding.
+ *
+ * Applied to the hip pose only — the aim-down-sights pose is derived from the
+ * sights and must not be nudged by anything.
+ */
+const REST = {
+  rifle: [0, 0.01, -0.3],
+  sniper: [0, 0, -0.4],
+  smg: [0, 0.02, -0.3],
+  lmg: [0, 0, -0.38],
+  dmr: [0, 0.01, -0.3],
+  shotgun: [0, 0.01, -0.37],
+  rpg: [0.01, 0.02, -0.5, -0.05, 0.2, -0.12],
+  revolver: [-0.01, 0.09, -0.22],
+  pistol: [-0.01, 0.1, -0.22],
+  akimbo: [0, 0.085, -0.18],
+  knife: [0.02, 0.02, -0.2, -0.1, 0.66, 0.3],
 };
+
+/* ── Hands ───────────────────────────────────────────────────────────────── */
+
+const SLEEVE = 0x2f353f;
+const SKIN_TONE = 0xc79470;
+const PAD = 0x1b1f25;
+
+const handMatCache = new Map();
+
+/** The five materials one pair of gloves needs, cached per finish colour. */
+function handMaterials(glove) {
+  let set = handMatCache.get(glove);
+  if (set) return set;
+  const phong = (color, shininess, specular) => {
+    const m = new THREE.MeshPhongMaterial({ color, shininess, specular });
+    // Cached and reused by every weapon this player ever draws, so `_clear`
+    // must leave it alone — see the note there.
+    m.userData.shared = true;
+    return m;
+  };
+  const g = new THREE.Color(glove);
+  set = {
+    sleeve: phong(SLEEVE, 6, 0x14181d),
+    cuff: phong(g.clone().multiplyScalar(0.55).getHex(), 12, 0x1c2128),
+    skin: phong(SKIN_TONE, 10, 0x2a201a),
+    glove: phong(glove, 18, g.clone().multiplyScalar(0.35).getHex()),
+    pad: phong(PAD, 4, 0x101317),
+  };
+  handMatCache.set(glove, set);
+  return set;
+}
+
+/**
+ * One box of a hand.
+ *
+ * `sx` mirrors the whole rig for the left hand, which is why every offset below
+ * is written for the right one and nothing is duplicated.
+ */
+function bone(group, mat, sx, w, h, d, x, y, z, rx = 0, ry = 0, rz = 0) {
+  const m = new THREE.Mesh(skinnedBoxGeometry(w, h, d), mat);
+  m.position.set(x * sx, y, z);
+  m.rotation.set(rx, ry * sx, rz * sx);
+  group.add(m);
+  return m;
+}
+
+/**
+ * A hand closed around a vertical column — a pistol grip, a vertical foregrip.
+ *
+ * The origin is the axis of whatever is being held. Palm behind and outboard,
+ * the three lower fingers wrapping across the front, the thumb laid up the
+ * inboard side, and the index finger reaching forward onto the trigger instead
+ * of curling with the rest. That last one is the detail that makes a fist read
+ * as a hand *on a gun* rather than a fist.
+ */
+function wrapHand(g, m, sx) {
+  bone(g, m.glove, sx, 0.056, 0.13, 0.056, 0.016, 0.005, 0.058);        // palm
+  bone(g, m.glove, sx, 0.056, 0.062, 0.062, 0.022, -0.062, 0.05);       // heel
+  bone(g, m.glove, sx, 0.064, 0.038, 0.05, 0.012, 0.064, 0.03);         // knuckles
+  bone(g, m.pad, sx, 0.066, 0.014, 0.04, 0.012, 0.082, 0.03);           // knuckle plate
+  const rows = [0.05, 0.016, -0.018, -0.05];
+  for (let i = 0; i < rows.length; i++) {
+    const y = rows[i];
+    bone(g, m.glove, sx, 0.032, 0.03, 0.072, 0.03, y, 0.012);           // proximal
+    if (i === 0) {
+      // Index: straight forward, on the trigger.
+      bone(g, m.glove, sx, 0.028, 0.026, 0.08, 0.028, y, -0.052);
+      bone(g, m.pad, sx, 0.03, 0.012, 0.03, 0.028, y - 0.012, -0.082);
+    } else {
+      bone(g, m.glove, sx, 0.078, 0.028, 0.032, -0.004, y, -0.032);     // distal, across the front
+      bone(g, m.pad, sx, 0.03, 0.026, 0.03, -0.03, y, -0.034);
+    }
+  }
+  bone(g, m.glove, sx, 0.034, 0.044, 0.05, -0.022, 0.03, 0.045);        // thumb metacarpal
+  bone(g, m.glove, sx, 0.032, 0.034, 0.078, -0.034, 0.026, -0.006, 0, 0, 0.2);
+  bone(g, m.skin, sx, 0.064, 0.072, 0.058, 0.028, -0.105, 0.07);        // bare wrist
+}
+
+/**
+ * A hand closed around a horizontal tube — a handguard, a pump, a knife handle.
+ *
+ * Origin on the tube's axis. The palm sits inboard and under, the fingers run
+ * up the far side one behind the other, and the thumb lies along the top
+ * pointing at the muzzle: the C-clamp everybody actually shoots with.
+ */
+function clampHand(g, m, sx) {
+  bone(g, m.glove, sx, 0.05, 0.075, 0.115, -0.05, -0.014, 0);           // palm
+  bone(g, m.glove, sx, 0.05, 0.062, 0.072, -0.054, -0.058, 0.048);      // heel
+  const cols = [0.052, 0.018, -0.016, -0.05];
+  for (let i = 0; i < cols.length; i++) {
+    const z = cols[i];
+    bone(g, m.glove, sx, 0.05, 0.03, 0.032, -0.028, -0.052, z);         // under the tube
+    bone(g, m.glove, sx, 0.03, 0.056, 0.032, 0.008, -0.03, z);          // up the far side
+    bone(g, m.pad, sx, 0.028, 0.03, 0.03, 0.01, 0.0, z);
+  }
+  bone(g, m.glove, sx, 0.044, 0.038, 0.034, -0.036, 0.03, 0.05);        // thumb metacarpal
+  bone(g, m.glove, sx, 0.032, 0.032, 0.082, -0.024, 0.038, -0.008, 0.18, 0, 0);
+  bone(g, m.skin, sx, 0.058, 0.062, 0.066, -0.062, -0.05, 0.082);       // bare wrist
+}
+
+/** A relaxed, half-open hand — what the empty hand does while a knife is out. */
+function openHand(g, m, sx) {
+  bone(g, m.glove, sx, 0.052, 0.108, 0.062, 0, 0, 0.02);
+  bone(g, m.glove, sx, 0.054, 0.05, 0.058, 0.004, -0.058, 0.026);
+  const rows = [0.046, 0.014, -0.018, -0.05];
+  for (const y of rows) {
+    bone(g, m.glove, sx, 0.03, 0.028, 0.08, 0.012, y, -0.05, -0.35);
+    bone(g, m.pad, sx, 0.028, 0.024, 0.03, 0.012, y - 0.026, -0.086);
+  }
+  bone(g, m.glove, sx, 0.032, 0.04, 0.05, -0.03, 0.028, 0.008, 0, 0, 0.3);
+  bone(g, m.skin, sx, 0.06, 0.068, 0.06, 0.006, -0.1, 0.04);
+}
+
+const HANDS = { wrap: wrapHand, clamp: clampHand, open: openHand };
+
+/**
+ * A whole arm: a hand at the origin and a sleeved forearm running out of it.
+ *
+ * The forearm is a child group aimed by two angles rather than a hand-placed
+ * box, so it always leaves the hand travelling down, back and outboard — into
+ * the bottom corner of the frame, which is where an arm attached to a shoulder
+ * you cannot see has to go.
+ */
+function buildArm({ pose, side, glove, tiltX = 1.3, tiltY = 0.4 }) {
+  const g = new THREE.Group();
+  const m = handMaterials(glove);
+  (HANDS[pose] ?? wrapHand)(g, m, side);
+
+  /*
+   * The forearm runs steeply down and only slightly back.
+   *
+   * The angle is not a style choice. A forearm aimed *backwards* from a hand
+   * that is already a third of a metre from the eye reaches the camera and out
+   * the other side, and a box straddling the near plane projects across the
+   * whole screen — which is exactly how an arm ends up looking like a plank
+   * laid over the view. Steep keeps every vertex comfortably in front of the
+   * eye and puts the elbow where an elbow belongs: off the bottom of the frame.
+   */
+  const fore = new THREE.Group();
+  fore.position.set(0.03 * side, -0.1, 0.07);
+  fore.rotation.set(tiltX, tiltY * side, 0);
+  bone(fore, m.cuff, side, 0.086, 0.09, 0.045, 0, 0, 0.036);
+  bone(fore, m.sleeve, side, 0.082, 0.086, 0.17, 0, 0, 0.145);
+  bone(fore, m.sleeve, side, 0.094, 0.098, 0.18, 0, 0, 0.3);
+  bone(fore, m.cuff, side, 0.098, 0.03, 0.085, 0, 0.05, 0.27);
+  g.add(fore);
+  return g;
+}
+
+/** Which hand shape holds what. */
+const POSE_FOR = { fore: 'clamp', pump: 'clamp', vert: 'wrap', cup: 'wrap', idle: 'open' };
 
 export class ViewModel {
   constructor(renderer) {
@@ -61,6 +246,12 @@ export class ViewModel {
     this.gunB = null;                 // second gun for akimbo classes
     this.root.add(this.gun);
 
+    /** The two arms, rebuilt per weapon because they are posed on its grips. */
+    this.armMain = null;
+    this.armOff = null;
+    /** Kept for the akimbo pair — the off hand rides the second gun. */
+    this.armB = null;
+
     /** Parts the animation moves independently, collected by their tag. */
     this.tagged = { mag: [], bolt: [], pump: [], cyl: [], slide: [] };
     this.tagHome = new Map();
@@ -77,9 +268,6 @@ export class ViewModel {
     this.scene.add(this.flashLight);
     this.flashTime = 0;
 
-    this.hands = this._buildHands();
-    this.root.add(this.hands);
-
     // Animation state
     this.bobPhase = 0;
     this.breathe = 0;
@@ -94,6 +282,7 @@ export class ViewModel {
     this.cycleDur = 0;
     this.drawT = 0;
     this.landDip = 0;
+    this.rest = { x: 0, y: 0, z: 0, pitch: 0, yaw: 0, roll: 0 };
     /** Knife swing: seconds left, total length, and which way it travels. */
     this.slashT = 0;
     this.slashDur = 0;
@@ -111,102 +300,86 @@ export class ViewModel {
     this.resize();
   }
 
-  _buildHands() {
-    const g = new THREE.Group();
-    const sleeve = new THREE.MeshPhongMaterial({ color: 0x333b47, shininess: 8, specular: 0x1a1f26 });
-    const glove = new THREE.MeshPhongMaterial({ color: 0x2a2f37, shininess: 16, specular: 0x22272e });
-    const skin = new THREE.MeshPhongMaterial({ color: 0xc28f68, shininess: 12, specular: 0x2a201a });
+  /* ── Building ──────────────────────────────────────────────────────────── */
 
-    const fore = new THREE.Mesh(new THREE.BoxGeometry(0.125, 0.125, 0.4), sleeve);
-    fore.position.set(0.055, -0.195, 0.2);
-    fore.rotation.x = 0.26;
-    const wrist = new THREE.Mesh(new THREE.BoxGeometry(0.105, 0.11, 0.09), skin);
-    wrist.position.set(0.05, -0.165, 0.01);
-    const palm = new THREE.Mesh(new THREE.BoxGeometry(0.115, 0.12, 0.13), glove);
-    palm.position.set(0.05, -0.15, -0.06);
-    const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.04, 0.09), glove);
-    thumb.position.set(0.0, -0.115, -0.06);
-    thumb.rotation.z = 0.4;
-    g.add(fore, wrist, palm, thumb);
-
-    // The support hand — parented separately so a reload can pull it away.
-    this.support = new THREE.Group();
-    const sFore = new THREE.Mesh(new THREE.BoxGeometry(0.115, 0.115, 0.34), sleeve);
-    sFore.position.set(-0.13, -0.235, 0.05);
-    sFore.rotation.set(0.1, 0.32, 0);
-    const sHand = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.11, 0.16), glove);
-    sHand.position.set(-0.085, -0.19, -0.14);
-    sHand.rotation.set(0.22, 0.3, 0);
-    this.support.add(sFore, sHand);
-    g.add(this.support);
-    return g;
-  }
-
-  /** Rebuilds the gun mesh for a weapon definition. */
+  /** Rebuilds the gun mesh, and the hands that hold it, for a weapon definition. */
   setWeapon(def, skinId = 'default') {
     this.def = def;
+    this.skinId = skinId;
+    this.builtLeftHanded = !!settings.leftHanded;
     this._clear(this.gun);
     if (this.gunB) { this._clear(this.gunB); this.root.remove(this.gunB); this.gunB = null; }
+    for (const arm of [this.armMain, this.armOff]) if (arm) this._clear(arm, true);
+    this.armMain = this.armOff = this.armB = null;
     for (const k of Object.keys(this.tagged)) this.tagged[k].length = 0;
     this.tagHome.clear();
 
     const skin = SKINS[skinId] ?? SKINS.default;
-    const scale = def.model?.scale ?? 1;
+    const model = def.model ?? {};
+    const scale = model.scale ?? 1;
+    const glove = gloveColor(skin);
 
-    const build = (collectTags) => {
-      const grp = new THREE.Group();
-      for (const p of def.model?.parts ?? []) {
-        const color = new THREE.Color(p.c);
-        const finish = FINISH[p.m] ?? FINISH[MAT.POLY];
-        if (skin.tint !== null && p.m !== MAT.EMIT && p.m !== MAT.GLASS) {
-          color.lerp(new THREE.Color(skin.tint), 0.66);
-        }
-        const material = p.m === MAT.EMIT
-          ? new THREE.MeshBasicMaterial({ color: p.c })
-          : new THREE.MeshPhongMaterial({
-            color: color.getHex(),
-            shininess: finish.shininess * (1 + (skin.gloss ?? 0) * 0.8),
-            specular: new THREE.Color(finish.specular).multiplyScalar(1 + (skin.gloss ?? 0) * 0.5),
-            emissive: finish.emissive,
-          });
-        const m = new THREE.Mesh(new THREE.BoxGeometry(p.s[0], p.s[1], p.s[2]), material);
-        m.position.set(p.p[0], p.p[1], p.p[2]);
-        if (p.r) m.rotation.set(p.r[0], p.r[1], p.r[2]);
-        grp.add(m);
-        if (collectTags && p.tag && this.tagged[p.tag]) {
-          this.tagged[p.tag].push(m);
-          this.tagHome.set(m, m.position.clone());
-        }
-      }
-      return grp;
-    };
-
-    const primary = build(true);
+    const primary = buildWeaponMesh(def, skin);
+    for (const [tag, mesh] of primary.userData.tagged) {
+      if (!this.tagged[tag]) continue;
+      this.tagged[tag].push(mesh);
+      this.tagHome.set(mesh, mesh.position.clone());
+    }
     this.gun.add(primary);
     this.gun.scale.setScalar(scale);
 
-    if (def.akimbo) {
-      this.gunB = build(false);
-      this.gunB.scale.setScalar(scale);
-      this.root.add(this.gunB);
-      this.hands.visible = false;
-    } else {
-      this.hands.visible = !def.melee;
-      this.support.visible = !def.melee && def.kind !== 'pistol';
+    /* Hands, placed on this weapon's own grips. */
+    const hand = settings.leftHanded ? -1 : 1;
+    const gripAt = model.grip ?? [0, -0.16, 0.08];
+    const mainPose = model.gripAxis === 'z' ? 'clamp' : 'wrap';
+    this.armMain = buildArm({ pose: mainPose, side: hand, glove });
+    this.armMain.position.set(gripAt[0] * scale * hand, gripAt[1] * scale, gripAt[2] * scale);
+    this.armMain.rotation.x = model.gripTilt ?? 0;
+    this.root.add(this.armMain);
+
+    const foreKind = model.foreKind ?? 'fore';
+    if (model.fore && foreKind !== 'none') {
+      this.armOff = buildArm({
+        pose: POSE_FOR[foreKind] ?? 'clamp',
+        side: -hand,
+        glove,
+        tiltX: foreKind === 'cup' ? 1.34 : 1.25,
+        tiltY: 0.55,
+      });
+      this.armOff.position.set(model.fore[0] * scale * hand, model.fore[1] * scale, model.fore[2] * scale);
+      this.armOff.rotation.x = foreKind === 'vert' ? -0.12 : foreKind === 'cup' ? 0.2 : 0;
+      this.root.add(this.armOff);
     }
 
-    const muzzle = def.model?.muzzle ?? [0, 0, -0.6];
+    if (def.akimbo) {
+      this.gunB = buildWeaponMesh(def, skin);
+      this.gunB.scale.setScalar(scale);
+      this.root.add(this.gunB);
+      // The second gun carries its own hand, so the pair reads as two weapons
+      // held rather than one weapon and a spare.
+      this.armB = buildArm({ pose: 'wrap', side: -hand, glove });
+      this.armB.position.set(gripAt[0] * scale * -hand, gripAt[1] * scale, gripAt[2] * scale);
+      this.armB.rotation.x = model.gripTilt ?? 0;
+      this.gunB.add(this.armB);
+    }
+
+    const muzzle = model.muzzle ?? [0, 0, -0.6];
     this.flash.position.set(muzzle[0], muzzle[1], muzzle[2] - 0.05);
     this.gun.add(this.flash);
     this.muzzleLocal = new THREE.Vector3(...muzzle);
-    this.ejectLocal = def.model?.eject ? new THREE.Vector3(...def.model.eject) : null;
+    this.ejectLocal = model.eject ? new THREE.Vector3(...model.eject) : null;
 
     // The whole ADS pose falls out of where the sights are.
-    const sight = def.model?.sight ?? [0, 0.08, 0];
+    const sight = model.sight ?? [0, 0.08, 0];
     this.adsPose = {
       x: -sight[0] * scale,
       y: -sight[1] * scale,
       z: ADS_Z - sight[2] * scale,
+    };
+    const rest = REST[def.kind] ?? [0, 0, 0];
+    this.rest = {
+      x: rest[0], y: rest[1], z: rest[2],
+      pitch: rest[3] ?? 0, yaw: rest[4] ?? 0, roll: rest[5] ?? 0,
     };
 
     this.shotCount = 0;
@@ -216,13 +389,24 @@ export class ViewModel {
     this.drawT = 0.28;                        // a short raise whenever we swap
   }
 
-  _clear(group) {
+  /**
+   * Empties a group.
+   *
+   * Geometry and materials marked `shared` belong to the finish cache and are
+   * reused by every weapon and every player wearing it — disposing one here
+   * would blank a gun somebody else is holding.
+   */
+  _clear(group, detach = false) {
     for (let i = group.children.length - 1; i >= 0; i--) {
       const c = group.children[i];
       if (c === this.flash) { group.remove(c); continue; }
       group.remove(c);
-      c.traverse?.((o) => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+      c.traverse?.((o) => {
+        if (o.geometry && !o.geometry.userData?.shared) o.geometry.dispose?.();
+        if (o.material && !o.material.userData?.shared) o.material.dispose?.();
+      });
     }
+    if (detach) group.parent?.remove(group);
   }
 
   /* ── Events ────────────────────────────────────────────────────────────── */
@@ -484,9 +668,12 @@ export class ViewModel {
     const ap = this.adsPose ?? { x: 0, y: -0.09, z: -0.32 };
     const hand = settings.leftHanded ? -1 : 1;
     const ox = (settings.viewmodelX ?? 0), oy = (settings.viewmodelY ?? 0), oz = (settings.viewmodelZ ?? 0);
-    const baseX = (HIP.x + ox) * hand + ((ap.x * hand) - (HIP.x + ox) * hand) * t;
-    const baseY = (HIP.y + oy) + (ap.y - (HIP.y + oy)) * t;
-    const baseZ = (HIP.z + oz) + (ap.z - (HIP.z + oz)) * t;
+    // The per-weapon rest offset belongs to the hip pose only: an aimed weapon
+    // is placed by its sights and by nothing else.
+    const hipX = HIP.x + ox + this.rest.x, hipY = HIP.y + oy + this.rest.y, hipZ = HIP.z + oz + this.rest.z;
+    const baseX = hipX * hand + ((ap.x * hand) - hipX * hand) * t;
+    const baseY = hipY + (ap.y - hipY) * t;
+    const baseZ = hipZ + (ap.z - hipZ) * t;
 
     // A draw dip whenever the weapon is swapped in.
     const draw = this.drawT > 0 ? (this.drawT / 0.28) ** 2 : 0;
@@ -498,22 +685,18 @@ export class ViewModel {
         + (r?.y ?? 0) + (slash?.y ?? 0) - this.landDip - (sliding ? 0.05 : 0) - draw * 0.22,
       baseZ + this.recoil.z * 0.05 + (r?.z ?? 0) + (slash?.z ?? 0) - cycle * 0.012,
     );
+    // The rest angle fades out with the rest offset: an aimed weapon is square.
+    const rt = 1 - t;
     this.root.rotation.set(
       -this.recoil.pitch * 0.022 + (r?.pitch ?? 0) + (slash?.pitch ?? 0)
-        + this.sway.y * 0.9 + this.lag.y * 1.4 + draw * 0.5,
+        + this.sway.y * 0.9 + this.lag.y * 1.4 + draw * 0.5 + this.rest.pitch * rt,
       (this.sway.x * -1.1 + this.lag.x * -1.5 + (r?.yaw ?? 0) + (slash?.yaw ?? 0)
-        + this.recoil.yaw * 0.01) * hand,
+        + this.recoil.yaw * 0.01 + this.rest.yaw * rt) * hand,
       (this.recoil.roll * 0.013 + (sliding ? 0.16 : 0) + bobX * 3 + (r?.roll ?? 0)
-        + (slash?.roll ?? 0) + draw * 0.3) * hand,
+        + (slash?.roll ?? 0) + draw * 0.3 + this.rest.roll * rt) * hand,
     );
 
-    if (this.support) {
-      // The support hand drops away while the reload needs it elsewhere.
-      const away = r?.support ?? 0;
-      this.support.position.set(-away * 0.16, -away * 0.3, away * 0.12);
-      this.support.rotation.z = away * 0.9;
-      this.support.visible = !this.def?.melee && this.def?.kind !== 'pistol' && away < 0.98;
-    }
+    this._poseSupport(r, cycle);
 
     if (this.gunB) {
       const side = this.akimboSide;
@@ -533,6 +716,28 @@ export class ViewModel {
       this.flash.material.opacity = 0;
       this.flashLight.intensity = 0;
     }
+  }
+
+  /**
+   * The support hand leaves the weapon when the reload needs it elsewhere, and
+   * rides the pump when a pump gun cycles.
+   */
+  _poseSupport(r, cycle) {
+    const arm = this.armOff;
+    if (!arm) return;
+    const away = r?.support ?? 0;
+    const kind = this.def?.model?.foreKind;
+    const home = this.def?.model?.fore ?? [0, 0, 0];
+    const scale = this.def?.model?.scale ?? 1;
+    const hand = settings.leftHanded ? -1 : 1;
+    const pump = kind === 'pump' ? Math.max(cycle, away) * 0.17 : 0;
+    arm.position.set(
+      home[0] * scale * hand - away * 0.18 * hand,
+      home[1] * scale - away * 0.32,
+      home[2] * scale + away * 0.14 + pump,
+    );
+    arm.rotation.z = away * 0.9 * hand;
+    arm.visible = away < 0.98;
   }
 
   /** Moves magazines, bolts, pumps and cylinders for the current animation. */
@@ -569,6 +774,11 @@ export class ViewModel {
     if (Math.abs(this.camera.fov - fov) > 0.01) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
+    }
+    // The hands are mirrored at build time, not per frame, so switching hands
+    // has to rebuild them — otherwise the gun swaps sides and the arms do not.
+    if (this.def && !!settings.leftHanded !== this.builtLeftHanded) {
+      this.setWeapon(this.def, this.skinId ?? 'default');
     }
   }
 

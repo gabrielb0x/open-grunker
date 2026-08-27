@@ -1473,6 +1473,7 @@ export class Room {
       case K.C2S.MOD: return this.onModAction(player, msg);
       case K.C2S.REPORT: return this.onReport(player, msg);
       case K.C2S.NUKE: return this.onNukeRequest(player);
+      case K.C2S.GOD: return this.onGodMode(player, msg);
       case K.C2S.PING:
         this.sendTo(player, { o: K.S2C.PONG, t: msg.t, s: Math.round(this.now * 1000) });
         if (typeof msg.rtt === 'number') player.rtt = clamp(msg.rtt / 1000, 0, K.MAX_LAG_COMP);
@@ -1618,6 +1619,54 @@ export class Room {
     const until = minutes > 0 ? Math.floor(Date.now() / 1000) + minutes * 60 : -1;
     const reason = msg.r ? String(msg.r).slice(0, 200).replace(CTRL, '').trim() || null : null;
     this.applyMute(target, { until, by: player.name, reason });
+  }
+
+  /**
+   * An admin switching god mode on or off.
+   *
+   * Admins only — moderators have the chat ban and nothing else, and the gap
+   * between "can silence someone" and "cannot be shot" is exactly where the
+   * line belongs. The rank is re-read from the player every time rather than
+   * trusted from a flag set at join, so an account demoted mid-session loses it
+   * at the next press.
+   *
+   * Nothing about this is persisted: it lasts as long as the socket. It is
+   * written to the admin log instead, because a player who cannot be killed is
+   * the sort of thing the operator should be able to find afterwards without
+   * having to be told about it.
+   */
+  onGodMode(player, msg) {
+    const notice = (text) => this.sendTo(player, { o: K.S2C.CHAT, system: true, kind: 'notice', text });
+    if (player.role !== 'admin' || player.isBot) {
+      player.god = false;
+      this.sendTo(player, { o: K.S2C.GOD, on: false, allowed: false });
+      return notice('god mode is an administrator tool');
+    }
+    // A held key or a stuck button must not spray the audit log.
+    const nowMs = Date.now();
+    if (nowMs - (player.lastGodAt ?? 0) < 400) return;
+    player.lastGodAt = nowMs;
+
+    const on = !!msg.v;
+    if (on === player.god) {
+      this.sendTo(player, { o: K.S2C.GOD, on, allowed: true });
+      return;
+    }
+    player.god = on;
+    // Coming back down: drop whatever velocity the flight left behind so the
+    // first thing gravity does is a fall, not a launch.
+    if (!on) { player.state.vy = Math.min(0, player.state.vy); player.state.vx *= 0.3; player.state.vz *= 0.3; }
+    else player.health = K.MAX_HEALTH;
+    this.sendTo(player, { o: K.S2C.GOD, on, allowed: true });
+    notice(on
+      ? 'God mode ON — you cannot be hurt, and SPACE / CTRL fly you up and down.'
+      : 'God mode OFF.');
+    try {
+      this.hub?.db?.audit?.add(player.name, on ? 'god_on' : 'god_off', this.mapId ?? null,
+        JSON.stringify({ room: this.code, mode: this.modeId }));
+    } catch (e) {
+      logger.warn('god mode audit write failed:', e.message);
+    }
   }
 
   /**
@@ -2348,7 +2397,7 @@ export class Room {
     this.broadcast({ o: K.S2C.NUKE, phase: 'detonated', by: nuke.by, name: nuke.name, team: nuke.team });
 
     for (const other of [...this.players.values()]) {
-      if (other.spectator || !other.alive) continue;
+      if (other.spectator || !other.alive || other.god) continue;
       if (other.id === nuke.by) continue;
       if (this.mode.teams && other.team === nuke.team) continue;
       other.protectedUntil = -1;                       // nothing survives this
@@ -2410,7 +2459,7 @@ export class Room {
           p.ads = (input.keys & KEY.ADS) !== 0;
           if (p.ads && !wasAds) p.adsStart = this.now;
           p.firing = (input.keys & KEY.FIRE) !== 0;
-          step(p.state, input, this.world, K.TICK_DT, { speedMult: p.speedMult(p.ads) });
+          step(p.state, input, this.world, K.TICK_DT, { speedMult: p.speedMult(p.ads), fly: p.god });
           this.postStep(p);
           applied++;
         }
@@ -2432,7 +2481,7 @@ export class Room {
             // of the key a free hop on the far side of every lost packet.
             const held = p.state.prevKeys;
             step(p.state, { keys: 0, prev: 0, yaw: p.state.yaw, pitch: p.state.pitch },
-              this.world, K.TICK_DT, { speedMult: p.speedMult(false) });
+              this.world, K.TICK_DT, { speedMult: p.speedMult(false), fly: p.god });
             p.state.prevKeys = held;
             this.postStep(p);
           }
@@ -2485,7 +2534,9 @@ export class Room {
         if (res.dead) this.onKill(null, p, 'fall', false);
       }
     }
-    if (p.alive && p.state.y < -40) {
+    // The void takes everybody except the one player it cannot: `applyDamage`
+    // already refuses, and killing anyway would make god mode a slower death.
+    if (p.alive && !p.god && p.state.y < -40) {
       p.applyDamage(K.MAX_HEALTH, this.now, 0);
       this.onKill(null, p, 'void', false);
     }

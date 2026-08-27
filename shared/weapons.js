@@ -6,13 +6,30 @@
  * client builds both the first-person viewmodel and the third-person world
  * model from it, so no binary art assets are needed anywhere in the project.
  *
- * A part is `{ p:[x,y,z], s:[w,h,d], c:<hex>, m:<material>, r:[rx,ry,rz] }`.
- * `m` picks how it is shaded — polished metal, matte polymer, wood, rubber or
- * an emissive lens — which is what makes these read as guns rather than boxes.
+ * A part is `{ p:[x,y,z], s:[w,h,d], c:<hex>, m:<material>, z:<zone>,
+ * r:[rx,ry,rz], tag:<animated group>, fine:1 }`.
+ *
+ *   `m`     how it is shaded — polished metal, matte polymer, wood, rubber or
+ *           an emissive lens. This is what makes these read as guns rather
+ *           than boxes.
+ *   `z`     which part of the gun it is (see ZONE). A skin paints zones, not
+ *           whole weapons, so the barrel can stay blued under a gold receiver.
+ *   `tag`   ties it to an animation: `mag`, `bolt`, `slide`, `pump`, `cyl`.
+ *   `fine`  detail work. The first-person viewmodel draws every part; the
+ *           third-person body skips these, because nobody reads slide
+ *           serrations at forty metres and eight players' worth of them is a
+ *           few hundred draw calls that buy nothing.
  *
  * `model.sight` is the point on the weapon that must sit dead centre when the
  * player aims: the viewmodel derives its whole aim-down-sights pose from it, so
  * every gun lines up on the crosshair without a hand-tuned offset.
+ *
+ * `model.grip` / `model.fore` are where the two hands go. The viewmodel builds
+ * an articulated hand at each one rather than parking a mitt near the gun, so
+ * fingers land on the actual grip of the actual weapon — `gripTilt` rakes the
+ * firing hand with the grip, and `foreKind` picks how the support hand holds
+ * on: `fore` clamps a horizontal handguard, `vert` wraps a vertical foregrip,
+ * `pump` rides a pump, `cup` cradles a pistol butt, `none` hides it.
  *
  * Units: damage in HP, fireRate in rounds/minute, distances in world units,
  * spread in radians, recoil in radians per shot.
@@ -33,11 +50,31 @@ export const MAT = {
   EMIT: 'emit',         // self-lit (reticles, tritium)
 };
 
+/**
+ * Which piece of a gun a part belongs to — the unit a finish is painted on.
+ *
+ * This is the whole difference between a skin and a tint. Dipping every part of
+ * a rifle in one colour makes the wood, the steel and the polymer the same
+ * shade of nothing; painting *zones* leaves the barrel blued while the receiver
+ * goes gold, keeps the rubber butt pad black under a camouflage, and never
+ * touches a lens or a tritium dot. Every part below declares one.
+ */
+export const ZONE = {
+  BODY: 'body',       // receiver, frame, chassis — the biggest painted panel
+  METAL: 'metal',     // barrel, bolt, slide, brake — the working steel
+  WOOD: 'wood',       // grip, stock, handguard — whatever the hands hold
+  ACCENT: 'accent',   // rails, optics, magazines, hardware
+  DETAIL: 'detail',   // never painted: lenses, reticles, brass, bores
+};
+const Z = ZONE;
+
 const COL = {
   steel: 0x2e343d, gunmetal: 0x3b424c, dark: 0x1b1e23, black: 0x101215,
   wood: 0x7d4f2b, darkwood: 0x5c3a1f, tan: 0xb99a67, sand: 0xc9ac78,
   poly: 0x24282e, olive: 0x40492f, alloy: 0x767e88, silver: 0x9aa3ad,
   glass: 0x66c8ff, brass: 0xc9a227, red: 0xff3b30,
+  raw: 0x8d959f,        // bare, unblued steel — a crown, a trigger, a bolt face
+  bore: 0x08090b,       // the hole itself
 };
 
 /* ── Damage / spread maths ───────────────────────────────────────────────── */
@@ -149,23 +186,61 @@ export const PISTOL = {
   model: {
     scale: 1,
     parts: [
-      { p: [0, 0.005, -0.02], s: [0.062, 0.115, 0.44], c: COL.steel, m: MAT.METAL, tag: 'slide' }, // slide
-      { p: [0, 0.062, -0.02], s: [0.05, 0.02, 0.42], c: COL.gunmetal, m: MAT.ALLOY },    // slide rib
-      { p: [0, -0.075, 0.005], s: [0.058, 0.06, 0.4], c: COL.poly, m: MAT.POLY },        // frame
-      { p: [0, -0.2, 0.085], s: [0.062, 0.23, 0.115], c: COL.poly, m: MAT.POLY, r: [0.22, 0, 0], tag: 'mag' }, // grip / magazine well
-      { p: [0, -0.185, 0.085], s: [0.048, 0.2, 0.02], c: COL.dark, m: MAT.RUBBER, r: [0.22, 0, 0] },
-      { p: [0, -0.02, -0.26], s: [0.03, 0.028, 0.14], c: COL.black, m: MAT.METAL },      // barrel
-      { p: [0, -0.115, 0.02], s: [0.03, 0.05, 0.045], c: COL.black, m: MAT.METAL },      // trigger guard
-      { p: [0, 0.078, 0.16], s: [0.026, 0.026, 0.03], c: COL.dark, m: MAT.METAL },       // rear sight
-      { p: [0.028, 0.078, 0.16], s: [0.014, 0.02, 0.02], c: 0x1affa0, m: MAT.EMIT },
-      { p: [-0.028, 0.078, 0.16], s: [0.014, 0.02, 0.02], c: 0x1affa0, m: MAT.EMIT },
-      { p: [0, 0.08, -0.2], s: [0.016, 0.03, 0.02], c: COL.dark, m: MAT.METAL },         // front post
-      { p: [0, 0.086, -0.2], s: [0.012, 0.014, 0.014], c: 0x1affa0, m: MAT.EMIT },
+      /* Slide — one mass, then the cuts that make it read as steel. */
+      { p: [0, 0.014, -0.05], s: [0.068, 0.094, 0.46], c: COL.steel, m: MAT.METAL, z: Z.BODY, tag: 'slide' },
+      { p: [0, 0.062, -0.05], s: [0.052, 0.016, 0.44], c: COL.gunmetal, m: MAT.ALLOY, z: Z.BODY, tag: 'slide' },
+      { p: [0, 0.014, -0.285], s: [0.062, 0.086, 0.035], c: COL.dark, m: MAT.METAL, z: Z.METAL, tag: 'slide' },
+      { p: [0, 0.014, 0.1], s: [0.072, 0.07, 0.009], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, tag: 'slide', fine: 1 },
+      { p: [0, 0.014, 0.128], s: [0.072, 0.07, 0.009], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, tag: 'slide', fine: 1 },
+      { p: [0, 0.014, 0.156], s: [0.072, 0.07, 0.009], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, tag: 'slide', fine: 1 },
+      { p: [0, 0.014, -0.2], s: [0.072, 0.062, 0.009], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, tag: 'slide', fine: 1 },
+      { p: [0, 0.014, -0.228], s: [0.072, 0.062, 0.009], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, tag: 'slide', fine: 1 },
+      { p: [0.033, 0.034, 0.02], s: [0.009, 0.042, 0.13], c: COL.bore, m: MAT.METAL, z: Z.DETAIL, tag: 'slide' },
+      { p: [0.032, 0.014, 0.088], s: [0.009, 0.022, 0.05], c: COL.raw, m: MAT.ALLOY, z: Z.METAL, tag: 'slide', fine: 1 },
+
+      /* Barrel: bare steel at the crown, which is where a real one shows. */
+      { p: [0, 0, -0.3], s: [0.03, 0.03, 0.1], c: COL.raw, m: MAT.ALLOY, z: Z.METAL },
+      { p: [0, 0, -0.336], s: [0.036, 0.036, 0.022], c: COL.dark, m: MAT.METAL, z: Z.METAL },
+      { p: [0, 0, -0.348], s: [0.018, 0.018, 0.012], c: COL.bore, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+
+      /* Frame, dust cover and a two-slot accessory rail. */
+      { p: [0, -0.052, -0.06], s: [0.062, 0.05, 0.36], c: COL.poly, m: MAT.POLY, z: Z.BODY },
+      { p: [0, -0.086, -0.15], s: [0.046, 0.018, 0.18], c: COL.poly, m: MAT.POLY, z: Z.ACCENT, fine: 1 },
+      { p: [0, -0.094, -0.1], s: [0.048, 0.008, 0.014], c: COL.dark, m: MAT.POLY, z: Z.DETAIL, fine: 1 },
+      { p: [0, -0.094, -0.18], s: [0.048, 0.008, 0.014], c: COL.dark, m: MAT.POLY, z: Z.DETAIL, fine: 1 },
+
+      /* Trigger guard drawn as a bow rather than a single block. */
+      { p: [0, -0.1, -0.085], s: [0.03, 0.062, 0.02], c: COL.poly, m: MAT.POLY, z: Z.BODY },
+      { p: [0, -0.126, -0.03], s: [0.03, 0.02, 0.13], c: COL.poly, m: MAT.POLY, z: Z.BODY },
+      { p: [0, -0.086, -0.03], s: [0.014, 0.052, 0.015], c: COL.raw, m: MAT.ALLOY, z: Z.METAL, fine: 1 },
+
+      /* Grip: raked, stippled panels, a rubber backstrap. */
+      { p: [0, -0.2, 0.115], s: [0.06, 0.24, 0.1], c: COL.poly, m: MAT.POLY, z: Z.WOOD, r: [0.26, 0, 0] },
+      { p: [0.031, -0.2, 0.113], s: [0.006, 0.19, 0.086], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD, r: [0.26, 0, 0], fine: 1 },
+      { p: [-0.031, -0.2, 0.113], s: [0.006, 0.19, 0.086], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD, r: [0.26, 0, 0], fine: 1 },
+      { p: [0, -0.192, 0.158], s: [0.05, 0.21, 0.018], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD, r: [0.26, 0, 0] },
+      { p: [0, -0.032, 0.152], s: [0.052, 0.036, 0.06], c: COL.poly, m: MAT.POLY, z: Z.BODY, r: [-0.3, 0, 0], fine: 1 },
+
+      /* The magazine is the magazine — the grip stays on the gun when it drops. */
+      { p: [0, -0.205, 0.111], s: [0.046, 0.25, 0.07], c: COL.steel, m: MAT.METAL, z: Z.ACCENT, r: [0.26, 0, 0], tag: 'mag' },
+      { p: [0, -0.328, 0.144], s: [0.066, 0.022, 0.098], c: COL.dark, m: MAT.POLY, z: Z.ACCENT, r: [0.26, 0, 0], tag: 'mag' },
+
+      /* Controls. */
+      { p: [-0.034, -0.042, 0.02], s: [0.009, 0.017, 0.075], c: COL.gunmetal, m: MAT.ALLOY, z: Z.METAL, fine: 1 },
+      { p: [0.034, -0.048, -0.005], s: [0.009, 0.02, 0.026], c: COL.gunmetal, m: MAT.ALLOY, z: Z.METAL, fine: 1 },
+
+      /* Three-dot night sights. */
+      { p: [0, 0.08, 0.14], s: [0.05, 0.028, 0.026], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, tag: 'slide' },
+      { p: [0.017, 0.083, 0.14], s: [0.009, 0.011, 0.014], c: 0x1affa0, m: MAT.EMIT, z: Z.DETAIL, tag: 'slide', fine: 1 },
+      { p: [-0.017, 0.083, 0.14], s: [0.009, 0.011, 0.014], c: 0x1affa0, m: MAT.EMIT, z: Z.DETAIL, tag: 'slide', fine: 1 },
+      { p: [0, 0.08, -0.24], s: [0.016, 0.028, 0.02], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, tag: 'slide' },
+      { p: [0, 0.085, -0.246], s: [0.011, 0.013, 0.011], c: 0x1affa0, m: MAT.EMIT, z: Z.DETAIL, tag: 'slide', fine: 1 },
     ],
-    muzzle: [0, -0.02, -0.34],
-    eject: [0.05, 0.03, -0.02],
-    grip: [0, -0.2, 0.09],
-    sight: [0, 0.082, -0.02],
+    muzzle: [0, 0, -0.36],
+    eject: [0.05, 0.04, 0.02],
+    sight: [0, 0.092, 0],
+    grip: [0, -0.185, 0.128], gripTilt: 0.26,
+    fore: [-0.068, -0.15, 0.112], foreKind: 'cup',
   },
 };
 
@@ -177,16 +252,35 @@ export const KNIFE = {
   model: {
     scale: 1,
     parts: [
-      { p: [0, 0.005, -0.24], s: [0.018, 0.085, 0.42], c: 0xc6ccd6, m: MAT.ALLOY },      // blade
-      { p: [0, 0.04, -0.24], s: [0.02, 0.012, 0.4], c: 0xeef3fa, m: MAT.ALLOY },         // edge highlight
-      { p: [0, -0.005, -0.47], s: [0.016, 0.05, 0.09], c: 0xc6ccd6, m: MAT.ALLOY, r: [0, 0, 0.5] },
-      { p: [0, 0, 0.0], s: [0.05, 0.05, 0.045], c: COL.dark, m: MAT.METAL },             // guard
-      { p: [0, -0.005, 0.13], s: [0.036, 0.052, 0.22], c: COL.black, m: MAT.RUBBER },    // handle
-      { p: [0, -0.005, 0.25], s: [0.042, 0.045, 0.03], c: COL.gunmetal, m: MAT.METAL },  // pommel
+      /* Blade: a spine, a hollow grind and a bevelled edge, not one plate. */
+      { p: [0, 0.012, -0.24], s: [0.02, 0.052, 0.42], c: 0xb9c1cc, m: MAT.ALLOY, z: Z.METAL },
+      { p: [0, 0.045, -0.25], s: [0.024, 0.026, 0.4], c: 0x8d95a1, m: MAT.ALLOY, z: Z.METAL },
+      { p: [0, -0.019, -0.25], s: [0.011, 0.02, 0.4], c: 0xeef3fa, m: MAT.ALLOY, z: Z.METAL },
+      { p: [0, 0.052, -0.13], s: [0.026, 0.014, 0.1], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+      { p: [0, 0.052, -0.1], s: [0.026, 0.014, 0.1], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+      { p: [0, 0.026, -0.46], s: [0.018, 0.062, 0.1], c: 0xb9c1cc, m: MAT.ALLOY, z: Z.METAL, r: [0, 0, 0] },
+      { p: [0, -0.004, -0.5], s: [0.014, 0.05, 0.08], c: 0xd8dee7, m: MAT.ALLOY, z: Z.METAL, r: [0.42, 0, 0] },
+      { p: [0.012, 0.02, -0.3], s: [0.002, 0.03, 0.16], c: 0x2b3038, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+
+      /* Guard and ricasso. */
+      { p: [0, 0.005, -0.02], s: [0.05, 0.058, 0.05], c: COL.dark, m: MAT.METAL, z: Z.ACCENT },
+      { p: [0, 0.052, -0.02], s: [0.03, 0.03, 0.04], c: COL.gunmetal, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+      { p: [0, -0.03, -0.02], s: [0.03, 0.03, 0.04], c: COL.gunmetal, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+
+      /* Handle: scales over a tang, with finger grooves. */
+      { p: [0, 0, 0.11], s: [0.038, 0.056, 0.24], c: COL.black, m: MAT.RUBBER, z: Z.WOOD },
+      { p: [0.02, 0, 0.11], s: [0.004, 0.044, 0.22], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD, fine: 1 },
+      { p: [-0.02, 0, 0.11], s: [0.004, 0.044, 0.22], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD, fine: 1 },
+      { p: [0, -0.03, 0.05], s: [0.04, 0.016, 0.03], c: COL.dark, m: MAT.RUBBER, z: Z.DETAIL, fine: 1 },
+      { p: [0, -0.03, 0.11], s: [0.04, 0.016, 0.03], c: COL.dark, m: MAT.RUBBER, z: Z.DETAIL, fine: 1 },
+      { p: [0, -0.03, 0.17], s: [0.04, 0.016, 0.03], c: COL.dark, m: MAT.RUBBER, z: Z.DETAIL, fine: 1 },
+      { p: [0, 0, 0.245], s: [0.044, 0.05, 0.036], c: COL.gunmetal, m: MAT.METAL, z: Z.ACCENT },
+      { p: [0, 0, 0.268], s: [0.016, 0.016, 0.012], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
     ],
-    muzzle: [0, 0, -0.42],
-    grip: [0, -0.02, 0.14],
+    muzzle: [0, 0, -0.52],
     sight: [0, 0.02, -0.1],
+    grip: [0, 0, 0.115], gripTilt: 0, gripAxis: 'z',
+    fore: [-0.03, -0.075, 0.19], foreKind: 'idle',
   },
 };
 
@@ -212,30 +306,64 @@ export const CLASSES = {
       model: {
         scale: 1,
         parts: [
-          { p: [0, 0, 0.02], s: [0.072, 0.115, 0.5], c: COL.steel, m: MAT.METAL },            // receiver
-          { p: [0, 0.068, 0.02], s: [0.062, 0.028, 0.48], c: COL.gunmetal, m: MAT.ALLOY },    // dust cover
-          { p: [0, 0.02, -0.36], s: [0.052, 0.055, 0.28], c: COL.darkwood, m: MAT.WOOD },     // handguard
-          { p: [0, 0.055, -0.36], s: [0.042, 0.03, 0.26], c: COL.gunmetal, m: MAT.METAL },    // gas tube
-          { p: [0, 0.005, -0.62], s: [0.026, 0.026, 0.34], c: COL.black, m: MAT.METAL },      // barrel
-          { p: [0, 0.005, -0.82], s: [0.042, 0.042, 0.09], c: COL.dark, m: MAT.METAL },       // brake
-          { p: [0, 0.005, -0.84], s: [0.05, 0.014, 0.05], c: COL.dark, m: MAT.METAL },
-          { p: [0, -0.16, 0.06], s: [0.06, 0.24, 0.11], c: COL.darkwood, m: MAT.WOOD, r: [0.28, 0, 0] },  // grip
-          { p: [0, -0.145, -0.15], s: [0.052, 0.19, 0.14], c: COL.steel, m: MAT.METAL, r: [-0.18, 0, 0], tag: 'mag' }, // magazine
-          { p: [0, -0.235, -0.19], s: [0.05, 0.06, 0.12], c: COL.dark, m: MAT.POLY, r: [-0.18, 0, 0], tag: 'mag' },
-          { p: [0, -0.03, 0.34], s: [0.055, 0.1, 0.3], c: COL.darkwood, m: MAT.WOOD },        // stock
-          { p: [0, 0.015, 0.48], s: [0.06, 0.12, 0.045], c: COL.dark, m: MAT.RUBBER },        // butt pad
-          { p: [0, -0.078, -0.02], s: [0.03, 0.045, 0.05], c: COL.black, m: MAT.METAL },      // trigger guard
-          { p: [0.05, 0.03, 0.02], s: [0.03, 0.02, 0.07], c: COL.gunmetal, m: MAT.ALLOY, tag: 'bolt' }, // charging handle
-          { p: [0, 0.092, 0.2], s: [0.036, 0.03, 0.035], c: COL.dark, m: MAT.METAL },         // rear sight
-          { p: [0.017, 0.096, 0.2], s: [0.012, 0.024, 0.02], c: COL.black, m: MAT.METAL },
-          { p: [-0.017, 0.096, 0.2], s: [0.012, 0.024, 0.02], c: COL.black, m: MAT.METAL },
-          { p: [0, 0.098, -0.66], s: [0.03, 0.05, 0.03], c: COL.dark, m: MAT.METAL },         // front post hood
-          { p: [0, 0.098, -0.665], s: [0.01, 0.036, 0.012], c: COL.black, m: MAT.METAL },
+          /* Stamped receiver, dust cover, selector. */
+          { p: [0, 0, 0.02], s: [0.076, 0.11, 0.5], c: COL.steel, m: MAT.METAL, z: Z.BODY },
+          { p: [0, 0.066, 0.02], s: [0.066, 0.026, 0.48], c: COL.gunmetal, m: MAT.ALLOY, z: Z.BODY },
+          { p: [0, 0.081, 0.02], s: [0.032, 0.012, 0.46], c: COL.steel, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0.04, 0.01, 0.08], s: [0.008, 0.06, 0.22], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0.047, 0.05, 0.11], s: [0.016, 0.08, 0.05], c: COL.gunmetal, m: MAT.ALLOY, z: Z.ACCENT, r: [0, 0, 0.22] },
+          { p: [0, -0.052, -0.06], s: [0.07, 0.05, 0.14], c: COL.steel, m: MAT.METAL, z: Z.BODY },
+
+          /* Handguard, vented, with the gas tube riding over it. */
+          { p: [0, 0.004, -0.34], s: [0.06, 0.064, 0.3], c: COL.darkwood, m: MAT.WOOD, z: Z.WOOD },
+          { p: [0, 0.054, -0.34], s: [0.05, 0.032, 0.28], c: COL.darkwood, m: MAT.WOOD, z: Z.WOOD },
+          { p: [0.031, 0.054, -0.3], s: [0.007, 0.022, 0.05], c: COL.black, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [-0.031, 0.054, -0.3], s: [0.007, 0.022, 0.05], c: COL.black, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0.031, 0.054, -0.38], s: [0.007, 0.022, 0.05], c: COL.black, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [-0.031, 0.054, -0.38], s: [0.007, 0.022, 0.05], c: COL.black, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0, 0.052, -0.51], s: [0.042, 0.056, 0.08], c: COL.gunmetal, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.05, -0.46], s: [0.03, 0.03, 0.06], c: COL.gunmetal, m: MAT.METAL, z: Z.METAL, fine: 1 },
+
+          /* Barrel and a two-port brake. */
+          { p: [0, 0.005, -0.64], s: [0.026, 0.026, 0.32], c: COL.black, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.005, -0.78], s: [0.034, 0.034, 0.05], c: COL.dark, m: MAT.METAL, z: Z.METAL, fine: 1 },
+          { p: [0, 0.005, -0.86], s: [0.048, 0.048, 0.1], c: COL.dark, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.005, -0.86], s: [0.056, 0.014, 0.055], c: COL.dark, m: MAT.METAL, z: Z.METAL, fine: 1 },
+          { p: [0, 0.005, -0.912], s: [0.02, 0.02, 0.014], c: COL.bore, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+
+          /* Furniture: grip, stock, butt pad, sling loop. */
+          { p: [0, -0.165, 0.07], s: [0.062, 0.24, 0.11], c: COL.darkwood, m: MAT.WOOD, z: Z.WOOD, r: [0.3, 0, 0] },
+          { p: [0, -0.255, 0.098], s: [0.066, 0.032, 0.116], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD, r: [0.3, 0, 0], fine: 1 },
+          { p: [0, -0.02, 0.26], s: [0.058, 0.1, 0.26], c: COL.darkwood, m: MAT.WOOD, z: Z.WOOD, r: [0.06, 0, 0] },
+          { p: [0, 0.032, 0.24], s: [0.05, 0.05, 0.22], c: COL.darkwood, m: MAT.WOOD, z: Z.WOOD, fine: 1 },
+          { p: [0, 0.006, 0.4], s: [0.062, 0.115, 0.038], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD },
+          { p: [0.033, -0.05, 0.22], s: [0.011, 0.024, 0.032], c: COL.gunmetal, m: MAT.ALLOY, z: Z.ACCENT, fine: 1 },
+
+          /* The banana magazine, raked in three segments so it actually curves. */
+          { p: [0, -0.12, -0.135], s: [0.056, 0.15, 0.132], c: COL.steel, m: MAT.METAL, z: Z.ACCENT, r: [-0.14, 0, 0], tag: 'mag' },
+          { p: [0, -0.222, -0.178], s: [0.052, 0.13, 0.118], c: COL.steel, m: MAT.METAL, z: Z.ACCENT, r: [-0.44, 0, 0], tag: 'mag' },
+          { p: [0, -0.3, -0.246], s: [0.05, 0.08, 0.1], c: COL.dark, m: MAT.POLY, z: Z.ACCENT, r: [-0.74, 0, 0], tag: 'mag', fine: 1 },
+          { p: [0, -0.12, -0.135], s: [0.06, 0.022, 0.138], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, r: [-0.14, 0, 0], tag: 'mag', fine: 1 },
+
+          /* Trigger group and charging handle. */
+          { p: [0, -0.076, -0.005], s: [0.034, 0.018, 0.12], c: COL.steel, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0, -0.058, -0.058], s: [0.032, 0.045, 0.018], c: COL.steel, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0, -0.04, -0.012], s: [0.013, 0.045, 0.013], c: COL.raw, m: MAT.ALLOY, z: Z.METAL, fine: 1 },
+          { p: [0.05, 0.036, 0.03], s: [0.032, 0.024, 0.075], c: COL.gunmetal, m: MAT.ALLOY, z: Z.METAL, tag: 'bolt' },
+          { p: [0.03, 0.036, 0.03], s: [0.022, 0.022, 0.05], c: COL.gunmetal, m: MAT.ALLOY, z: Z.METAL, tag: 'bolt', fine: 1 },
+
+          /* Irons: a rear leaf between ears, a hooded front post. */
+          { p: [0, 0.088, 0.19], s: [0.042, 0.03, 0.05], c: COL.dark, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0.017, 0.1, 0.19], s: [0.011, 0.028, 0.032], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+          { p: [-0.017, 0.1, 0.19], s: [0.011, 0.028, 0.032], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+          { p: [0, 0.098, -0.78], s: [0.032, 0.052, 0.032], c: COL.dark, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.098, -0.782], s: [0.009, 0.04, 0.012], c: COL.black, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
         ],
-        muzzle: [0, 0.005, -0.9],
-        eject: [0.06, 0.05, 0.0],
-        grip: [0, -0.18, 0.06],
-        sight: [0, 0.1, 0.0],
+        muzzle: [0, 0.005, -0.92],
+        eject: [0.06, 0.05, 0],
+        sight: [0, 0.1, 0],
+        grip: [0, -0.15, 0.085], gripTilt: 0.3,
+        fore: [0, -0.055, -0.35], foreKind: 'fore',
       },
     },
   },
@@ -266,29 +394,68 @@ export const CLASSES = {
       model: {
         scale: 1,
         parts: [
-          { p: [0, -0.01, 0.06], s: [0.07, 0.1, 0.72], c: COL.olive, m: MAT.POLY },           // chassis
-          { p: [0, 0.045, 0.02], s: [0.05, 0.05, 0.56], c: COL.steel, m: MAT.METAL },         // receiver
-          { p: [0, 0.02, -0.62], s: [0.032, 0.032, 0.72], c: COL.black, m: MAT.METAL },       // barrel
-          { p: [0, 0.02, -1.02], s: [0.05, 0.05, 0.13], c: COL.dark, m: MAT.METAL },          // suppressor cap
-          { p: [0, -0.13, 0.12], s: [0.058, 0.2, 0.11], c: COL.olive, m: MAT.POLY, r: [0.3, 0, 0] }, // grip
-          { p: [0, -0.12, -0.16], s: [0.05, 0.16, 0.1], c: COL.steel, m: MAT.METAL, tag: 'mag' }, // magazine
-          { p: [0, 0.0, 0.5], s: [0.06, 0.13, 0.34], c: COL.olive, m: MAT.POLY },             // stock
-          { p: [0, 0.03, 0.68], s: [0.065, 0.14, 0.05], c: COL.dark, m: MAT.RUBBER },
-          { p: [0, -0.08, 0.56], s: [0.05, 0.08, 0.14], c: COL.olive, m: MAT.POLY },          // cheek riser
-          { p: [0, 0.14, -0.1], s: [0.062, 0.062, 0.5], c: COL.black, m: MAT.METAL },         // scope tube
-          { p: [0, 0.14, -0.32], s: [0.086, 0.086, 0.06], c: COL.dark, m: MAT.METAL },        // objective bell
-          { p: [0, 0.14, -0.355], s: [0.072, 0.072, 0.012], c: COL.glass, m: MAT.GLASS },
-          { p: [0, 0.14, 0.14], s: [0.07, 0.07, 0.05], c: COL.dark, m: MAT.METAL },           // eyepiece
-          { p: [0, 0.14, 0.165], s: [0.056, 0.056, 0.01], c: 0x0d1b26, m: MAT.GLASS },
-          { p: [0, 0.2, -0.06], s: [0.03, 0.03, 0.06], c: COL.gunmetal, m: MAT.ALLOY },       // turret
-          { p: [0.075, 0.06, 0.06], s: [0.075, 0.024, 0.024], c: COL.gunmetal, m: MAT.ALLOY, tag: 'bolt' }, // bolt handle
-          { p: [0.105, 0.05, 0.06], s: [0.03, 0.05, 0.05], c: COL.silver, m: MAT.ALLOY, tag: 'bolt' },
-          { p: [0, -0.075, -0.5], s: [0.03, 0.06, 0.14], c: COL.dark, m: MAT.POLY },          // bipod stub
+          /* Chassis: a bedded action in a polymer stock. */
+          { p: [0, -0.012, 0.06], s: [0.072, 0.1, 0.72], c: COL.olive, m: MAT.POLY, z: Z.BODY },
+          { p: [0, 0.046, 0.02], s: [0.052, 0.052, 0.56], c: COL.steel, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.046, 0.28], s: [0.056, 0.056, 0.06], c: COL.dark, m: MAT.METAL, z: Z.METAL, fine: 1 },
+          { p: [0.033, 0.05, 0.02], s: [0.008, 0.03, 0.5], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+
+          /* Free-floated heavy barrel with a fluted section and a can on the end. */
+          { p: [0, 0.02, -0.56], s: [0.036, 0.036, 0.62], c: COL.black, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.038, -0.56], s: [0.026, 0.008, 0.56], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0, 0.002, -0.56], s: [0.026, 0.008, 0.56], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0, 0.02, -0.98], s: [0.054, 0.054, 0.24], c: COL.dark, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.02, -0.87], s: [0.06, 0.06, 0.022], c: COL.gunmetal, m: MAT.ALLOY, z: Z.METAL, fine: 1 },
+          { p: [0, 0.02, -1.09], s: [0.06, 0.06, 0.022], c: COL.gunmetal, m: MAT.ALLOY, z: Z.METAL, fine: 1 },
+          { p: [0, 0.02, -1.105], s: [0.024, 0.024, 0.014], c: COL.bore, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+
+          /* Grip, thumb shelf, adjustable comb and butt. */
+          { p: [0, -0.14, 0.13], s: [0.06, 0.22, 0.11], c: COL.olive, m: MAT.POLY, z: Z.WOOD, r: [0.32, 0, 0] },
+          { p: [0.032, -0.14, 0.128], s: [0.006, 0.17, 0.086], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD, r: [0.32, 0, 0], fine: 1 },
+          { p: [-0.032, -0.14, 0.128], s: [0.006, 0.17, 0.086], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD, r: [0.32, 0, 0], fine: 1 },
+          { p: [0, -0.24, 0.166], s: [0.064, 0.03, 0.11], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD, r: [0.32, 0, 0], fine: 1 },
+          { p: [0, 0.005, 0.36], s: [0.062, 0.14, 0.3], c: COL.olive, m: MAT.POLY, z: Z.WOOD },
+          { p: [0, 0.086, 0.34], s: [0.05, 0.05, 0.2], c: COL.dark, m: MAT.POLY, z: Z.WOOD },
+          { p: [0, 0.038, 0.5], s: [0.066, 0.125, 0.045], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD },
+          { p: [0, -0.078, 0.44], s: [0.05, 0.1, 0.14], c: COL.olive, m: MAT.POLY, z: Z.WOOD, fine: 1 },
+          { p: [0, -0.05, 0.5], s: [0.036, 0.05, 0.05], c: COL.gunmetal, m: MAT.ALLOY, z: Z.ACCENT, fine: 1 },
+
+          /* Detachable box magazine. */
+          { p: [0, -0.115, -0.16], s: [0.052, 0.17, 0.11], c: COL.steel, m: MAT.METAL, z: Z.ACCENT, tag: 'mag' },
+          { p: [0, -0.208, -0.16], s: [0.06, 0.024, 0.12], c: COL.dark, m: MAT.POLY, z: Z.ACCENT, tag: 'mag', fine: 1 },
+          { p: [0, -0.055, -0.16], s: [0.056, 0.05, 0.116], c: COL.olive, m: MAT.POLY, z: Z.BODY, fine: 1 },
+
+          /* Trigger group. */
+          { p: [0, -0.08, -0.03], s: [0.032, 0.02, 0.11], c: COL.dark, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0, -0.058, -0.078], s: [0.03, 0.05, 0.018], c: COL.dark, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0, -0.04, -0.032], s: [0.013, 0.048, 0.013], c: COL.raw, m: MAT.ALLOY, z: Z.METAL, fine: 1 },
+
+          /* Bolt: body, handle and knob, all pulled together on the cycle. */
+          { p: [0.052, 0.06, 0.07], s: [0.07, 0.024, 0.024], c: COL.gunmetal, m: MAT.ALLOY, z: Z.METAL, tag: 'bolt' },
+          { p: [0.096, 0.048, 0.07], s: [0.034, 0.055, 0.055], c: COL.silver, m: MAT.ALLOY, z: Z.METAL, tag: 'bolt' },
+          { p: [0.096, 0.048, 0.07], s: [0.038, 0.02, 0.02], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, tag: 'bolt', fine: 1 },
+
+          /* Glass: 30 mm tube, bell, turrets, ocular. Cantilever mount, two rings. */
+          { p: [0, 0.142, -0.1], s: [0.064, 0.064, 0.5], c: COL.black, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.142, -0.33], s: [0.09, 0.09, 0.07], c: COL.dark, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.142, -0.368], s: [0.076, 0.076, 0.014], c: COL.glass, m: MAT.GLASS, z: Z.DETAIL },
+          { p: [0, 0.142, 0.14], s: [0.074, 0.074, 0.06], c: COL.dark, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.142, 0.172], s: [0.058, 0.058, 0.012], c: 0x0d1b26, m: MAT.GLASS, z: Z.DETAIL },
+          { p: [0, 0.205, -0.06], s: [0.034, 0.04, 0.062], c: COL.gunmetal, m: MAT.ALLOY, z: Z.ACCENT, fine: 1 },
+          { p: [0.05, 0.142, -0.06], s: [0.04, 0.034, 0.062], c: COL.gunmetal, m: MAT.ALLOY, z: Z.ACCENT, fine: 1 },
+          { p: [0, 0.1, -0.24], s: [0.03, 0.05, 0.05], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+          { p: [0, 0.1, 0.04], s: [0.03, 0.05, 0.05], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+
+          /* Folded bipod under the fore-end. */
+          { p: [0, -0.07, -0.48], s: [0.032, 0.06, 0.14], c: COL.dark, m: MAT.POLY, z: Z.ACCENT, fine: 1 },
+          { p: [0.028, -0.12, -0.5], s: [0.014, 0.14, 0.014], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, r: [0.2, 0, 0.24], fine: 1 },
+          { p: [-0.028, -0.12, -0.5], s: [0.014, 0.14, 0.014], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, r: [0.2, 0, -0.24], fine: 1 },
         ],
         muzzle: [0, 0.02, -1.12],
         eject: [0.06, 0.07, 0.06],
-        grip: [0, -0.16, 0.12],
-        sight: [0, 0.14, 0.0],
+        sight: [0, 0.142, 0],
+        grip: [0, -0.125, 0.145], gripTilt: 0.32,
+        fore: [0, -0.06, -0.4], foreKind: 'fore',
       },
     },
   },
@@ -311,25 +478,60 @@ export const CLASSES = {
       model: {
         scale: 1,
         parts: [
-          { p: [0, 0, 0.0], s: [0.066, 0.105, 0.36], c: COL.poly, m: MAT.POLY },
-          { p: [0, 0.058, 0.0], s: [0.05, 0.024, 0.34], c: COL.gunmetal, m: MAT.ALLOY },
-          { p: [0, 0.01, -0.26], s: [0.05, 0.06, 0.2], c: COL.poly, m: MAT.POLY },
-          { p: [0, 0.005, -0.42], s: [0.024, 0.024, 0.16], c: COL.black, m: MAT.METAL },
-          { p: [0, 0.005, -0.52], s: [0.036, 0.036, 0.07], c: COL.dark, m: MAT.METAL },
-          { p: [0, -0.15, 0.03], s: [0.055, 0.2, 0.1], c: COL.poly, m: MAT.POLY, r: [0.24, 0, 0] },
-          { p: [0, -0.14, -0.1], s: [0.048, 0.2, 0.09], c: COL.dark, m: MAT.POLY, r: [-0.1, 0, 0], tag: 'mag' },
-          { p: [0, -0.06, 0.02], s: [0.028, 0.04, 0.045], c: COL.black, m: MAT.METAL },
-          { p: [0, 0.005, 0.22], s: [0.05, 0.075, 0.16], c: COL.dark, m: MAT.POLY },
-          { p: [0, 0.005, 0.31], s: [0.056, 0.095, 0.03], c: COL.black, m: MAT.RUBBER },
-          { p: [0, 0.084, 0.13], s: [0.05, 0.02, 0.14], c: COL.dark, m: MAT.METAL },          // rail
-          { p: [0, 0.108, 0.1], s: [0.05, 0.055, 0.05], c: COL.dark, m: MAT.METAL },          // red dot
-          { p: [0, 0.108, 0.076], s: [0.04, 0.04, 0.008], c: 0x1a3548, m: MAT.GLASS },
-          { p: [0, 0.108, 0.074], s: [0.008, 0.008, 0.006], c: COL.red, m: MAT.EMIT },
+          /* Polymer lower, steel upper, ambidextrous controls. */
+          { p: [0, 0, 0], s: [0.07, 0.1, 0.38], c: COL.poly, m: MAT.POLY, z: Z.BODY },
+          { p: [0, 0.056, 0], s: [0.056, 0.026, 0.36], c: COL.gunmetal, m: MAT.ALLOY, z: Z.BODY },
+          { p: [0, 0.012, -0.26], s: [0.056, 0.07, 0.2], c: COL.poly, m: MAT.POLY, z: Z.BODY },
+          { p: [0.03, 0.012, -0.26], s: [0.008, 0.05, 0.16], c: COL.dark, m: MAT.POLY, z: Z.DETAIL, fine: 1 },
+          { p: [-0.03, 0.012, -0.26], s: [0.008, 0.05, 0.16], c: COL.dark, m: MAT.POLY, z: Z.DETAIL, fine: 1 },
+          { p: [0.038, -0.005, 0.06], s: [0.012, 0.03, 0.05], c: COL.gunmetal, m: MAT.ALLOY, z: Z.ACCENT, fine: 1 },
+          { p: [-0.038, -0.005, 0.06], s: [0.012, 0.03, 0.05], c: COL.gunmetal, m: MAT.ALLOY, z: Z.ACCENT, fine: 1 },
+
+          /* Barrel, shroud and a birdcage. */
+          { p: [0, 0.005, -0.42], s: [0.026, 0.026, 0.16], c: COL.black, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.005, -0.52], s: [0.04, 0.04, 0.08], c: COL.dark, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.005, -0.545], s: [0.046, 0.014, 0.03], c: COL.dark, m: MAT.METAL, z: Z.METAL, fine: 1 },
+          { p: [0, 0.005, -0.565], s: [0.018, 0.018, 0.012], c: COL.bore, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+
+          /* Grip and vertical fore-grip — the two places the hands actually land. */
+          { p: [0, -0.15, 0.035], s: [0.058, 0.21, 0.1], c: COL.poly, m: MAT.POLY, z: Z.WOOD, r: [0.26, 0, 0] },
+          { p: [0, -0.235, 0.058], s: [0.062, 0.028, 0.108], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD, r: [0.26, 0, 0], fine: 1 },
+          { p: [0, -0.1, -0.3], s: [0.05, 0.16, 0.06], c: COL.dark, m: MAT.POLY, z: Z.WOOD, r: [-0.12, 0, 0] },
+          { p: [0, -0.175, -0.31], s: [0.056, 0.026, 0.07], c: COL.black, m: MAT.RUBBER, z: Z.WOOD, r: [-0.12, 0, 0], fine: 1 },
+
+          /* Translucent magazine, raked forward out of the well. */
+          { p: [0, -0.14, -0.1], s: [0.05, 0.22, 0.092], c: COL.dark, m: MAT.POLY, z: Z.ACCENT, r: [-0.1, 0, 0], tag: 'mag' },
+          { p: [0, -0.252, -0.112], s: [0.056, 0.024, 0.1], c: COL.black, m: MAT.POLY, z: Z.ACCENT, r: [-0.1, 0, 0], tag: 'mag', fine: 1 },
+          { p: [0.026, -0.14, -0.1], s: [0.004, 0.18, 0.06], c: COL.brass, m: MAT.ALLOY, z: Z.DETAIL, r: [-0.1, 0, 0], tag: 'mag', fine: 1 },
+          { p: [0, -0.05, -0.1], s: [0.056, 0.05, 0.1], c: COL.poly, m: MAT.POLY, z: Z.BODY, fine: 1 },
+
+          /* Trigger group. */
+          { p: [0, -0.062, 0.005], s: [0.03, 0.016, 0.1], c: COL.black, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0, -0.045, -0.042], s: [0.028, 0.04, 0.016], c: COL.black, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0, -0.032, 0], s: [0.012, 0.04, 0.012], c: COL.raw, m: MAT.ALLOY, z: Z.METAL, fine: 1 },
+
+          /* Folding stock: a wire frame and a cheek pad. */
+          { p: [0, 0.008, 0.24], s: [0.052, 0.08, 0.16], c: COL.dark, m: MAT.POLY, z: Z.WOOD },
+          { p: [0.024, 0.008, 0.34], s: [0.012, 0.014, 0.14], c: COL.gunmetal, m: MAT.ALLOY, z: Z.ACCENT },
+          { p: [-0.024, 0.008, 0.34], s: [0.012, 0.014, 0.14], c: COL.gunmetal, m: MAT.ALLOY, z: Z.ACCENT },
+          { p: [0, 0.008, 0.412], s: [0.06, 0.09, 0.026], c: COL.black, m: MAT.RUBBER, z: Z.WOOD },
+          { p: [0, 0.05, 0.28], s: [0.04, 0.022, 0.12], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD, fine: 1 },
+
+          /* Full-length rail with a red dot on it, plus a folded backup post. */
+          { p: [0, 0.08, 0.02], s: [0.052, 0.018, 0.34], c: COL.dark, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.086, 0.1], s: [0.056, 0.008, 0.012], c: COL.black, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0, 0.086, -0.02], s: [0.056, 0.008, 0.012], c: COL.black, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0, 0.104, 0.13], s: [0.05, 0.02, 0.07], c: COL.dark, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.132, 0.12], s: [0.052, 0.05, 0.058], c: COL.dark, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.132, 0.092], s: [0.042, 0.042, 0.008], c: 0x1a3548, m: MAT.GLASS, z: Z.DETAIL },
+          { p: [0, 0.132, 0.09], s: [0.009, 0.009, 0.006], c: COL.red, m: MAT.EMIT, z: Z.DETAIL },
+          { p: [0, 0.132, 0.148], s: [0.042, 0.042, 0.008], c: 0x0d1b26, m: MAT.GLASS, z: Z.DETAIL, fine: 1 },
         ],
-        muzzle: [0, 0.005, -0.58],
+        muzzle: [0, 0.005, -0.6],
         eject: [0.055, 0.045, -0.02],
-        grip: [0, -0.17, 0.03],
-        sight: [0, 0.108, 0.1],
+        sight: [0, 0.132, 0.12],
+        grip: [0, -0.135, 0.055], gripTilt: 0.26,
+        fore: [0, -0.11, -0.3], foreKind: 'vert',
       },
     },
   },
@@ -352,25 +554,60 @@ export const CLASSES = {
       model: {
         scale: 1,
         parts: [
-          { p: [0, 0, 0.02], s: [0.086, 0.13, 0.56], c: COL.olive, m: MAT.POLY },
-          { p: [0, 0.075, 0.02], s: [0.07, 0.03, 0.54], c: COL.gunmetal, m: MAT.METAL },
-          { p: [0, 0.02, -0.44], s: [0.05, 0.05, 0.42], c: COL.black, m: MAT.METAL },
-          { p: [0, 0.02, -0.76], s: [0.032, 0.032, 0.3], c: COL.black, m: MAT.METAL },
-          { p: [0, 0.02, -0.94], s: [0.05, 0.05, 0.1], c: COL.dark, m: MAT.METAL },
-          { p: [0, 0.09, -0.4], s: [0.05, 0.03, 0.2], c: COL.gunmetal, m: MAT.METAL },        // carry handle
-          { p: [0, -0.2, 0.0], s: [0.17, 0.2, 0.26], c: COL.olive, m: MAT.POLY, tag: 'mag' },  // drum
-          { p: [0.088, -0.2, 0.0], s: [0.01, 0.16, 0.22], c: COL.dark, m: MAT.METAL, tag: 'mag' },
-          { p: [0, -0.16, 0.3], s: [0.06, 0.2, 0.11], c: COL.dark, m: MAT.POLY, r: [0.3, 0, 0] },
-          { p: [0, 0.0, 0.42], s: [0.06, 0.12, 0.28], c: COL.olive, m: MAT.POLY },
-          { p: [0, 0.02, 0.57], s: [0.065, 0.14, 0.04], c: COL.dark, m: MAT.RUBBER },
-          { p: [0, -0.09, -0.36], s: [0.05, 0.08, 0.24], c: COL.olive, m: MAT.POLY },         // foregrip
-          { p: [0, 0.104, 0.26], s: [0.04, 0.032, 0.04], c: COL.dark, m: MAT.METAL },
-          { p: [0, 0.11, -0.55], s: [0.026, 0.05, 0.024], c: COL.dark, m: MAT.METAL },
+          /* Big stamped body, feed tray, carry handle. */
+          { p: [0, 0, 0.02], s: [0.09, 0.13, 0.56], c: COL.olive, m: MAT.POLY, z: Z.BODY },
+          { p: [0, 0.076, 0.02], s: [0.074, 0.03, 0.54], c: COL.gunmetal, m: MAT.METAL, z: Z.BODY },
+          { p: [0, 0.094, 0.06], s: [0.08, 0.014, 0.3], c: COL.dark, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0.046, 0.02, 0.02], s: [0.008, 0.07, 0.5], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0, 0.12, -0.36], s: [0.05, 0.034, 0.26], c: COL.gunmetal, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.1, -0.47], s: [0.05, 0.06, 0.03], c: COL.gunmetal, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+          { p: [0, 0.1, -0.25], s: [0.05, 0.06, 0.03], c: COL.gunmetal, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+
+          /* Heavy barrel with a heat shield and a slotted flash hider. */
+          { p: [0, 0.02, -0.44], s: [0.052, 0.052, 0.42], c: COL.black, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.05, -0.44], s: [0.03, 0.008, 0.38], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0, 0.02, -0.78], s: [0.034, 0.034, 0.3], c: COL.black, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.02, -0.95], s: [0.052, 0.052, 0.12], c: COL.dark, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.048, -0.95], s: [0.026, 0.014, 0.07], c: COL.dark, m: MAT.METAL, z: Z.METAL, fine: 1 },
+          { p: [0, 0.02, -1.015], s: [0.024, 0.024, 0.014], c: COL.bore, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+
+          /* Belt drum, with a strip of visible brass leaving it. */
+          { p: [0, -0.2, 0], s: [0.18, 0.21, 0.27], c: COL.olive, m: MAT.POLY, z: Z.ACCENT, tag: 'mag' },
+          { p: [0.092, -0.2, 0], s: [0.012, 0.17, 0.23], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, tag: 'mag' },
+          { p: [-0.092, -0.2, 0], s: [0.012, 0.17, 0.23], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, tag: 'mag', fine: 1 },
+          { p: [0, -0.2, -0.14], s: [0.14, 0.13, 0.014], c: COL.dark, m: MAT.POLY, z: Z.DETAIL, tag: 'mag', fine: 1 },
+          { p: [0, -0.086, 0.02], s: [0.056, 0.06, 0.09], c: COL.brass, m: MAT.ALLOY, z: Z.DETAIL, tag: 'mag' },
+          { p: [0, -0.086, 0.02], s: [0.062, 0.014, 0.094], c: 0x8a6a1a, m: MAT.ALLOY, z: Z.DETAIL, tag: 'mag', fine: 1 },
+
+          /* Grip, trigger, and a fat foregrip under the shield. */
+          { p: [0, -0.165, 0.31], s: [0.062, 0.23, 0.11], c: COL.dark, m: MAT.POLY, z: Z.WOOD, r: [0.3, 0, 0] },
+          { p: [0, -0.255, 0.338], s: [0.066, 0.03, 0.116], c: COL.black, m: MAT.RUBBER, z: Z.WOOD, r: [0.3, 0, 0], fine: 1 },
+          { p: [0, -0.075, 0.245], s: [0.036, 0.02, 0.11], c: COL.dark, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0, -0.055, 0.198], s: [0.034, 0.05, 0.018], c: COL.dark, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0, -0.038, 0.242], s: [0.014, 0.045, 0.014], c: COL.raw, m: MAT.ALLOY, z: Z.METAL, fine: 1 },
+          { p: [0, -0.08, -0.36], s: [0.052, 0.09, 0.24], c: COL.olive, m: MAT.POLY, z: Z.WOOD },
+          { p: [0, -0.13, -0.36], s: [0.058, 0.024, 0.25], c: COL.black, m: MAT.RUBBER, z: Z.WOOD, fine: 1 },
+
+          /* Stock with a shoulder hook. */
+          { p: [0, 0, 0.36], s: [0.064, 0.12, 0.26], c: COL.olive, m: MAT.POLY, z: Z.WOOD },
+          { p: [0, 0.058, 0.34], s: [0.05, 0.05, 0.2], c: COL.dark, m: MAT.POLY, z: Z.WOOD, fine: 1 },
+          { p: [0, 0.02, 0.48], s: [0.068, 0.13, 0.04], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD },
+          { p: [0, -0.06, 0.46], s: [0.05, 0.06, 0.12], c: COL.olive, m: MAT.POLY, z: Z.WOOD, r: [0.4, 0, 0], fine: 1 },
+
+          /* Folding bipod and irons. */
+          { p: [0.03, -0.14, -0.6], s: [0.016, 0.16, 0.016], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, r: [0, 0, 0.3], fine: 1 },
+          { p: [-0.03, -0.14, -0.6], s: [0.016, 0.16, 0.016], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, r: [0, 0, -0.3], fine: 1 },
+          { p: [0, 0.108, 0.24], s: [0.044, 0.034, 0.05], c: COL.dark, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0.018, 0.12, 0.24], s: [0.011, 0.03, 0.032], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+          { p: [-0.018, 0.12, 0.24], s: [0.011, 0.03, 0.032], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+          { p: [0, 0.108, -0.55], s: [0.03, 0.056, 0.03], c: COL.dark, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.108, -0.552], s: [0.009, 0.042, 0.012], c: COL.black, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
         ],
         muzzle: [0, 0.02, -1.02],
         eject: [0.07, 0.03, 0.02],
-        grip: [0, -0.2, 0.3],
-        sight: [0, 0.112, 0.0],
+        sight: [0, 0.126, 0],
+        grip: [0, -0.15, 0.325], gripTilt: 0.3,
+        fore: [0, -0.135, -0.36], foreKind: 'fore',
       },
     },
   },
@@ -393,22 +630,54 @@ export const CLASSES = {
       model: {
         scale: 1,
         parts: [
-          { p: [0, 0.02, -0.14], s: [0.05, 0.075, 0.4], c: COL.silver, m: MAT.ALLOY },        // frame/barrel shroud
-          { p: [0, 0.055, -0.16], s: [0.04, 0.022, 0.36], c: 0xb9c2cc, m: MAT.ALLOY },        // rib
-          { p: [0, 0.005, -0.02], s: [0.098, 0.098, 0.12], c: 0x8f99a4, m: MAT.ALLOY, tag: 'cyl' }, // cylinder
-          { p: [0, 0.005, -0.02], s: [0.11, 0.05, 0.115], c: 0x8f99a4, m: MAT.ALLOY, r: [0, 0, 1.047], tag: 'cyl' },
-          { p: [0, 0.005, -0.02], s: [0.11, 0.05, 0.115], c: 0x8f99a4, m: MAT.ALLOY, r: [0, 0, -1.047], tag: 'cyl' },
-          { p: [0, -0.16, 0.13], s: [0.056, 0.22, 0.115], c: COL.darkwood, m: MAT.WOOD, r: [0.34, 0, 0] },
-          { p: [0, -0.075, 0.02], s: [0.028, 0.05, 0.045], c: 0x8f99a4, m: MAT.ALLOY },
-          { p: [0, 0.02, -0.32], s: [0.028, 0.03, 0.06], c: COL.black, m: MAT.METAL },
-          { p: [0, 0.078, 0.11], s: [0.03, 0.026, 0.03], c: COL.black, m: MAT.METAL },
-          { p: [0, 0.082, -0.3], s: [0.012, 0.03, 0.014], c: COL.black, m: MAT.METAL },
-          { p: [0, 0.088, -0.3], s: [0.014, 0.012, 0.012], c: COL.red, m: MAT.EMIT },
+          /* Frame, top strap and a vented rib down the barrel. */
+          { p: [0, 0.018, -0.13], s: [0.052, 0.08, 0.4], c: COL.silver, m: MAT.ALLOY, z: Z.BODY },
+          { p: [0, 0.058, -0.16], s: [0.042, 0.024, 0.36], c: 0xb9c2cc, m: MAT.ALLOY, z: Z.BODY },
+          { p: [0, 0.07, -0.1], s: [0.03, 0.012, 0.05], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0, 0.07, -0.2], s: [0.03, 0.012, 0.05], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0, -0.018, -0.19], s: [0.038, 0.036, 0.3], c: 0x8f99a4, m: MAT.ALLOY, z: Z.BODY, fine: 1 },
+          { p: [0, 0.018, -0.32], s: [0.05, 0.07, 0.05], c: COL.dark, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.018, -0.342], s: [0.02, 0.02, 0.012], c: COL.bore, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+
+          /* Six-shot cylinder: a hex barrel of flats with visible chambers. */
+          { p: [0, 0.005, -0.02], s: [0.1, 0.1, 0.125], c: 0x8f99a4, m: MAT.ALLOY, z: Z.METAL, tag: 'cyl' },
+          { p: [0, 0.005, -0.02], s: [0.112, 0.05, 0.12], c: 0x8f99a4, m: MAT.ALLOY, z: Z.METAL, r: [0, 0, 1.047], tag: 'cyl' },
+          { p: [0, 0.005, -0.02], s: [0.112, 0.05, 0.12], c: 0x8f99a4, m: MAT.ALLOY, z: Z.METAL, r: [0, 0, -1.047], tag: 'cyl' },
+          { p: [0, 0.052, 0.044], s: [0.022, 0.022, 0.008], c: COL.brass, m: MAT.ALLOY, z: Z.DETAIL, tag: 'cyl', fine: 1 },
+          { p: [0.042, 0.028, 0.044], s: [0.022, 0.022, 0.008], c: COL.brass, m: MAT.ALLOY, z: Z.DETAIL, tag: 'cyl', fine: 1 },
+          { p: [-0.042, 0.028, 0.044], s: [0.022, 0.022, 0.008], c: COL.brass, m: MAT.ALLOY, z: Z.DETAIL, tag: 'cyl', fine: 1 },
+          { p: [0.042, -0.02, 0.044], s: [0.022, 0.022, 0.008], c: COL.brass, m: MAT.ALLOY, z: Z.DETAIL, tag: 'cyl', fine: 1 },
+          { p: [-0.042, -0.02, 0.044], s: [0.022, 0.022, 0.008], c: COL.brass, m: MAT.ALLOY, z: Z.DETAIL, tag: 'cyl', fine: 1 },
+          { p: [0, -0.042, 0.044], s: [0.022, 0.022, 0.008], c: COL.brass, m: MAT.ALLOY, z: Z.DETAIL, tag: 'cyl', fine: 1 },
+          { p: [0, 0.005, -0.11], s: [0.022, 0.022, 0.14], c: 0x767f8a, m: MAT.ALLOY, z: Z.METAL, tag: 'cyl', fine: 1 },
+
+          /* Hammer, trigger, guard and the cylinder latch. */
+          { p: [0, 0.062, 0.12], s: [0.024, 0.06, 0.04], c: COL.dark, m: MAT.METAL, z: Z.METAL, r: [0.3, 0, 0] },
+          { p: [0, 0.086, 0.135], s: [0.03, 0.016, 0.03], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0, -0.07, 0.045], s: [0.03, 0.02, 0.11], c: 0x8f99a4, m: MAT.ALLOY, z: Z.BODY },
+          { p: [0, -0.05, -0.002], s: [0.028, 0.05, 0.018], c: 0x8f99a4, m: MAT.ALLOY, z: Z.BODY, fine: 1 },
+          { p: [0, -0.034, 0.042], s: [0.014, 0.048, 0.014], c: COL.dark, m: MAT.METAL, z: Z.METAL, fine: 1 },
+          { p: [-0.03, 0.005, 0.075], s: [0.012, 0.03, 0.06], c: 0x767f8a, m: MAT.ALLOY, z: Z.ACCENT, fine: 1 },
+
+          /* Chequered wood grips with a steel backstrap and a lanyard ring. */
+          { p: [0, -0.155, 0.135], s: [0.058, 0.23, 0.115], c: COL.darkwood, m: MAT.WOOD, z: Z.WOOD, r: [0.34, 0, 0] },
+          { p: [0.03, -0.155, 0.133], s: [0.007, 0.19, 0.096], c: COL.wood, m: MAT.WOOD, z: Z.WOOD, r: [0.34, 0, 0], fine: 1 },
+          { p: [-0.03, -0.155, 0.133], s: [0.007, 0.19, 0.096], c: COL.wood, m: MAT.WOOD, z: Z.WOOD, r: [0.34, 0, 0], fine: 1 },
+          { p: [0, -0.14, 0.192], s: [0.046, 0.2, 0.02], c: 0x8f99a4, m: MAT.ALLOY, z: Z.ACCENT, r: [0.34, 0, 0], fine: 1 },
+          { p: [0, -0.262, 0.176], s: [0.05, 0.032, 0.09], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, r: [0.34, 0, 0], fine: 1 },
+
+          /* Ramp front sight with a red insert, adjustable notch at the rear. */
+          { p: [0, 0.076, 0.1], s: [0.036, 0.026, 0.03], c: COL.black, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0.012, 0.082, 0.1], s: [0.008, 0.02, 0.02], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [-0.012, 0.082, 0.1], s: [0.008, 0.02, 0.02], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0, 0.08, -0.3], s: [0.014, 0.03, 0.016], c: COL.black, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.086, -0.303], s: [0.014, 0.014, 0.012], c: COL.red, m: MAT.EMIT, z: Z.DETAIL, fine: 1 },
         ],
-        muzzle: [0, 0.02, -0.36],
-        eject: [0.06, 0.0, -0.02],
-        grip: [0, -0.18, 0.14],
-        sight: [0, 0.084, 0.0],
+        muzzle: [0, 0.018, -0.36],
+        eject: [0.06, 0, -0.02],
+        sight: [0, 0.086, 0],
+        grip: [0, -0.14, 0.15], gripTilt: 0.34,
+        fore: [-0.068, -0.115, 0.135], foreKind: 'cup',
       },
     },
   },
@@ -431,19 +700,49 @@ export const CLASSES = {
       model: {
         scale: 1,
         parts: [
-          { p: [0, 0.005, -0.02], s: [0.058, 0.105, 0.36], c: COL.silver, m: MAT.ALLOY },
-          { p: [0, 0.058, -0.02], s: [0.046, 0.02, 0.34], c: 0xb9c2cc, m: MAT.ALLOY },
-          { p: [0, -0.07, 0.0], s: [0.054, 0.06, 0.32], c: COL.dark, m: MAT.POLY },
-          { p: [0, -0.19, 0.075], s: [0.056, 0.22, 0.1], c: COL.dark, m: MAT.POLY, r: [0.2, 0, 0], tag: 'mag' },
-          { p: [0, -0.02, -0.24], s: [0.026, 0.026, 0.12], c: COL.black, m: MAT.METAL },
-          { p: [0, -0.1, 0.02], s: [0.028, 0.045, 0.045], c: COL.black, m: MAT.METAL },
-          { p: [0, 0.074, 0.14], s: [0.024, 0.024, 0.026], c: COL.black, m: MAT.METAL },
-          { p: [0, 0.078, -0.18], s: [0.012, 0.026, 0.014], c: COL.black, m: MAT.METAL },
+          /* Machine pistol: long slide, ported, with a stubby compensator. */
+          { p: [0, 0.012, -0.04], s: [0.06, 0.098, 0.38], c: COL.silver, m: MAT.ALLOY, z: Z.BODY, tag: 'slide' },
+          { p: [0, 0.058, -0.04], s: [0.046, 0.018, 0.36], c: 0xb9c2cc, m: MAT.ALLOY, z: Z.BODY, tag: 'slide' },
+          { p: [0, 0.058, -0.14], s: [0.03, 0.014, 0.03], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, tag: 'slide', fine: 1 },
+          { p: [0, 0.058, -0.08], s: [0.03, 0.014, 0.03], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, tag: 'slide', fine: 1 },
+          { p: [0, 0.012, 0.1], s: [0.064, 0.076, 0.009], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, tag: 'slide', fine: 1 },
+          { p: [0, 0.012, 0.126], s: [0.064, 0.076, 0.009], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, tag: 'slide', fine: 1 },
+          { p: [0.03, 0.032, 0.02], s: [0.008, 0.04, 0.12], c: COL.bore, m: MAT.METAL, z: Z.DETAIL, tag: 'slide' },
+          { p: [0, 0.006, -0.26], s: [0.048, 0.05, 0.09], c: COL.dark, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.006, -0.284], s: [0.052, 0.014, 0.04], c: COL.dark, m: MAT.METAL, z: Z.METAL, fine: 1 },
+          { p: [0, 0.006, -0.306], s: [0.018, 0.018, 0.012], c: COL.bore, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+
+          /* Frame, rail and trigger group. */
+          { p: [0, -0.062, -0.01], s: [0.056, 0.06, 0.32], c: COL.dark, m: MAT.POLY, z: Z.BODY },
+          { p: [0, -0.098, -0.11], s: [0.042, 0.016, 0.14], c: COL.dark, m: MAT.POLY, z: Z.ACCENT, fine: 1 },
+          { p: [0, -0.104, -0.14], s: [0.044, 0.008, 0.012], c: COL.black, m: MAT.POLY, z: Z.DETAIL, fine: 1 },
+          { p: [0, -0.108, -0.05], s: [0.03, 0.06, 0.018], c: COL.dark, m: MAT.POLY, z: Z.BODY },
+          { p: [0, -0.134, 0.005], s: [0.03, 0.018, 0.12], c: COL.dark, m: MAT.POLY, z: Z.BODY },
+          { p: [0, -0.094, 0.005], s: [0.013, 0.05, 0.013], c: COL.raw, m: MAT.ALLOY, z: Z.METAL, fine: 1 },
+
+          /* Extended magazine — this is the one that leaves the gun. */
+          { p: [0, -0.215, 0.078], s: [0.048, 0.3, 0.078], c: COL.dark, m: MAT.POLY, z: Z.ACCENT, r: [0.2, 0, 0], tag: 'mag' },
+          { p: [0, -0.36, 0.108], s: [0.058, 0.024, 0.094], c: COL.black, m: MAT.POLY, z: Z.ACCENT, r: [0.2, 0, 0], tag: 'mag', fine: 1 },
+          { p: [0.025, -0.215, 0.078], s: [0.004, 0.26, 0.05], c: COL.brass, m: MAT.ALLOY, z: Z.DETAIL, r: [0.2, 0, 0], tag: 'mag', fine: 1 },
+
+          /* Grip. */
+          { p: [0, -0.185, 0.08], s: [0.056, 0.23, 0.098], c: COL.dark, m: MAT.POLY, z: Z.WOOD, r: [0.2, 0, 0] },
+          { p: [0.029, -0.185, 0.078], s: [0.006, 0.18, 0.082], c: COL.black, m: MAT.RUBBER, z: Z.WOOD, r: [0.2, 0, 0], fine: 1 },
+          { p: [-0.029, -0.185, 0.078], s: [0.006, 0.18, 0.082], c: COL.black, m: MAT.RUBBER, z: Z.WOOD, r: [0.2, 0, 0], fine: 1 },
+          { p: [0, -0.178, 0.122], s: [0.048, 0.2, 0.018], c: COL.black, m: MAT.RUBBER, z: Z.WOOD, r: [0.2, 0, 0], fine: 1 },
+
+          /* Sights. */
+          { p: [0, 0.076, 0.12], s: [0.044, 0.026, 0.026], c: COL.black, m: MAT.METAL, z: Z.ACCENT, tag: 'slide' },
+          { p: [0.015, 0.079, 0.12], s: [0.008, 0.011, 0.014], c: 0x1affa0, m: MAT.EMIT, z: Z.DETAIL, tag: 'slide', fine: 1 },
+          { p: [-0.015, 0.079, 0.12], s: [0.008, 0.011, 0.014], c: 0x1affa0, m: MAT.EMIT, z: Z.DETAIL, tag: 'slide', fine: 1 },
+          { p: [0, 0.076, -0.2], s: [0.014, 0.026, 0.018], c: COL.black, m: MAT.METAL, z: Z.ACCENT, tag: 'slide' },
+          { p: [0, 0.081, -0.206], s: [0.011, 0.012, 0.011], c: 0x1affa0, m: MAT.EMIT, z: Z.DETAIL, tag: 'slide', fine: 1 },
         ],
-        muzzle: [0, -0.02, -0.32],
-        eject: [0.05, 0.03, -0.02],
-        grip: [0, -0.19, 0.08],
-        sight: [0, 0.078, 0.0],
+        muzzle: [0, 0.006, -0.32],
+        eject: [0.05, 0.04, 0.02],
+        sight: [0, 0.086, 0],
+        grip: [0, -0.17, 0.09], gripTilt: 0.2,
+        fore: null, foreKind: 'none',
       },
     },
   },
@@ -466,28 +765,63 @@ export const CLASSES = {
       model: {
         scale: 1,
         parts: [
-          { p: [0, 0, 0.04], s: [0.07, 0.115, 0.46], c: COL.tan, m: MAT.POLY },
-          { p: [0, 0.068, 0.02], s: [0.058, 0.026, 0.5], c: COL.dark, m: MAT.METAL },
-          { p: [0, 0.02, -0.38], s: [0.06, 0.075, 0.36], c: COL.tan, m: MAT.POLY },           // handguard
-          { p: [0.032, 0.02, -0.38], s: [0.004, 0.05, 0.32], c: COL.dark, m: MAT.METAL },
-          { p: [-0.032, 0.02, -0.38], s: [0.004, 0.05, 0.32], c: COL.dark, m: MAT.METAL },
-          { p: [0, 0.005, -0.68], s: [0.028, 0.028, 0.28], c: COL.black, m: MAT.METAL },
-          { p: [0, 0.005, -0.86], s: [0.044, 0.044, 0.1], c: COL.dark, m: MAT.METAL },
-          { p: [0, -0.16, 0.08], s: [0.058, 0.22, 0.11], c: COL.dark, m: MAT.POLY, r: [0.28, 0, 0] },
-          { p: [0, -0.15, -0.1], s: [0.05, 0.2, 0.11], c: COL.tan, m: MAT.POLY, tag: 'mag' },
-          { p: [0, -0.076, 0.0], s: [0.03, 0.045, 0.05], c: COL.black, m: MAT.METAL },
-          { p: [0, -0.005, 0.34], s: [0.058, 0.11, 0.26], c: COL.tan, m: MAT.POLY },
-          { p: [0, 0.01, 0.47], s: [0.062, 0.13, 0.04], c: COL.dark, m: MAT.RUBBER },
-          { p: [0, 0.128, -0.06], s: [0.055, 0.055, 0.4], c: COL.dark, m: MAT.METAL },        // optic
-          { p: [0, 0.128, -0.25], s: [0.072, 0.072, 0.05], c: COL.black, m: MAT.METAL },
-          { p: [0, 0.128, -0.278], s: [0.058, 0.058, 0.01], c: COL.glass, m: MAT.GLASS },
-          { p: [0, 0.128, 0.14], s: [0.06, 0.06, 0.045], c: COL.black, m: MAT.METAL },
-          { p: [0, 0.128, 0.162], s: [0.046, 0.046, 0.008], c: 0x0d1b26, m: MAT.GLASS },
+          /* AR-pattern upper and lower, with a brass deflector and forward assist. */
+          { p: [0, 0, 0.04], s: [0.072, 0.11, 0.44], c: COL.tan, m: MAT.POLY, z: Z.BODY },
+          { p: [0, 0.062, 0.02], s: [0.06, 0.03, 0.5], c: COL.dark, m: MAT.METAL, z: Z.BODY },
+          { p: [0.04, 0.03, 0.14], s: [0.014, 0.04, 0.05], c: COL.tan, m: MAT.POLY, z: Z.BODY, fine: 1 },
+          { p: [0.04, -0.005, 0.16], s: [0.014, 0.032, 0.032], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+          { p: [0.038, 0.02, 0.04], s: [0.008, 0.05, 0.16], c: COL.bore, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [-0.04, -0.01, 0.1], s: [0.014, 0.028, 0.05], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+
+          /* Free-float M-LOK handguard: slotted panels on both sides and the belly. */
+          { p: [0, 0.02, -0.38], s: [0.062, 0.078, 0.38], c: COL.tan, m: MAT.POLY, z: Z.BODY },
+          { p: [0.033, 0.02, -0.34], s: [0.005, 0.026, 0.07], c: COL.dark, m: MAT.POLY, z: Z.DETAIL, fine: 1 },
+          { p: [0.033, 0.02, -0.44], s: [0.005, 0.026, 0.07], c: COL.dark, m: MAT.POLY, z: Z.DETAIL, fine: 1 },
+          { p: [-0.033, 0.02, -0.34], s: [0.005, 0.026, 0.07], c: COL.dark, m: MAT.POLY, z: Z.DETAIL, fine: 1 },
+          { p: [-0.033, 0.02, -0.44], s: [0.005, 0.026, 0.07], c: COL.dark, m: MAT.POLY, z: Z.DETAIL, fine: 1 },
+          { p: [0, -0.022, -0.38], s: [0.03, 0.008, 0.3], c: COL.dark, m: MAT.POLY, z: Z.DETAIL, fine: 1 },
+          { p: [0, 0.062, -0.38], s: [0.056, 0.022, 0.38], c: COL.dark, m: MAT.METAL, z: Z.ACCENT },
+
+          /* Barrel and a chunky muzzle brake. */
+          { p: [0, 0.005, -0.68], s: [0.03, 0.03, 0.28], c: COL.black, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.005, -0.86], s: [0.05, 0.05, 0.12], c: COL.dark, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.005, -0.83], s: [0.056, 0.016, 0.03], c: COL.dark, m: MAT.METAL, z: Z.METAL, fine: 1 },
+          { p: [0, 0.005, -0.88], s: [0.056, 0.016, 0.03], c: COL.dark, m: MAT.METAL, z: Z.METAL, fine: 1 },
+          { p: [0, 0.005, -0.925], s: [0.02, 0.02, 0.014], c: COL.bore, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+
+          /* Grip, trigger, 20-round magazine. */
+          { p: [0, -0.165, 0.08], s: [0.06, 0.24, 0.11], c: COL.dark, m: MAT.POLY, z: Z.WOOD, r: [0.28, 0, 0] },
+          { p: [0, -0.255, 0.106], s: [0.064, 0.03, 0.114], c: COL.black, m: MAT.RUBBER, z: Z.WOOD, r: [0.28, 0, 0], fine: 1 },
+          { p: [0, -0.076, 0], s: [0.034, 0.018, 0.11], c: COL.dark, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0, -0.056, -0.05], s: [0.032, 0.048, 0.018], c: COL.dark, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0, -0.04, -0.006], s: [0.013, 0.045, 0.013], c: COL.raw, m: MAT.ALLOY, z: Z.METAL, fine: 1 },
+          { p: [0, -0.15, -0.1], s: [0.052, 0.21, 0.11], c: COL.tan, m: MAT.POLY, z: Z.ACCENT, r: [-0.06, 0, 0], tag: 'mag' },
+          { p: [0, -0.258, -0.106], s: [0.058, 0.024, 0.116], c: COL.dark, m: MAT.POLY, z: Z.ACCENT, r: [-0.06, 0, 0], tag: 'mag', fine: 1 },
+          { p: [0, -0.15, -0.1], s: [0.056, 0.02, 0.114], c: COL.dark, m: MAT.POLY, z: Z.DETAIL, r: [-0.06, 0, 0], tag: 'mag', fine: 1 },
+
+          /* Adjustable stock on a buffer tube. */
+          { p: [0, 0.005, 0.24], s: [0.042, 0.05, 0.16], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+          { p: [0, -0.005, 0.3], s: [0.06, 0.11, 0.22], c: COL.tan, m: MAT.POLY, z: Z.WOOD },
+          { p: [0, 0.058, 0.28], s: [0.048, 0.05, 0.18], c: COL.tan, m: MAT.POLY, z: Z.WOOD, fine: 1 },
+          { p: [0, -0.058, 0.36], s: [0.05, 0.05, 0.12], c: COL.dark, m: MAT.POLY, z: Z.WOOD, r: [0.35, 0, 0], fine: 1 },
+          { p: [0, 0.005, 0.4], s: [0.064, 0.115, 0.036], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD },
+
+          /* LPVO on a cantilever mount, with flip caps and a throw lever. */
+          { p: [0, 0.128, -0.06], s: [0.058, 0.058, 0.4], c: COL.dark, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.128, -0.25], s: [0.076, 0.076, 0.06], c: COL.black, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.128, -0.283], s: [0.06, 0.06, 0.012], c: COL.glass, m: MAT.GLASS, z: Z.DETAIL },
+          { p: [0, 0.128, 0.14], s: [0.062, 0.062, 0.05], c: COL.black, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.128, 0.168], s: [0.048, 0.048, 0.01], c: 0x0d1b26, m: MAT.GLASS, z: Z.DETAIL },
+          { p: [0, 0.186, -0.04], s: [0.03, 0.036, 0.05], c: COL.gunmetal, m: MAT.ALLOY, z: Z.ACCENT, fine: 1 },
+          { p: [0.044, 0.128, 0.08], s: [0.032, 0.03, 0.05], c: COL.gunmetal, m: MAT.ALLOY, z: Z.ACCENT, fine: 1 },
+          { p: [0, 0.09, -0.18], s: [0.03, 0.04, 0.05], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+          { p: [0, 0.09, 0.04], s: [0.03, 0.04, 0.05], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
         ],
         muzzle: [0, 0.005, -0.94],
-        eject: [0.06, 0.045, 0.02],
-        grip: [0, -0.18, 0.08],
-        sight: [0, 0.128, 0.0],
+        eject: [0.06, 0.045, 0.06],
+        sight: [0, 0.128, 0],
+        grip: [0, -0.15, 0.095], gripTilt: 0.28,
+        fore: [0, -0.04, -0.4], foreKind: 'fore',
       },
     },
   },
@@ -511,23 +845,58 @@ export const CLASSES = {
       model: {
         scale: 1,
         parts: [
-          { p: [0, 0, 0.06], s: [0.072, 0.1, 0.4], c: COL.steel, m: MAT.METAL },              // receiver
-          { p: [0, 0.03, -0.42], s: [0.046, 0.046, 0.66], c: COL.black, m: MAT.METAL },       // barrel
-          { p: [0, -0.032, -0.4], s: [0.044, 0.044, 0.62], c: COL.gunmetal, m: MAT.METAL },   // mag tube
-          { p: [0, -0.032, -0.28], s: [0.062, 0.062, 0.22], c: COL.wood, m: MAT.WOOD, tag: 'pump' }, // pump
-          { p: [0, -0.032, -0.28], s: [0.068, 0.03, 0.2], c: COL.darkwood, m: MAT.WOOD, tag: 'pump' },
-          { p: [0, -0.15, 0.14], s: [0.056, 0.2, 0.11], c: COL.wood, m: MAT.WOOD, r: [0.36, 0, 0] },
-          { p: [0, -0.07, 0.04], s: [0.03, 0.045, 0.05], c: COL.black, m: MAT.METAL },
-          { p: [0, -0.005, 0.4], s: [0.058, 0.115, 0.32], c: COL.wood, m: MAT.WOOD },
-          { p: [0, 0.01, 0.55], s: [0.062, 0.135, 0.04], c: COL.dark, m: MAT.RUBBER },
-          { p: [0, 0.062, 0.18], s: [0.03, 0.026, 0.04], c: COL.dark, m: MAT.METAL },
-          { p: [0, 0.07, -0.68], s: [0.014, 0.032, 0.016], c: COL.dark, m: MAT.METAL },
-          { p: [0, 0.078, -0.68], s: [0.016, 0.014, 0.014], c: 0xffe066, m: MAT.EMIT },
+          /* Milled receiver with a loading port and a shell lifter. */
+          { p: [0, 0, 0.06], s: [0.076, 0.1, 0.4], c: COL.steel, m: MAT.METAL, z: Z.BODY },
+          { p: [0, 0.052, 0.06], s: [0.06, 0.02, 0.38], c: COL.gunmetal, m: MAT.ALLOY, z: Z.BODY, fine: 1 },
+          { p: [0.04, 0.005, 0.06], s: [0.008, 0.05, 0.16], c: COL.bore, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0, -0.045, 0.06], s: [0.05, 0.03, 0.2], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0, 0.005, 0.245], s: [0.06, 0.07, 0.05], c: COL.gunmetal, m: MAT.ALLOY, z: Z.BODY, fine: 1 },
+
+          /* Barrel over a magazine tube, joined by a barrel band. */
+          { p: [0, 0.036, -0.44], s: [0.05, 0.05, 0.66], c: COL.black, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0.036, -0.78], s: [0.056, 0.056, 0.03], c: COL.dark, m: MAT.METAL, z: Z.METAL, fine: 1 },
+          { p: [0, 0.036, -0.792], s: [0.03, 0.03, 0.014], c: COL.bore, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0, -0.03, -0.4], s: [0.046, 0.046, 0.6], c: COL.gunmetal, m: MAT.METAL, z: Z.METAL },
+          { p: [0, -0.03, -0.71], s: [0.05, 0.05, 0.04], c: COL.dark, m: MAT.METAL, z: Z.METAL, fine: 1 },
+          { p: [0, 0.003, -0.6], s: [0.056, 0.09, 0.03], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+
+          /* Pump: ribbed wood, and it is the part that travels on the cycle. */
+          { p: [0, -0.03, -0.28], s: [0.068, 0.068, 0.24], c: COL.wood, m: MAT.WOOD, z: Z.WOOD, tag: 'pump' },
+          { p: [0, -0.068, -0.28], s: [0.074, 0.03, 0.22], c: COL.darkwood, m: MAT.WOOD, z: Z.WOOD, tag: 'pump' },
+          { p: [0, -0.03, -0.2], s: [0.074, 0.074, 0.014], c: COL.darkwood, m: MAT.WOOD, z: Z.DETAIL, tag: 'pump', fine: 1 },
+          { p: [0, -0.03, -0.26], s: [0.074, 0.074, 0.014], c: COL.darkwood, m: MAT.WOOD, z: Z.DETAIL, tag: 'pump', fine: 1 },
+          { p: [0, -0.03, -0.32], s: [0.074, 0.074, 0.014], c: COL.darkwood, m: MAT.WOOD, z: Z.DETAIL, tag: 'pump', fine: 1 },
+          { p: [0, -0.03, -0.38], s: [0.074, 0.074, 0.014], c: COL.darkwood, m: MAT.WOOD, z: Z.DETAIL, tag: 'pump', fine: 1 },
+
+          /* Trigger group and a shell carrier on the receiver's flank. */
+          { p: [0, -0.07, 0.04], s: [0.034, 0.02, 0.12], c: COL.black, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0, -0.05, -0.012], s: [0.032, 0.05, 0.018], c: COL.black, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0, -0.032, 0.036], s: [0.014, 0.048, 0.014], c: COL.raw, m: MAT.ALLOY, z: Z.METAL, fine: 1 },
+          { p: [-0.044, 0.005, 0.1], s: [0.014, 0.05, 0.19], c: COL.dark, m: MAT.POLY, z: Z.ACCENT, fine: 1 },
+          { p: [-0.05, 0.02, 0.06], s: [0.022, 0.022, 0.06], c: 0xc0392b, m: MAT.POLY, z: Z.DETAIL, fine: 1 },
+          { p: [-0.05, -0.008, 0.06], s: [0.022, 0.022, 0.06], c: 0xc0392b, m: MAT.POLY, z: Z.DETAIL, fine: 1 },
+          { p: [-0.05, 0.02, 0.14], s: [0.022, 0.022, 0.06], c: 0xc0392b, m: MAT.POLY, z: Z.DETAIL, fine: 1 },
+          { p: [-0.05, -0.008, 0.14], s: [0.022, 0.022, 0.06], c: 0xc0392b, m: MAT.POLY, z: Z.DETAIL, fine: 1 },
+
+          /* Wood stock with a rubber recoil pad. */
+          { p: [0, -0.15, 0.15], s: [0.058, 0.2, 0.11], c: COL.wood, m: MAT.WOOD, z: Z.WOOD, r: [0.36, 0, 0] },
+          { p: [0, -0.02, 0.33], s: [0.06, 0.12, 0.28], c: COL.wood, m: MAT.WOOD, z: Z.WOOD, r: [0.05, 0, 0] },
+          { p: [0, 0.038, 0.31], s: [0.05, 0.05, 0.22], c: COL.wood, m: MAT.WOOD, z: Z.WOOD, fine: 1 },
+          { p: [0, 0.005, 0.47], s: [0.064, 0.12, 0.04], c: COL.dark, m: MAT.RUBBER, z: Z.WOOD },
+          { p: [0, 0.005, 0.45], s: [0.068, 0.128, 0.012], c: COL.black, m: MAT.RUBBER, z: Z.DETAIL, fine: 1 },
+
+          /* Ghost ring at the back, a beaded post up front. */
+          { p: [0, 0.07, 0.2], s: [0.04, 0.03, 0.03], c: COL.dark, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0.016, 0.082, 0.2], s: [0.01, 0.026, 0.026], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+          { p: [-0.016, 0.082, 0.2], s: [0.01, 0.026, 0.026], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+          { p: [0, 0.075, -0.72], s: [0.014, 0.036, 0.016], c: COL.dark, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.086, -0.722], s: [0.016, 0.016, 0.014], c: 0xffe066, m: MAT.EMIT, z: Z.DETAIL },
         ],
-        muzzle: [0, 0.03, -0.78],
+        muzzle: [0, 0.036, -0.8],
         eject: [0.06, 0.03, 0.06],
-        grip: [0, -0.17, 0.14],
-        sight: [0, 0.072, 0.0],
+        sight: [0, 0.086, 0],
+        grip: [0, -0.135, 0.165], gripTilt: 0.36,
+        fore: [0, -0.11, -0.28], foreKind: 'pump',
       },
     },
   },
@@ -569,23 +938,50 @@ export const CLASSES = {
       model: {
         scale: 1,
         parts: [
-          { p: [0, 0, 0.0], s: [0.1, 0.1, 1.0], c: 0x3f4a30, m: MAT.POLY },                   // tube
-          { p: [0, 0, -0.3], s: [0.128, 0.128, 0.22], c: 0x33402a, m: MAT.POLY },
-          { p: [0, 0, 0.46], s: [0.145, 0.145, 0.16], c: COL.dark, m: MAT.METAL },            // venturi
-          { p: [0, 0, -0.62], s: [0.13, 0.13, 0.2], c: 0x6b3f22, m: MAT.POLY, tag: 'mag' },   // warhead body
-          { p: [0, 0, -0.78], s: [0.075, 0.075, 0.16], c: 0x53301a, m: MAT.POLY, tag: 'mag' },
-          { p: [0, 0, -0.9], s: [0.03, 0.03, 0.1], c: COL.dark, m: MAT.METAL, tag: 'mag' },
-          { p: [0, -0.14, 0.12], s: [0.055, 0.2, 0.1], c: COL.dark, m: MAT.POLY, r: [0.2, 0, 0] },
-          { p: [0, -0.1, -0.28], s: [0.05, 0.14, 0.1], c: 0x33402a, m: MAT.POLY },
-          { p: [0, 0.09, 0.16], s: [0.05, 0.09, 0.4], c: COL.dark, m: MAT.POLY },             // heat shield
-          { p: [0, 0.155, -0.1], s: [0.024, 0.06, 0.16], c: COL.gunmetal, m: MAT.METAL },     // optic mount
-          { p: [0, 0.2, -0.1], s: [0.055, 0.055, 0.18], c: COL.black, m: MAT.METAL },
-          { p: [0, 0.2, -0.192], s: [0.044, 0.044, 0.008], c: COL.glass, m: MAT.GLASS },
+          /* Launch tube, flared at the breech, with a wooden heat wrap. */
+          { p: [0, 0, 0], s: [0.1, 0.1, 1], c: 0x3f4a30, m: MAT.POLY, z: Z.BODY },
+          { p: [0, 0, -0.3], s: [0.13, 0.13, 0.22], c: 0x33402a, m: MAT.POLY, z: Z.BODY },
+          { p: [0, 0, 0.44], s: [0.148, 0.148, 0.15], c: COL.dark, m: MAT.METAL, z: Z.METAL },
+          { p: [0, 0, 0.518], s: [0.09, 0.09, 0.014], c: COL.bore, m: MAT.METAL, z: Z.DETAIL, fine: 1 },
+          { p: [0, 0.086, 0.14], s: [0.056, 0.09, 0.42], c: COL.darkwood, m: MAT.WOOD, z: Z.WOOD },
+          { p: [0, 0.086, 0.02], s: [0.06, 0.096, 0.02], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+          { p: [0, 0.086, 0.26], s: [0.06, 0.096, 0.02], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+          { p: [0, -0.086, -0.02], s: [0.05, 0.08, 0.3], c: COL.darkwood, m: MAT.WOOD, z: Z.WOOD },
+
+          /* The warhead — the piece that is gone once it has been fired. */
+          { p: [0, 0, -0.62], s: [0.134, 0.134, 0.2], c: 0x6b3f22, m: MAT.POLY, z: Z.ACCENT, tag: 'mag' },
+          { p: [0, 0, -0.53], s: [0.104, 0.104, 0.04], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, tag: 'mag', fine: 1 },
+          { p: [0, 0, -0.78], s: [0.078, 0.078, 0.16], c: 0x53301a, m: MAT.POLY, z: Z.ACCENT, tag: 'mag' },
+          { p: [0, 0, -0.9], s: [0.034, 0.034, 0.11], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, tag: 'mag' },
+          { p: [0, 0, -0.955], s: [0.02, 0.02, 0.03], c: COL.gunmetal, m: MAT.ALLOY, z: Z.DETAIL, tag: 'mag', fine: 1 },
+          { p: [0.05, 0, -0.72], s: [0.02, 0.008, 0.1], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, tag: 'mag', fine: 1 },
+          { p: [-0.05, 0, -0.72], s: [0.02, 0.008, 0.1], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, tag: 'mag', fine: 1 },
+          { p: [0, 0.05, -0.72], s: [0.008, 0.02, 0.1], c: COL.dark, m: MAT.METAL, z: Z.DETAIL, tag: 'mag', fine: 1 },
+
+          /* Grips, trigger and the shoulder rest. */
+          { p: [0, -0.15, 0.14], s: [0.058, 0.22, 0.1], c: COL.dark, m: MAT.POLY, z: Z.WOOD, r: [0.2, 0, 0] },
+          { p: [0, -0.24, 0.158], s: [0.062, 0.028, 0.11], c: COL.black, m: MAT.RUBBER, z: Z.WOOD, r: [0.2, 0, 0], fine: 1 },
+          { p: [0, -0.076, 0.09], s: [0.034, 0.02, 0.11], c: COL.dark, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0, -0.055, 0.042], s: [0.032, 0.048, 0.018], c: COL.dark, m: MAT.METAL, z: Z.BODY, fine: 1 },
+          { p: [0, -0.038, 0.086], s: [0.014, 0.045, 0.014], c: COL.raw, m: MAT.ALLOY, z: Z.METAL, fine: 1 },
+          { p: [0, -0.115, -0.26], s: [0.052, 0.16, 0.1], c: 0x33402a, m: MAT.POLY, z: Z.WOOD, r: [-0.14, 0, 0] },
+          { p: [0, -0.19, -0.27], s: [0.058, 0.026, 0.11], c: COL.black, m: MAT.RUBBER, z: Z.WOOD, r: [-0.14, 0, 0], fine: 1 },
+          { p: [0, -0.075, 0.42], s: [0.05, 0.07, 0.18], c: COL.dark, m: MAT.POLY, z: Z.WOOD, r: [-0.3, 0, 0], fine: 1 },
+
+          /* Optic on a side mount, plus a folding iron ladder. */
+          { p: [0, 0.155, -0.1], s: [0.026, 0.06, 0.16], c: COL.gunmetal, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.205, -0.1], s: [0.058, 0.058, 0.19], c: COL.black, m: MAT.METAL, z: Z.ACCENT },
+          { p: [0, 0.205, -0.198], s: [0.046, 0.046, 0.01], c: COL.glass, m: MAT.GLASS, z: Z.DETAIL },
+          { p: [0, 0.205, 0.0], s: [0.05, 0.05, 0.014], c: 0x0d1b26, m: MAT.GLASS, z: Z.DETAIL, fine: 1 },
+          { p: [0, 0.245, -0.1], s: [0.026, 0.026, 0.05], c: COL.gunmetal, m: MAT.ALLOY, z: Z.ACCENT, fine: 1 },
+          { p: [0, 0.09, 0.24], s: [0.03, 0.07, 0.016], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
+          { p: [0, 0.09, -0.34], s: [0.024, 0.07, 0.016], c: COL.dark, m: MAT.METAL, z: Z.ACCENT, fine: 1 },
         ],
-        muzzle: [0, 0, -0.95],
+        muzzle: [0, 0, -0.98],
         eject: null,
-        grip: [0, -0.16, 0.14],
-        sight: [0, 0.2, -0.1],
+        sight: [0, 0.205, -0.1],
+        grip: [0, -0.14, 0.155], gripTilt: 0.2,
+        fore: [0, -0.15, -0.26], foreKind: 'vert',
       },
     },
   },
@@ -635,30 +1031,155 @@ export const RARITY = {
 };
 
 export const SKINS = {
-  default:  { id: 'default',  name: 'Factory',      price: 0,    tint: null,     rarity: 'common' },
-  urban:    { id: 'urban',    name: 'Urban Grey',   price: 150,  tint: 0x6b7178, rarity: 'common' },
-  midnight: { id: 'midnight', name: 'Midnight',     price: 250,  tint: 0x1b2340, rarity: 'uncommon' },
-  arctic:   { id: 'arctic',   name: 'Arctic',       price: 500,  tint: 0xd8ecff, rarity: 'uncommon' },
-  desert:   { id: 'desert',   name: 'Desert Tan',   price: 500,  tint: 0xc2a06a, rarity: 'uncommon' },
-  forest:   { id: 'forest',   name: 'Woodland',     price: 650,  tint: 0x4a5a38, rarity: 'uncommon' },
-  toxic:    { id: 'toxic',    name: 'Toxic',        price: 800,  tint: 0x66dd33, rarity: 'rare' },
-  crimson:  { id: 'crimson',  name: 'Crimson',      price: 800,  tint: 0xb01f2e, rarity: 'rare' },
-  cobalt:   { id: 'cobalt',   name: 'Cobalt',       price: 900,  tint: 0x2b6ed6, rarity: 'rare' },
-  carbon:   { id: 'carbon',   name: 'Carbon Fibre', price: 1200, tint: 0x14171c, rarity: 'epic', gloss: 1 },
-  vapor:    { id: 'vapor',    name: 'Vaporwave',    price: 2000, tint: 0xff5fd2, rarity: 'epic', gloss: 1 },
-  gold:     { id: 'gold',     name: 'Gold Rush',    price: 3000, tint: 0xd4a520, rarity: 'legendary', gloss: 1.6 },
-  // Earned, never sold.
-  // `account` is the cheapest unlock in the game and deliberately so: it is the
-  // one finish a guest can look at and own five seconds later, and the only
-  // thing it asks for is the account every other feature here already needs.
-  enlisted: { id: 'enlisted', name: 'Enlisted',     price: -1,   tint: 0x2f7d64, rarity: 'uncommon',
-              unlock: { type: 'account' }, hint: 'Create a free account' },
-  veteran:  { id: 'veteran',  name: 'Veteran',      price: -1,   tint: 0x3f4a55, rarity: 'rare',
-              unlock: { type: 'level', value: 15 }, hint: 'Reach level 15' },
-  master:   { id: 'master',   name: 'Masterwork',   price: -1,   tint: 0x7a5cff, rarity: 'epic', gloss: 1.2,
-              unlock: { type: 'mastery', value: 4 }, hint: 'Reach mastery IV with this weapon' },
-  legend:   { id: 'legend',   name: 'Legend',       price: -1,   tint: 0xff7043, rarity: 'legendary', gloss: 1.8,
-              unlock: { type: 'mastery', value: 6 }, hint: 'Reach mastery VI with this weapon' },
+  default: {
+    id: 'default', name: 'Factory', price: 0, rarity: 'common',
+    glove: 0x2b3038, swatch: [0x3b424c, 0x5c3a1f, 0x8d959f],
+    blurb: 'However it left the armoury.',
+  },
+  urban: {
+    id: 'urban', name: 'Urban Grey', price: 150, rarity: 'common',
+    paint: { body: 0x6f767e, wood: 0x4b5158, metal: 0x2a2e34, accent: 0x3a3f46 },
+    pattern: { kind: 'digital', on: ['body', 'wood'], colors: [0x878e96, 0x5b626b, 0x3b4048], scale: 0.05 },
+    glove: 0x4a5058, swatch: [0x878e96, 0x5b626b, 0x3b4048],
+    blurb: 'Pixel camouflage for somewhere with kerbs.',
+  },
+  midnight: {
+    id: 'midnight', name: 'Midnight', price: 250, rarity: 'uncommon',
+    paint: { body: 0x222c50, wood: 0x1c2440, metal: 0x11151f, accent: 0x2c3760 },
+    pattern: { kind: 'fade', on: ['body', 'wood'], colors: [0x33427a, 0x111726], scale: 0.5 },
+    gloss: 0.5, glove: 0x1b2340, swatch: [0x33427a, 0x1e2745, 0x0d1018],
+    blurb: 'Blued to the point of blue.',
+  },
+  arctic: {
+    id: 'arctic', name: 'Arctic', price: 500, rarity: 'uncommon',
+    paint: { body: 0xdfeaf3, wood: 0xb9c8d6, metal: 0x8b98a6, accent: 0xcbd8e4 },
+    pattern: { kind: 'splinter', on: ['body', 'wood'], colors: [0xf2f7fb, 0xc4d3e0, 0x94a4b4], scale: 0.13 },
+    glove: 0xd3e2ee, swatch: [0xf2f7fb, 0xc4d3e0, 0x8b98a6],
+    blurb: 'Splinter pattern, cut for snow.',
+  },
+  desert: {
+    id: 'desert', name: 'Desert Tan', price: 500, rarity: 'uncommon',
+    paint: { body: 0xc2a06a, wood: 0xa5854f, metal: 0x2f3138, accent: 0x8f7443 },
+    pattern: { kind: 'scratch', on: ['body', 'wood'], colors: [0xd6b57e, 0x9a7d49], scale: 0.11 },
+    glove: 0xb99a67, swatch: [0xd6b57e, 0xa5854f, 0x2f3138],
+    blurb: 'Cerakote, sand-blasted, and it shows.',
+  },
+  forest: {
+    id: 'forest', name: 'Woodland', price: 650, rarity: 'uncommon',
+    paint: { body: 0x4a5a38, wood: 0x3a4630, metal: 0x22261d, accent: 0x37432b },
+    pattern: { kind: 'blotch', on: ['body', 'wood'], colors: [0x6a7a46, 0x40502f, 0x2b3520, 0x6d5a34], scale: 0.16 },
+    glove: 0x3d4a2c, swatch: [0x6a7a46, 0x40502f, 0x2b3520],
+    blurb: 'Four tones, hand-sprayed, no two guns alike.',
+  },
+  toxic: {
+    id: 'toxic', name: 'Toxic', price: 800, rarity: 'rare',
+    paint: { body: 0x1e2618, wood: 0x232b1b, metal: 0x161a13, accent: 0x66dd33 },
+    pattern: { kind: 'splatter', on: ['body', 'wood'], colors: [0x1a2016, 0x66dd33, 0xa8ff4d], scale: 0.2 },
+    gloss: 0.8, glow: 0x1f3a0a, glove: 0x66dd33, swatch: [0xa8ff4d, 0x66dd33, 0x1a2016],
+    blurb: 'Whatever was in the drum, it ate the finish.',
+  },
+  crimson: {
+    id: 'crimson', name: 'Crimson', price: 800, rarity: 'rare',
+    paint: { body: 0xa41f2c, wood: 0x241b1f, metal: 0x1a1e23, accent: 0x7c1621 },
+    pattern: { kind: 'stripe', on: ['body'], colors: [0xc02434, 0x8c1926, 0x1a1418], scale: 0.22 },
+    gloss: 1, glove: 0xb01f2e, swatch: [0xc02434, 0x8c1926, 0x14171b],
+    blurb: 'Racing stripes on something that is not a car.',
+  },
+  cobalt: {
+    id: 'cobalt', name: 'Cobalt', price: 900, rarity: 'rare',
+    paint: { body: 0x2b6ed6, wood: 0x1b2b45, metal: 0x161c26, accent: 0xe8eef6 },
+    pattern: { kind: 'stripe', on: ['body'], colors: [0x3179e4, 0x2158ad, 0xe8eef6], scale: 0.22 },
+    gloss: 1, glove: 0x2b6ed6, swatch: [0x3179e4, 0x2158ad, 0xe8eef6],
+    blurb: 'Team colours, whichever team you are on.',
+  },
+  carbon: {
+    id: 'carbon', name: 'Carbon Fibre', price: 1200, rarity: 'epic',
+    paint: { body: 0x1e2229, wood: 0x232830, metal: 0x14171b, accent: 0x323841 },
+    pattern: { kind: 'hex', on: ['body', 'wood', 'accent'], colors: [0x22262c, 0x0e1013, 0x3a4149], scale: 0.045 },
+    gloss: 1.7, glove: 0x14171c, swatch: [0x2c3138, 0x1a1d22, 0x0e1013],
+    blurb: 'Woven, lacquered, and lighter than it looks.',
+  },
+  vapor: {
+    id: 'vapor', name: 'Vaporwave', price: 2000, rarity: 'epic',
+    paint: { body: 0xff5fd2, wood: 0x2a1b4e, metal: 0x1b1233, accent: 0x35f6e8 },
+    pattern: { kind: 'grid', on: ['body', 'wood'], colors: [0xff5fd2, 0x6a2bd8, 0x35f6e8], scale: 0.4 },
+    gloss: 1.5, glow: 0x3a0f4a, glove: 0xff5fd2, swatch: [0xff5fd2, 0x6a2bd8, 0x35f6e8],
+    blurb: 'A sunset, a grid, and no apology.',
+  },
+  gold: {
+    id: 'gold', name: 'Gold Rush', price: 3000, rarity: 'legendary',
+    paint: { body: 0xd4a520, wood: 0x2e2419, metal: 0xb98a17, accent: 0xe0c05a },
+    pattern: { kind: 'scroll', on: ['body', 'metal', 'accent'], colors: [0xf2cf5e, 0xb98a17, 0x6d4f0a], scale: 0.09 },
+    gloss: 2, glove: 0xd4a520, swatch: [0xf2cf5e, 0xd4a520, 0x6d4f0a],
+    blurb: 'Engraved, plated, and utterly impractical.',
+  },
+
+  /*
+   * Earned, never sold.
+   *
+   * `account` is the cheapest unlock in the game and deliberately so: it is the
+   * one finish a guest can look at and own five seconds later, and the only
+   * thing it asks for is the account every other feature here already needs.
+   */
+  enlisted: {
+    id: 'enlisted', name: 'Enlisted', price: -1, rarity: 'uncommon',
+    unlock: { type: 'account' }, hint: 'Create a free account',
+    paint: { body: 0x2f7d64, wood: 0x24503f, metal: 0x1b2a24, accent: 0x3f9c7e },
+    pattern: { kind: 'stencil', on: ['body'], colors: [0x2f7d64, 0x1f5847, 0xd8e6df], scale: 0.13 },
+    glove: 0x2f7d64, swatch: [0x3f9c7e, 0x2f7d64, 0x1b2a24],
+    blurb: 'Issued, stencilled, and signed for.',
+  },
+  veteran: {
+    id: 'veteran', name: 'Veteran', price: -1, rarity: 'rare',
+    unlock: { type: 'level', value: 15 }, hint: 'Reach level 15',
+    paint: { body: 0x3f4a55, wood: 0x2a3038, metal: 0x1c2027, accent: 0x59667a },
+    pattern: { kind: 'scratch', on: ['body', 'wood', 'metal'], colors: [0x505c69, 0x2b323a], scale: 0.08 },
+    gloss: 0.6, glove: 0x3f4a55, swatch: [0x59667a, 0x3f4a55, 0x1c2027],
+    blurb: 'Every scratch on it was earned somewhere.',
+  },
+  master: {
+    id: 'master', name: 'Masterwork', price: -1, rarity: 'epic',
+    unlock: { type: 'mastery', value: 4 }, hint: 'Reach mastery IV with this weapon',
+    paint: { body: 0x7a5cff, wood: 0x241c3d, metal: 0x4a37a8, accent: 0xa791ff },
+    pattern: { kind: 'damascus', on: ['body', 'metal'], colors: [0x9d86ff, 0x4a37a8, 0x1d1633], scale: 0.1 },
+    gloss: 1.4, glow: 0x241452, glove: 0x7a5cff, swatch: [0x9d86ff, 0x7a5cff, 0x1d1633],
+    blurb: 'Folded steel, case-hardened violet.',
+  },
+  legend: {
+    id: 'legend', name: 'Legend', price: -1, rarity: 'legendary',
+    unlock: { type: 'mastery', value: 6 }, hint: 'Reach mastery VI with this weapon',
+    paint: { body: 0x211a16, wood: 0x2a201b, metal: 0x171110, accent: 0xff7043 },
+    pattern: { kind: 'circuit', on: ['body', 'wood', 'metal'], colors: [0x1a1512, 0xff7043, 0xffd08a], scale: 0.14 },
+    gloss: 1.9, glow: 0x3a1204, glove: 0xff7043, swatch: [0xffd08a, 0xff7043, 0x1a1512],
+    blurb: 'Still cooling.',
+  },
 };
 
 export const SKIN_IDS = Object.keys(SKINS);
+
+/**
+ * How one model part is finished under one skin.
+ *
+ * The zone decides everything: a skin paints the zones it names and leaves the
+ * rest factory, and the `detail` zone is never touched at all — which is what
+ * keeps a gold rifle's optic glass from turning gold with it.
+ *
+ * @param {object} part  a `model.parts` entry
+ * @param {object} skin  a SKINS entry
+ * @returns {{color:number, pattern:object|null, gloss:number, glow:number}}
+ */
+export function paintFor(part, skin) {
+  const zone = part.z ?? ZONE.BODY;
+  const untouchable = zone === ZONE.DETAIL || part.m === MAT.EMIT || part.m === MAT.GLASS;
+  const painted = !untouchable ? (skin?.paint?.[zone] ?? null) : null;
+  const pat = !untouchable && skin?.pattern?.on?.includes(zone) ? skin.pattern : null;
+  return {
+    color: painted ?? part.c,
+    pattern: pat,
+    gloss: untouchable ? 0 : (skin?.gloss ?? 0),
+    glow: untouchable ? 0 : (skin?.glow ?? 0),
+  };
+}
+
+/** The colour a skin puts on the shooter's gloves, so a finish is worn as well as held. */
+export const gloveColor = (skin) => skin?.glove ?? 0x2b3038;

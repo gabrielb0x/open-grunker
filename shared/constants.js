@@ -63,6 +63,8 @@ export const GRAVITY = 27.5;
 export const JUMP_VELOCITY = 9.4;
 export const BASE_SPEED = 9.2;                // u/s ground target speed
 export const SPRINT_NONE = 0;                 // no sprint key: speed comes from movement tech
+/** Free-flight speed for an admin in god mode — brisk enough to cross a map. */
+export const FLY_SPEED = 24;
 export const CROUCH_SPEED_MULT = 0.45;
 export const GROUND_ACCEL = 95;
 export const AIR_ACCEL = 105;
@@ -997,6 +999,7 @@ export const C2S = {
   MOD: 'md',          // a moderator acting on someone from the scoreboard
   REPORT: 'rp',       // a player reporting someone from the scoreboard
   NUKE: 'nk',         // spending an earned killstreak on the nuke
+  GOD: 'gd',          // an admin switching god mode on or off
 };
 
 /** Server → client */
@@ -1028,6 +1031,7 @@ export const S2C = {
   REPORT: 'rp',       // the outcome of a report this player just filed
   REPORTSTATE: 'rt',  // may you report anyone at all, and why not
   NUKE: 'nk',         // nuke armed / launched / landed
+  GOD: 'gd',          // god mode is on, off, or was refused
 };
 
 /* ── Misc ─────────────────────────────────────────────────────────────────── */

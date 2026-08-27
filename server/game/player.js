@@ -32,6 +32,8 @@ export class Player {
     this.name = o.name ?? 'Guest';
     this.level = o.level ?? 1;
     this.skin = o.skin ?? 'default';
+    /** Every class's chosen finish, so a class swap swaps the skin with it. */
+    this.skins = o.skins ?? {};
     this.verified = !!o.verified;
     this.clan = o.clan ?? null;
     /** Is the clan behind that tag one the developers have verified? Gold, not grey. */
@@ -43,6 +45,11 @@ export class Player {
     this.ip = o.ip ? String(o.ip).replace(/^::ffff:/i, '').toLowerCase() : null;
     /** Watching the map from the menu: present on the socket, absent from the match. */
     this.spectator = !!o.spectator;
+    /**
+     * God mode: invincible and flying. Admins only, and never persisted — it
+     * lasts as long as the connection that asked for it and no longer.
+     */
+    this.god = false;
     this.team = K.TEAM.NONE;
 
     this.classId = o.classId ?? 'triggerman';
@@ -66,6 +73,7 @@ export class Player {
     this.lastMessageAt = Date.now();
     this.lastChatAt = 0;
     this.lastModAt = 0;
+    this.lastGodAt = 0;
     /** Last report filed from this connection — the double-click guard. */
     this.lastReportAt = 0;
     this.warnings = 0;
@@ -139,6 +147,7 @@ export class Player {
     const def = getClass(classId);
     if (!force && def.id === this.classId) return false;
     this.classId = def.id;
+    this.skin = this.skins?.[def.id] ?? 'default';
     this.weapons = loadoutFor(def.id).map((w) => ({
       def: w,
       ammo: w.magSize ?? 0,
@@ -231,6 +240,10 @@ export class Player {
 
   /** @returns {{dead:boolean, damage:number}} */
   applyDamage(amount, now, attackerId = 0) {
+    // God mode is checked here rather than at each of the half-dozen call
+    // sites, so a bullet, a rocket, a nuke, a fall and the kill plane are all
+    // covered by one rule and a new source of damage cannot forget it.
+    if (this.god) return { dead: false, damage: 0 };
     if (!this.alive || now < this.protectedUntil) return { dead: false, damage: 0 };
     const dealt = Math.min(this.health, amount);
     this.health -= dealt;

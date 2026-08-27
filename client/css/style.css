@@ -631,8 +631,35 @@ kbd {
 .sb-body td:nth-child(1), .sb-body td.c-name, .sb-body td:nth-child(3) { text-align: left; }
 .sb-body td.hi { color: var(--accent); font-weight: 700; }
 .sb-body td.c-name { display: flex; align-items: center; }
-.sb-foot { display: flex; justify-content: space-between; padding: 9px 20px;
+.sb-foot { display: flex; align-items: center; justify-content: space-between; padding: 9px 20px;
   border-top: 1px solid var(--line); font-size: 11px; color: var(--dim); letter-spacing: .1em; }
+
+/* — Admin tools on the scoreboard — */
+.sb-toggle {
+  display: inline-flex; align-items: center; gap: 8px; padding: 5px 11px; cursor: pointer;
+  pointer-events: auto; font: inherit; letter-spacing: .14em; color: var(--muted);
+  background: rgba(255,255,255,.04); border: 1px solid var(--line-2); border-radius: var(--r-xs);
+  transition: color .12s, border-color .12s, background .12s;
+}
+.sb-toggle:hover { color: var(--text); border-color: var(--accent); }
+.sb-toggle b { font-size: 10px; letter-spacing: .1em; color: var(--dim); }
+.sb-toggle.on { color: var(--accent); border-color: var(--accent); background: rgba(245,166,35,.12); }
+.sb-toggle.on b { color: var(--accent); }
+
+/* — God mode badge — */
+#godBadge {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, 132px);
+  display: flex; align-items: center; gap: 9px; padding: 6px 14px;
+  font-size: 12px; letter-spacing: .22em; color: #ffd98a;
+  background: rgba(24,17,4,.72); border: 1px solid rgba(245,166,35,.5);
+  border-radius: var(--r-xs); text-shadow: 0 0 12px rgba(245,166,35,.6);
+}
+#godBadge i {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 9px var(--accent); animation: godPulse 1.6s ease-in-out infinite;
+}
+#godBadge small { font-size: 9px; letter-spacing: .12em; color: var(--dim); }
+@keyframes godPulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 .sb-body tr.me { background: rgba(245,166,35,.13); }
 .sb-body tr.me td { color: var(--accent); }
 .sb-body tr.red td.c-name { color: var(--red); }
@@ -1258,9 +1285,23 @@ select, input[type=color] {
 .skin-card:hover { transform: translateY(-2px); border-color: var(--line-2); }
 .skin-card.equipped { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(245,166,35,.3); }
 .skin-card.locked { opacity: .62; }
-.skin-swatch { height: 62px; border-radius: var(--r-xs); margin-bottom: 9px; border: 1px solid rgba(255,255,255,.09); }
+.skin-swatch {
+  position: relative; height: 62px; border-radius: var(--r-xs); margin-bottom: 9px;
+  border: 1px solid rgba(255,255,255,.09); overflow: hidden;
+}
+/* The three tones a finish actually paints, so a card shows the palette rather
+   than one averaged colour. */
+.skin-zones { position: absolute; left: 6px; bottom: 6px; display: flex; gap: 3px; }
+.skin-zones i {
+  width: 12px; height: 6px; border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.14);
+}
 .skin-card h5 { margin: 0 0 3px; font-size: 13px; }
 .skin-rarity { font-size: 8.5px; letter-spacing: .2em; margin-bottom: 5px; }
+.skin-blurb {
+  margin: 0 0 7px; font-size: 10.5px; line-height: 1.35; color: var(--dim);
+  min-height: 28px;
+}
 .skin-card .price { font-size: 11px; letter-spacing: .12em; color: var(--accent); }
 .skin-card .price.owned { color: var(--green); }
 .skin-card .price.locked { color: var(--dim); }

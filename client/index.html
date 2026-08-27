@@ -74,6 +74,9 @@
   <div id="streakBanner"></div>
   <div id="pointsFeed"></div>
 
+  <!-- God mode is loud on purpose: nobody should be invincible by accident. -->
+  <div id="godBadge" class="hidden"><i></i>GOD MODE<small>SPACE / CTRL to fly</small></div>
+
   <!-- Killstreak nuke: armed prompt, then the countdown the whole room sees. -->
   <div id="nukePrompt" class="hidden">
     <div class="nk-label">NUKE READY</div>
@@ -161,7 +164,13 @@
         <th class="c-mod hidden" id="sbModHead">CHAT</th>
         <th class="c-report hidden" id="sbReportHead">REPORT</th>
       </tr></thead><tbody id="sbRows"></tbody></table></div>
-      <div class="sb-foot"><span>100 points = 1 GR</span><span id="sbHint">Hold TAB</span></div>
+      <div class="sb-foot">
+        <span>100 points = 1 GR</span>
+        <span id="sbAdmin" class="hidden">
+          <button id="sbGod" class="sb-toggle" type="button">GOD MODE<b>OFF</b></button>
+        </span>
+        <span id="sbHint">Hold TAB</span>
+      </div>
     </div>
   </div>
 

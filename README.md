@@ -4,7 +4,9 @@ An open-source, self-hostable 3D arena FPS for the browser — heavily inspired 
 Krunker.io, written from scratch. Nine classes, six maps, bunny-hopping,
 crouch-sliding, quickscoping, accounts, XP, **GR**, skins, profile pictures,
 clans, clickable player profiles, player reports, rebindable keyboard *and*
-controller bindings, and a leaderboard. Four-minute matches, eight players to a
+controller bindings, and a leaderboard. Every weapon is modelled part by part
+and every skin paints it zone by zone, so a finish reads as a finish rather than
+a coat of paint. Four-minute matches, eight players to a
 room, as many rooms as there are people to fill them, unlimited ammo.
 
 **Live:** <https://grunker.g0x.dev> · **API:** <https://grunker.g0x.dev/api/v1/>
@@ -358,6 +360,43 @@ one another and an admin cannot be silenced by their own staff. Buttons the
 server would refuse are not drawn at all. Every mute is announced in the room's
 chat, naming who issued it, and it survives a reconnect because it lives in the
 database rather than in the room.
+
+### God mode *(administrators only)*
+
+An account whose role is `admin` gets one more control on the scoreboard: a
+**GOD MODE** switch in the footer. The scoreboard key pins the board open with
+the mouse free, so it is a click away mid-match.
+
+While it is on:
+
+* **Nothing can hurt you.** Bullets, melee, rockets, splash, fall damage, the
+  kill plane under the map and even a nuke all stop at the same place — one
+  check inside `applyDamage`, so a new source of damage cannot forget it.
+* **You fly.** Gravity, friction and ground state are switched off entirely and
+  the crosshair becomes the throttle: `W`/`S` fly where you are looking, `A`/`D`
+  strafe, `Space` climbs and `Ctrl` descends. Collision stays on — this is
+  flight, not noclip, because an admin walking through a wall cannot be shown
+  what is behind it.
+
+It is deliberately narrow:
+
+| | |
+| --- | --- |
+| **Who** | `admin` only. A `mod` has the chat ban and nothing else — the gap between "can silence someone" and "cannot be shot" is exactly where that line belongs. |
+| **How long** | As long as the socket. It is never written to the database, so a reconnect, a rejoin or a server restart always comes back mortal. |
+| **Re-checked** | Every press. An account demoted mid-session loses it the next time it presses the button, not the next time it signs in. |
+| **Recorded** | Both directions are written to the admin log as `god_on` / `god_off` with the room, map and mode — so the operator can find it afterwards without having to be told about it. |
+| **Visible to you** | A **GOD MODE** badge sits under the crosshair the whole time it is on. Nobody is invincible by accident. |
+
+The server is the only thing that decides. The client asks (`gd`), the room
+re-reads the rank, and the badge and the switch are drawn from the answer that
+comes back — pressing the button never turns anything on by itself.
+
+> One thing to know before handing out the `admin` role: god mode does **not**
+> stop you scoring. An invincible administrator can still shoot people and still
+> earns kills, streaks and GR from them. That is the same trust the role already
+> carries everywhere else in this project, and the audit log is the check on it —
+> but it is worth saying out loud rather than discovering.
 
 ### Reporting a player
 
@@ -1045,7 +1084,7 @@ open-grunker/
 │   ├── constants.js   tuning, enums, wire opcodes
 │   ├── movement.js    the movement step (prediction == authority)
 │   ├── physics.js     AABB world, broad-phase grid, raycasts
-│   ├── weapons.js     nine classes, procedural weapon models
+│   ├── weapons.js     nine classes, procedural weapon models, finishes
 │   ├── maps.js        map data built from a small box DSL
 │   └── shot.js        deterministic spread (seeded per shot)
 ├── server/
@@ -1059,7 +1098,8 @@ open-grunker/
 ├── client/
 │   ├── index.html     shell + HUD markup
 │   ├── css/           the entire interface
-│   ├── js/            renderer, netcode, HUD, menus, keybinds, audio
+│   ├── js/            renderer, netcode, HUD, menus, keybinds, audio,
+│   │                  gunskin.js (weapon finishes), viewmodel.js (hands)
 │   ├── admin/         the admin panel (served on the admin port only)
 │   └── vendor/        three.js (copied by `npm run vendor`)
 ├── deploy/            nginx vhost, systemd unit
@@ -1148,16 +1188,241 @@ JSON over one WebSocket at `/ws`, with short opcodes. Roughly **9 KB/s down per
 client** in a full 12-player room. Client→server messages: `hello`, `in` (batched
 input), `sh` (shoot), `ml`, `rl`, `sw`, `ch`, `md` (moderate), `rp` (report),
 `sp` (move the spectator camera), `sm` (spectator mode on/off), `nk` (launch a
-nuke), `pi`, `rs`, `cl`, `pl`, `vo`. Server→client: `we` (welcome + map), `sn`
+nuke), `gd` (god mode on/off, admins), `pi`, `rs`, `cl`, `pl`, `vo`. Server→client: `we` (welcome + map), `sn`
 (snapshot), `jn`/`lv`, `ht`/`dm`/`kf`/`de`/`sp`, `fx`/`im`/`ex`, `ch`, `cs` (chat
 standing), `rp` (report accepted or refused), `rt` (report standing — may you
 file at all, and why not), `nk` (nuke armed / launched / aborted / detonated),
-`sc`, `mt`, `am`, `po`, `er`.
+`gd` (god mode confirmed or refused), `sc`, `mt`, `am`, `po`, `er`.
 
 A snapshot carries one entry per player on the roster plus the recipient's own
 body, health and clock. Spectators get one field more — `sa`, the magazine of
 the body their camera is on — because it is the only number on a spectator's HUD
 that is not already in somebody's roster entry.
+
+---
+
+## Modding
+
+Everything a player looks at is code, not content. There are no `.obj` files, no
+texture atlases, no level editor and nothing to import: a map is a function that
+returns boxes, a weapon is a list of boxes, a skin is a palette and a pattern
+name. All three live in `shared/`, are loaded byte-identically by the client and
+the server, and take effect on the next page load.
+
+Run `npm test` after any change here. The suite checks things that are easy to
+break by hand and impossible to see: that every spawn point is clear and lands
+on the ground, that no map traps a body, that every weapon's sights line up on
+the crosshair, that nothing the player holds reaches the camera, and that no
+finish paints a lens.
+
+### Editing a map
+
+Maps live in **`shared/maps.js`**. Each one is a function that pushes boxes into
+an array and returns a description of the level.
+
+```js
+function mymap() {
+  const boxes = [];
+  const add = (...xs) => { for (const x of xs) boxes.push(...(Array.isArray(x) ? x : [x])); };
+
+  add(road({ axis: 'z', at: 0, from: -50, to: 50, width: 14 }));
+  add(house({ x: -20, z: -18, w: 14, d: 12, h: 5.2, wall: 0x2f6fd0, roofC: 0x4b525c,
+              doors: [{ side: 'e', at: 0, w: 3.4 }], lip: 0.9 }));
+  add(crates(8, 0, -6, 3, 1.4, 0xc08a3c));
+  add(bounds(96));                                  // the invisible edge
+  add(treeline(60, { count: 24 }));                 // scenery past it
+
+  return {
+    id: 'mymap', name: 'My Map',
+    description: 'One line, shown in the map list.',
+    size: 96, tags: ['street'],
+    sky: { top: 0x2fb8ec, bottom: 0xa8e6fb, haze: 0xd6f3ff, clouds: 0.45 },
+    fog: { color: 0xc4ecfb, near: 90, far: 260 },
+    sun: { dir: [0.42, 0.82, 0.38], color: 0xfff6e0, intensity: 1.5 },
+    ambient: { color: 0xbfe4fb, intensity: 0.8 },
+    ground: { color: 0x6fbe4a, size: 340, mat: SURFACE.GRASS },
+    boxes,
+    spawns: { ffa: [[0, 0.3, -40, 0]], red: [[0, 0.3, -40, 0]], blue: [[0, 0.3, 40, Math.PI]] },
+    objectives: [{ id: 'A', x: -20, y: 0.3, z: -18 }],   // optional — Domination only
+  };
+}
+```
+
+Then register it at the bottom of the file:
+
+```js
+const BUILDERS = { littletown, burgtown, sandstorm, shipyard, subzero, crossfire, range, mymap };
+export const MAP_IDS = [..., 'mymap'];   // omit to build it but keep it out of rotation
+```
+
+`BUILDERS` is what *exists*; `MAP_IDS` is what appears in the **rotation** and
+the vote. The practice range is in the first and not the second, which is how a
+map can be reachable by name without ever coming up between matches. Maps are
+built once and memoised, so a builder runs at most one time per process.
+
+**The three kinds of box.** `x`/`z` are the centre of the footprint, `y` is the
+**bottom**, and `w`/`h`/`d` are full extents.
+
+| | Collides | Renders | Stops bullets | Use it for |
+| --- | --- | --- | --- | --- |
+| `B(x, y, z, w, h, d, colour, opts)` | ✅ | ✅ | ✅ | The map itself |
+| `D(…)` — decor | ❌ | ✅ | ❌ | Lawn trim, road paint, a window pane |
+| `CLIP(x, y, z, w, h, d)` | ✅ | ❌ | ✅ | The boundary of the playable area |
+
+The line between solid and decor is *what a player would expect*, not what is
+cheap. Anything that reads as a mass is solid, whatever it costs the collision
+world — tree canopies, hedges, benches, fence posts. Only genuinely flat or
+genuinely overhead dressing stays decor.
+
+**Options** on any box: `mat` (a `SURFACE` — picks the texture, the impact
+particles, the ricochet sound and how solid it draws on the minimap), `roof:
+true` (a walkable top), `noShadow: true` (skip the shadow pass — use it for
+anything flush against the surface behind it, where the shadow would be inside
+another shadow anyway).
+
+**The builders you get for free** — all of them return arrays, so hand them
+straight to `add()`:
+
+| | |
+| --- | --- |
+| `bounds(size)` | The invisible wall around the playable area. Every map needs one. |
+| `wallX` / `wallZ` | A wall with doorway gaps cut in it |
+| `building({…})` | Four walls, doorways, an optional walkable roof and parapet |
+| `house({…})` | A dressed `building`: siding, overhanging roof, glazed windows, doorway recess, optional chimney and porch |
+| `stairs({…})` / `ramp({…})` | Stepped climbs — the shared step-up rule handles them |
+| `road`, `crossing`, `pavement` | Carriageway, zebra stripes, kerbed footway |
+| `fence`, `hedge`, `lawn`, `planter`, `bush`, `tree`, `treeline` | Garden and street greenery |
+| `car`, `truck`, `container`, `crates`, `barrel`, `dumpster`, `bench`, `stall` | Props and cover |
+| `lamp`, `pole`, `billboard`, `skyline` | Street furniture and the town past the boundary |
+| `cover(x, y, z, w, d)` | A plain waist-high block — the fastest way to test a lane |
+| `at(boxes, dx, dz)` | Translate a whole sub-assembly you have already built |
+
+**Spawns** are `[x, y, z, yaw]`, keyed by `ffa`, `red` and `blue`. Give a body
+about 0.3 of clearance above the floor it stands on. `npm test` walks every
+spawn on every rotation map, drops a body on it for five seconds and fails if it
+starts inside geometry, never settles, or falls out of the world — so a bad
+spawn is a failing test rather than a bug report.
+
+**Objectives** are the Domination capture points, ordered A → B → C. Leave the
+array out and the map simply never comes up in that mode.
+
+To try it: `npm start`, then open the map by name from the room list, or
+`?map=mymap` on the URL.
+
+### Weapons and their models
+
+Weapons live in **`shared/weapons.js`** — nine classes, each with a signature
+primary, plus the pistol and the knife every class carries. The numbers and the
+model sit in the same object, so a weapon is one thing to read.
+
+A model part is:
+
+```js
+{ p: [x, y, z], s: [w, h, d], c: 0x2e343d, m: MAT.METAL, z: ZONE.BODY,
+  r: [rx, ry, rz], tag: 'mag', fine: 1 }
+```
+
+| | |
+| --- | --- |
+| `m` | How it is shaded: `METAL`, `ALLOY`, `POLY`, `WOOD`, `RUBBER`, `GLASS`, `EMIT`. This is what separates blued steel from matte polymer. |
+| `z` | Which part of the gun it is — see **Skins** below. Skins paint zones. |
+| `tag` | Ties it to an animation: `mag` drops on a reload, `slide` and `bolt` cycle, `pump` rides the pump, `cyl` is a revolver cylinder. |
+| `fine` | Detail work. The first-person viewmodel draws every part; the third-person body skips these. Nobody reads slide serrations at forty metres, and eight players' worth of them is a few hundred draw calls a frame that buy nothing. |
+
+The gun points down **−Z**, up is **+Y**, right is **+X**. Alongside the parts,
+the model declares the handful of points everything else is derived from:
+
+| | |
+| --- | --- |
+| `muzzle` | Where the flash and the tracer leave |
+| `eject` | Where the case comes out |
+| `sight` | The point that must sit **dead centre** when aiming. The whole aim-down-sights pose falls out of this — mark the rear notch and the gun lines up on the crosshair the first time, with no hand-tuned offset. |
+| `grip` + `gripTilt` | Where the trigger hand goes, and how far the grip is raked back |
+| `fore` + `foreKind` | Where the support hand goes, and what it is holding: `fore` (a horizontal handguard), `vert` (a vertical foregrip), `pump`, `cup` (cradling a pistol butt), `idle` (empty), `none` |
+
+The hands are built *at* those two points — palm, four fingers, a thumb, an
+index finger laid on the trigger, a bare wrist and a sleeved forearm. Move a
+grip and the fingers follow it, because they are placed from the same numbers.
+
+Where a weapon *rests* on screen is the one thing that is not in this file:
+`REST` in `client/js/viewmodel.js` holds a per-`kind` offset, because a rifle is
+held into the shoulder and a pistol is held out at arm's length, and framing
+them identically pushes a butt stock behind the camera. It applies to the hip
+pose only — an aimed weapon is placed by its sights and by nothing else.
+
+To add a class, copy the nearest existing one in `CLASSES`, change the id, and
+it appears in the class picker, the gun-game ladder and the shop automatically.
+
+### Skins
+
+A finish is **not a tint**. Dipping every part of a rifle in one colour makes
+the wood, the steel and the polymer the same shade of nothing — which is why
+every skin used to look like the same gun in different paint. Three things make
+a finish instead, all declared in `SKINS` in `shared/weapons.js`:
+
+```js
+crimson: {
+  id: 'crimson', name: 'Crimson', price: 800, rarity: 'rare',
+  paint:   { body: 0xa41f2c, wood: 0x1a1418, metal: 0x14171b, accent: 0x7c1621 },
+  pattern: { kind: 'stripe', on: ['body'], colors: [0xc02434, 0x8c1926, 0x1a1418], scale: 0.22 },
+  gloss: 1,
+  glove: 0xb01f2e,
+  swatch: [0xc02434, 0x8c1926, 0x14171b],
+  blurb: 'Racing stripes on something that is not a car.',
+},
+```
+
+**Zones.** Every model part declares one, and a skin paints the zones it names
+and leaves the rest factory:
+
+| Zone | What is in it |
+| --- | --- |
+| `body` | Receiver, frame, chassis — the biggest painted panel |
+| `metal` | Barrel, bolt, slide, muzzle device — the working steel |
+| `wood` | Grip, stock, handguard — whatever the hands hold |
+| `accent` | Rails, optics, magazines, hardware |
+| `detail` | **Never painted.** Lenses, reticles, tritium dots, brass, bores. |
+
+That is what lets Gold Rush gild a receiver and leave the butt pad black rubber,
+and lets a gold rifle still have glass in its optic. Emissive and glass parts
+are exempt whatever zone they claim, and `npm test` fails if any finish reaches
+one.
+
+**Patterns** are painted into a seamless 128 px canvas at load time and applied
+as a shared texture — nothing is fetched and nothing ships as an image. `on` is
+the list of zones that get it, `colors` is the palette it draws from and `scale`
+is how big one tile is **in world units**, so a camouflage blob is the same size
+on a butt pad as on a receiver. The recipes live in `client/js/gunskin.js`:
+
+`digital` · `splinter` · `blotch` · `scratch` · `splatter` · `stripe` · `hex` ·
+`fade` · `grid` · `scroll` · `damascus` · `circuit` · `stencil`
+
+Adding one is a function that fills a square and tiles — use `wrapped()` so
+anything crossing an edge is drawn again on the other side.
+
+**The rest of the entry.** `gloss` (0–2) scales the shininess and specular on
+top of each material's own shading, so polished gold and matte olive drab are
+*lit* differently rather than tinted differently. `glow` adds an emissive rim.
+`glove` is the colour of the shooter's gloves — a finish is worn as well as
+carried, in first person and third. `swatch` is the three tones the shop card
+draws, and `blurb` is the line under the name.
+
+**Price and unlock.** `price: 0` is free, a positive price is bought with GR, and
+`price: -1` means it is earned rather than sold — pair it with an `unlock` and a
+`hint`:
+
+```js
+unlock: { type: 'account' }                 // just sign up
+unlock: { type: 'level', value: 15 }        // account level
+unlock: { type: 'mastery', value: 4 }       // mastery tier with that class's weapon
+```
+
+The server re-checks every one of these when a loadout is saved and when a skin
+is bought, so the shop card is presentation and never permission.
+
+**One caution about ids.** A skin id is what is written into an account's `owned`
+list in the database. Renaming or removing one takes it away from everybody who
+had bought it — change the look, keep the id.
 
 ---
 

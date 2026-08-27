@@ -480,7 +480,7 @@ async function handleHello(ws, session, msg) {
 
   if (auth && !enforceSingleSession(ws, auth.user.id, auth.user.username)) return;
 
-  let name, userId = null, level = 1, skin = 'default', classId = getClass(msg.classId).id;
+  let name, userId = null, level = 1, skin = 'default', skins = {}, classId = getClass(msg.classId).id;
   let verified = false, clan = null, clanVerified = false, role = 'player', mutedUntil = 0;
 
   if (auth) {
@@ -499,7 +499,10 @@ async function handleHello(ws, session, msg) {
     mutedUntil = db.chatBans.active(userId)?.until ?? 0;
     const l = db.loadouts.get(userId);
     try {
-      const skins = JSON.parse(l.skins);
+      // The whole map, not just this class's finish: skins are chosen per
+      // class, so a player who switches class mid-match has to switch finish
+      // with it — and everybody else has to see them do it.
+      skins = JSON.parse(l.skins) ?? {};
       skin = skins[classId] ?? 'default';
     } catch { /* keep the default skin */ }
   } else {
@@ -508,7 +511,7 @@ async function handleHello(ws, session, msg) {
   }
 
   const joined = hub.join({
-    ws, name, userId, level, classId, skin, verified, clan, clanVerified, role, mutedUntil, ip: session.ip,
+    ws, name, userId, level, classId, skin, skins, verified, clan, clanVerified, role, mutedUntil, ip: session.ip,
     roomId: typeof msg.room === 'string' ? msg.room.slice(0, 32) : undefined,
     spectate: !!msg.spectate,
   });

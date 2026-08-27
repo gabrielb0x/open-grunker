@@ -11,7 +11,8 @@
  */
 import * as THREE from 'three';
 import * as K from '/shared/constants.js';
-import { getClass, loadoutFor } from '/shared/weapons.js';
+import { getClass, loadoutFor, SKINS } from '/shared/weapons.js';
+import { buildWeaponMesh } from './gunskin.js';
 import { settings } from './settings.js';
 
 const BUFFER_MS = 1200;
@@ -85,7 +86,7 @@ function lerpAngle(a, b, t) {
  * Builds one low-poly operator. Silhouette first: helmet, plate carrier and
  * boots are what a player reads at forty metres, long before any detail.
  */
-function buildCharacter(teamColor, classDef, skinIdx = 0) {
+function buildCharacter(teamColor, classDef, skinIdx = 0, weaponSkin = 'default') {
   const g = new THREE.Group();
 
   /**
@@ -197,14 +198,14 @@ function buildCharacter(teamColor, classDef, skinIdx = 0) {
    * snapshot's slot field picks which one is visible — the wire already carried
    * it, nothing was ever drawing it.
    */
+  const skinDef = SKINS[weaponSkin] ?? SKINS.default;
   const guns = (loadoutFor(classDef?.id) ?? []).map((def) => {
-    const g2 = new THREE.Group();
-    for (const p of def?.model?.parts ?? []) {
-      const m = mk(p.s[0], p.s[1], p.s[2], p.c, { shininess: p.m === 'metal' || p.m === 'alloy' ? 60 : 10 });
-      m.position.set(p.p[0], p.p[1], p.p[2]);
-      if (p.r) m.rotation.set(p.r[0], p.r[1], p.r[2]);
-      g2.add(m);
-    }
+    // `fine: false` drops the slide serrations, vent slots and tritium dots.
+    // Nobody reads those at forty metres, and eight players' worth of them is
+    // several hundred draw calls a frame that buy exactly nothing. `clone`
+    // because a death fade mutates opacity, and the cached material is shared
+    // with every other player wearing the same finish.
+    const g2 = buildWeaponMesh(def, skinDef, { fine: false, clone: true });
     g2.scale.setScalar(0.86);
     g2.position.set(0.3, 1.25, -0.4);
     g2.visible = false;
@@ -373,7 +374,7 @@ export class EntityManager {
     const teamColor = this.teamMode
       ? (K.TEAM_COLORS[profile.team] ?? 0xf0a010)
       : 0xdd4b3e;
-    const group = buildCharacter(teamColor, getClass(profile.classId), profile.id);
+    const group = buildCharacter(teamColor, getClass(profile.classId), profile.id, profile.skin);
     const tag = buildNametag();
     group.add(tag.sprite);
     group.visible = false;
@@ -398,24 +399,35 @@ export class EntityManager {
     // disposing it here would blank every other player on screen.
     e.group.traverse((o) => {
       if (o.geometry && !o.geometry.userData?.shared) o.geometry.dispose?.();
-      if (o.material) { o.material.map?.dispose?.(); o.material.dispose?.(); }
+      // A weapon material is a clone of one in the finish cache — the clone is
+      // ours to drop, the texture behind it belongs to every other player
+      // wearing that skin.
+      if (o.material) {
+        if (!o.material.map?.userData?.shared) o.material.map?.dispose?.();
+        o.material.dispose?.();
+      }
     });
     this.players.delete(id);
   }
 
-  /** Rebuilds a character when its class changes. */
-  setClass(id, classId) {
+  /** Rebuilds a character when its class — or the finish on its weapons — changes. */
+  setClass(id, classId, skin = undefined) {
     const e = this.players.get(id);
-    if (!e || e.profile.classId === classId) return;
+    const nextSkin = skin ?? e?.profile?.skin ?? 'default';
+    if (!e || (e.profile.classId === classId && e.profile.skin === nextSkin)) return;
     e.profile.classId = classId;
+    e.profile.skin = nextSkin;
     const wasVisible = e.group.visible;
     this.scene.remove(e.group);
     e.group.traverse((o) => {
       if (o === e.tag.sprite) return;
       if (o.geometry && !o.geometry.userData?.shared) o.geometry.dispose?.();
-      if (o.material && o.material !== e.tag.sprite.material) o.material.dispose?.();
+      if (o.material && o.material !== e.tag.sprite.material) {
+        if (!o.material.map?.userData?.shared) o.material.map?.dispose?.();
+        o.material.dispose?.();
+      }
     });
-    const group = buildCharacter(e.teamColor, getClass(classId), id);
+    const group = buildCharacter(e.teamColor, getClass(classId), id, e.profile.skin);
     group.add(e.tag.sprite);
     group.visible = wasVisible;
     group.position.copy(e.group.position);

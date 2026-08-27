@@ -7,6 +7,7 @@
  */
 import * as K from '/shared/constants.js';
 import { CLASSES, CLASS_IDS, SKINS, RARITY, loadoutFor } from '/shared/weapons.js';
+import { skinSwatchCss } from './gunskin.js';
 import { api } from './api.js';
 import {
   settings, set as setSetting, SCHEMA, reset as resetSettings,
@@ -1033,18 +1034,18 @@ export class Menu {
       const has = skin.price === 0 || owned.includes(skin.id) || (earned && unlocked);
       const isOn = equipped === skin.id;
       const rarity = RARITY[skin.rarity ?? 'common'];
-      const swatch = skin.tint === null
-        ? 'linear-gradient(135deg,#39404b,#5a6472)'
-        : `linear-gradient(135deg, #${skin.tint.toString(16).padStart(6, '0')}, #${Math.floor(skin.tint * 0.5).toString(16).padStart(6, '0')})`;
-
       const priceLine = has
         ? (isOn ? 'EQUIPPED' : 'OWNED — EQUIP')
         : earned ? (skin.hint ?? 'EARN IT') : `${fmtNum(skin.price)} GR`;
 
       const card = el('div', `skin-card${isOn ? ' equipped' : ''}${has ? '' : ' locked'}`, `
-        <div class="skin-swatch" style="background:${swatch}"></div>
+        <div class="skin-swatch" style="background:${skinSwatchCss(skin)}">
+          <span class="skin-zones">${(skin.swatch ?? []).map((c) =>
+    `<i style="background:#${(c >>> 0).toString(16).padStart(6, '0')}"></i>`).join('')}</span>
+        </div>
         <h5>${escapeHtml(skin.name)}</h5>
         <div class="skin-rarity" style="color:#${rarity.color.toString(16).padStart(6, '0')}">${rarity.name.toUpperCase()}</div>
+        <p class="skin-blurb">${escapeHtml(skin.blurb ?? '')}</p>
         <div class="price ${has ? 'owned' : earned ? 'locked' : ''}">${escapeHtml(priceLine)}</div>`);
 
       card.addEventListener('click', async () => {

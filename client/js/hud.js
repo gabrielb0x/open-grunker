@@ -53,6 +53,7 @@ export class Hud {
       chatHint: $('chatHint'), hudRight: $('hudRight'),
       sbRows: $('sbRows'), sbTitle: $('sbTitle'), sbMap: $('sbMap'), sbHint: $('sbHint'),
       sbModHead: $('sbModHead'), sbReportHead: $('sbReportHead'),
+      sbAdmin: $('sbAdmin'), sbGod: $('sbGod'), godBadge: $('godBadge'),
       matchClock: $('matchClock'), matchMode: $('matchMode'), matchBar: $('matchBar'),
       scoreRed: $('scoreRed'), scoreBlue: $('scoreBlue'), objStrip: $('objStrip'),
       deathScreen: $('deathScreen'), deathKiller: $('deathKiller'), deathWeapon: $('deathWeapon'),
@@ -114,6 +115,10 @@ export class Hud {
     this.myRole = 'player';
     this.modTools = false;
     this.onModAction = null;
+    /** Admins only: the god-mode switch on the scoreboard, and who to tell. */
+    this.adminTools = false;
+    this.godMode = false;
+    this.onGodMode = null;
     /** Anyone signed in: the report button on the scoreboard, and who to tell. */
     this.reportTool = false;
     this.onReport = null;
@@ -153,6 +158,7 @@ export class Hud {
     this.nukeUntil = 0;
     this.nukeFlashUntil = 0;
     this.bindScoreboard();
+    this.bindAdminTools();
     this.bindReportCard();
     this.applySettings();
     this.refreshHints();
@@ -1027,6 +1033,48 @@ export class Hud {
       sfx.ui();
       this.openReportCard(Number(report.dataset.id), report.dataset.name ?? '');
     });
+  }
+
+  /**
+   * The administrator switch in the scoreboard's footer.
+   *
+   * Wired once, at construction, and to the footer rather than a row — the
+   * footer is never rebuilt, so the button survives every redraw the table
+   * does underneath it.
+   */
+  bindAdminTools() {
+    this.el.sbGod?.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (!this.adminTools) return;
+      sfx.ui('ok');
+      // Asked for, not assumed: the server answers with what it actually did,
+      // and `setGodMode` is what draws it.
+      this.onGodMode?.(!this.godMode);
+    });
+  }
+
+  /**
+   * Turns the scoreboard's admin footer on. `handler` is called as (wanted).
+   *
+   * Only administrators see it; the server checks the rank again behind every
+   * press, so this is presentation and never permission.
+   */
+  setAdminTools(role, handler = null) {
+    this.adminTools = (role ?? 'player') === 'admin';
+    this.onGodMode = handler;
+    this.el.sbAdmin?.classList.toggle('hidden', !this.adminTools);
+    if (!this.adminTools) this.setGodMode(false);
+  }
+
+  /** Draws whatever god-mode state the server last confirmed. */
+  setGodMode(on) {
+    this.godMode = !!on;
+    if (this.el.sbGod) {
+      this.el.sbGod.classList.toggle('on', this.godMode);
+      const label = this.el.sbGod.querySelector('b');
+      if (label) label.textContent = this.godMode ? 'ON' : 'OFF';
+    }
+    this.el.godBadge?.classList.toggle('hidden', !this.godMode);
   }
 
   /**

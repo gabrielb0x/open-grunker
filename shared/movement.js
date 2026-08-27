@@ -374,6 +374,56 @@ export function step(s, input, world, dt = K.TICK_DT, opts = {}) {
   const carving = r === 0;
 
   const wantCrouch = (keys & KEY.CROUCH) !== 0;
+
+  /*
+   * God mode: free flight.
+   *
+   * The whole movement model is replaced rather than bent — no gravity, no
+   * friction, no ground state — because every one of those exists to make a
+   * body that falls feel good, and this one does not fall. The crosshair is the
+   * throttle: forward flies where you look, jump and crouch are pure up and
+   * down, and velocity is driven to the target rather than accelerated toward
+   * it so the flight stops the moment the keys do.
+   *
+   * Collision stays on. Somebody who can walk through walls cannot be shown
+   * what is behind them, and an admin inspecting a map wants to know where its
+   * edges really are.
+   */
+  if (opts.fly) {
+    const cp = Math.cos(s.pitch);
+    let dx = f * -sinY * cp + r * cosY;
+    let dy = f * Math.sin(s.pitch);
+    let dz = f * -cosY * cp - r * sinY;
+    if ((keys & KEY.JUMP) !== 0) dy += 1;
+    if (wantCrouch) dy -= 1;
+    const len = Math.hypot(dx, dy, dz);
+    if (len > 1e-6) { dx /= len; dy /= len; dz /= len; }
+    const target = len > 1e-6 ? K.FLY_SPEED : 0;
+    const k = Math.min(1, dt * 14);
+    s.vx += (dx * target - s.vx) * k;
+    s.vy += (dy * target - s.vy) * k;
+    s.vz += (dz * target - s.vz) * k;
+    s.sliding = false;
+    // Crouch means "descend" up here, so the body stands back up — but never
+    // into a ceiling, which is the same rule the walking path follows.
+    if (s.height < K.PLAYER_HEIGHT) {
+      const rr = K.PLAYER_RADIUS;
+      if (!world.overlapsAny(s.x - rr, s.y + s.height, s.z - rr, s.x + rr, s.y + K.PLAYER_HEIGHT, s.z + rr)) {
+        s.height = K.PLAYER_HEIGHT;
+      }
+    }
+    s.crouching = s.height < K.PLAYER_HEIGHT;
+    moveAndCollide(s, world, s.vx * dt, s.vy * dt, s.vz * dt);
+    // Never grounded, so nothing downstream reports a landing: no fall damage,
+    // no footsteps, no dust from a body that is hovering.
+    s.onGround = false;
+    s.landed = false;
+    s.fallSpeed = 0;
+    s.coyote = 0;
+    s.jumpBuffer = 0;
+    return s;
+  }
+
   const crouchPressed = wantCrouch && (prevKeys & KEY.CROUCH) === 0;
   s.slideBuffer = crouchPressed ? K.SLIDE_BUFFER : Math.max(0, (s.slideBuffer ?? 0) - dt);
   const horizSpeed = Math.hypot(s.vx, s.vz);

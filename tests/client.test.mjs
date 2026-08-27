@@ -18,12 +18,15 @@ installBrowser();
 
 const THREE = await import('three');
 const K = await import('/shared/constants.js');
-const { CLASS_IDS, loadoutFor, getClass, recoilKick, spreadFor, SKINS } = await import('/shared/weapons.js');
+const {
+  CLASS_IDS, loadoutFor, getClass, recoilKick, spreadFor, SKINS, ZONE, MAT, paintFor,
+} = await import('/shared/weapons.js');
 const { getMap, ALL_MAP_IDS } = await import('/shared/maps.js');
 
 const { Hud } = await import('/js/hud.js');
 const { Effects } = await import('/js/effects.js');
 const { ViewModel } = await import('/js/viewmodel.js');
+const gunskin = await import('/js/gunskin.js');
 const { EntityManager } = await import('/js/entities.js');
 const { Objectives } = await import('/js/objectives.js');
 const {
@@ -1076,6 +1079,10 @@ export default async function run() {
   check('the knife swings through a real arc rather than a jolt', (() => {
     try {
       vm.setWeapon(loadoutFor('triggerman')[2], 'default');
+      // The knife's guard is not square to the camera — it is turned so the
+      // blade shows its edge — so "home" is that rest angle, not zero.
+      for (let f = 0; f < 60; f++) vm.update(1 / 60, { speed: 0, grounded: true, ads: false });
+      const guard = vm.root.rotation.y;
       vm.meleeSwing(K.MELEE_COOLDOWN * 0.82);
       const yaws = [];
       for (let f = 0; f < 40; f++) {
@@ -1083,7 +1090,7 @@ export default async function run() {
         yaws.push(vm.root.rotation.y);
       }
       const swept = Math.max(...yaws) - Math.min(...yaws);
-      const home = Math.abs(yaws[yaws.length - 1]) < 0.02;
+      const home = Math.abs(yaws[yaws.length - 1] - guard) < 0.02;
       info(`${(swept * 180 / Math.PI).toFixed(0)}° across the screen, back at the guard: ${home}`);
       // A wind-up one way and a cut the other, ending where it started.
       return vm.slashT === 0 && swept > 0.6 && home;
@@ -1106,13 +1113,167 @@ export default async function run() {
     return shown && hidden && back;
   })());
 
-  check('every skin tints without touching lenses or reticles', (() => {
+  check('every finish builds on every weapon', (() => {
     let ok = true;
     for (const skin of Object.keys(SKINS)) {
       try { vm.setWeapon(loadoutFor('hunter')[0], skin); } catch (e) { info(`${skin}: ${e}`); ok = false; }
     }
     return ok;
   })(), `${Object.keys(SKINS).length} finishes`);
+
+  /*
+   * The framing test.
+   *
+   * A viewmodel box that straddles the near plane does not vanish — it projects
+   * across the whole screen, which is exactly how an arm ends up looking like a
+   * plank laid over the view. Nothing the player is holding may come within
+   * 8 cm of the eye, on any weapon, with either hand.
+   */
+  check('nothing the player holds reaches the camera', (() => {
+    const bb = new THREE.Box3();
+    const v = new THREE.Vector3();
+    let worst = -Infinity, worstAt = '';
+    const nearestOf = (obj) => {
+      let best = -Infinity;
+      obj.updateMatrixWorld(true);
+      obj.traverse((o) => {
+        if (!o.isMesh) return;
+        o.geometry.computeBoundingBox();
+        bb.copy(o.geometry.boundingBox);
+        for (const x of [bb.min.x, bb.max.x]) {
+          for (const y of [bb.min.y, bb.max.y]) {
+            for (const z of [bb.min.z, bb.max.z]) {
+              v.set(x, y, z).applyMatrix4(o.matrixWorld);
+              if (v.z > best) best = v.z;
+            }
+          }
+        }
+      });
+      return best;
+    };
+    const seenIds = new Set();
+    for (const cid of CLASS_IDS) {
+      for (const w of loadoutFor(cid)) {
+        if (seenIds.has(w.id)) continue;
+        seenIds.add(w.id);
+        vm.setWeapon(w, 'default');
+        for (let f = 0; f < 200; f++) vm.update(1 / 60, { speed: 0, grounded: true, ads: false });
+        // The root carries the whole rest pose, and a child's world matrix is
+        // built from its parent's — so the scene has to be brought up to date
+        // before anything is measured against the camera.
+        vm.scene.updateMatrixWorld(true);
+        for (const [label, part] of [['gun', vm.gun], ['main hand', vm.armMain], ['off hand', vm.armOff]]) {
+          if (!part) continue;
+          const z = nearestOf(part);
+          if (z > worst) { worst = z; worstAt = `${w.id} ${label}`; }
+        }
+      }
+    }
+    info(`closest anything gets to the eye: ${(-worst).toFixed(3)} u (${worstAt})`);
+    return worst < -0.08;
+  })());
+
+  check('both hands are built, and posed on the weapon\'s own grips', (() => {
+    let ok = true;
+    for (const cid of CLASS_IDS) {
+      for (const w of loadoutFor(cid)) {
+        vm.setWeapon(w, 'default');
+        if (!vm.armMain) { info(`${w.id}: no firing hand`); ok = false; continue; }
+        const g = w.model.grip;
+        if (Math.abs(vm.armMain.position.y - g[1]) > 1e-9) { info(`${w.id}: hand off the grip`); ok = false; }
+        // Akimbo carries a second gun, so its off hand rides that one instead.
+        const off = vm.armOff ?? vm.armB;
+        if (!off) { info(`${w.id}: no second hand`); ok = false; }
+      }
+    }
+    return ok;
+  })());
+
+  suite('Client — weapon finishes');
+
+  check('every model part declares which zone of the gun it is', (() => {
+    const zones = new Set(Object.values(ZONE));
+    const bad = [];
+    for (const cid of CLASS_IDS) {
+      for (const w of loadoutFor(cid)) {
+        for (const p of w.model.parts) if (!zones.has(p.z)) bad.push(`${w.id}:${p.c}`);
+      }
+    }
+    if (bad.length) info(bad.slice(0, 5).join(', '));
+    return bad.length === 0;
+  })());
+
+  check('every weapon says where both hands go', (() => {
+    const bad = [];
+    for (const cid of CLASS_IDS) {
+      for (const w of loadoutFor(cid)) {
+        const m = w.model;
+        if (!Array.isArray(m.grip)) bad.push(`${w.id}: grip`);
+        // `none` is a real answer — the akimbo pair has no spare hand.
+        if (m.foreKind !== 'none' && !Array.isArray(m.fore)) bad.push(`${w.id}: fore`);
+      }
+    }
+    if (bad.length) info(bad.join(', '));
+    return bad.length === 0;
+  })());
+
+  check('no finish paints a lens, a reticle or a bore', (() => {
+    let painted = 0, checked = 0;
+    for (const skinId of Object.keys(SKINS)) {
+      const skin = SKINS[skinId];
+      for (const cid of CLASS_IDS) {
+        for (const w of loadoutFor(cid)) {
+          for (const p of w.model.parts) {
+            if (p.z !== ZONE.DETAIL && p.m !== MAT.EMIT && p.m !== MAT.GLASS) continue;
+            checked++;
+            const paint = paintFor(p, skin);
+            if (paint.color !== p.c || paint.pattern || paint.gloss || paint.glow) painted++;
+          }
+        }
+      }
+    }
+    info(`${checked} untouchable parts across ${Object.keys(SKINS).length} finishes`);
+    return painted === 0 && checked > 0;
+  })());
+
+  check('a finish that names a pattern actually paints one', (() => {
+    const patterned = Object.values(SKINS).filter((s) => s.pattern);
+    let ok = patterned.length >= 10;
+    for (const skin of patterned) {
+      const part = { c: 0x808080, m: MAT.POLY, z: skin.pattern.on[0] };
+      const mat = gunskin.gunMaterial(part, skin);
+      if (!mat.map) { info(`${skin.id}: no texture`); ok = false; }
+    }
+    info(`${patterned.length} of ${Object.keys(SKINS).length} finishes carry a pattern`);
+    return ok;
+  })());
+
+  check('materials and geometry are shared, so a finish is paid for once', (() => {
+    const part = { p: [0, 0, 0], s: [0.1, 0.1, 0.1], c: 0x445566, m: MAT.METAL, z: ZONE.BODY };
+    const a = gunskin.gunMaterial(part, SKINS.gold);
+    const b = gunskin.gunMaterial(part, SKINS.gold);
+    const geoA = gunskin.skinnedBoxGeometry(0.11, 0.12, 0.13);
+    const geoB = gunskin.skinnedBoxGeometry(0.11, 0.12, 0.13);
+    return a === b && geoA === geoB && a.userData.shared && geoA.userData.shared;
+  })());
+
+  check('a box is UV-mapped in world units, so a pattern holds its scale', (() => {
+    const small = gunskin.skinnedBoxGeometry(0.05, 0.05, 0.05).attributes.uv;
+    const big = gunskin.skinnedBoxGeometry(0.5, 0.5, 0.5).attributes.uv;
+    let sMax = 0, bMax = 0;
+    for (let i = 0; i < small.count; i++) sMax = Math.max(sMax, small.getX(i));
+    for (let i = 0; i < big.count; i++) bMax = Math.max(bMax, big.getX(i));
+    info(`0.05 u box spans ${sMax} UV, 0.5 u box spans ${bMax}`);
+    return Math.abs(bMax / sMax - 10) < 1e-6;
+  })());
+
+  check('the third-person body skips the detail work the viewmodel draws', (() => {
+    const ar = loadoutFor('triggerman')[0];
+    const full = gunskin.buildWeaponMesh(ar, SKINS.default, { fine: true }).children.length;
+    const far = gunskin.buildWeaponMesh(ar, SKINS.default, { fine: false }).children.length;
+    info(`${full} parts in hand, ${far} at forty metres`);
+    return far < full && far > 8;
+  })());
 
   suite('Client — entities');
 

@@ -144,6 +144,8 @@ export class Game {
     this.reconnectTimer = null;
     this.myVerified = false;
     this.myRole = 'player';
+    /** God mode, exactly as the server last confirmed it — never assumed here. */
+    this.godMode = false;
     /** The scoreboard is pinned open with the mouse free — see toggleScoreboard. */
     this.scoreboardPinned = false;
     this.renderTime = 0;
@@ -492,6 +494,11 @@ export class Game {
       // wholesale rather than appending to whatever was on screen.
       this.hud.setChat(msg.chat ?? {});
       this.hud.setModTools(this.myRole, (a, id, min) => this.net.mod(a, id, min));
+      // A fresh connection is never in god mode; the switch starts off and the
+      // server is the only thing that ever turns it on.
+      this.godMode = false;
+      this.hud.setGodMode(false);
+      this.hud.setAdminTools(this.myRole, (want) => this.net.god(want));
       // The server decides, and says why: the column is drawn whenever this
       // build has reporting at all, and the button inside it is greyed with
       // whatever sentence the server would have refused with.
@@ -574,7 +581,7 @@ export class Game {
 
     net.on('join', (p) => {
       // A class change re-announces the player: refresh rather than duplicate.
-      if (this.entities.get(p.id)) this.entities.setClass(p.id, p.classId);
+      if (this.entities.get(p.id)) this.entities.setClass(p.id, p.classId, p.skin);
       else this.entities.addPlayer(p);
       const row = this.scoreboardRows.find((r) => r.id === p.id);
       if (row) Object.assign(row, { classId: p.classId, name: p.name, level: p.level, verified: p.verified });
@@ -655,6 +662,12 @@ export class Game {
     });
 
     net.on('nuke', (msg) => this.onNuke(msg));
+
+    net.on('god', (msg) => {
+      this.godMode = !!msg.on;
+      this.hud.setGodMode(this.godMode);
+      if (msg.allowed === false) this.hud.toast('God mode is an administrator tool', 'error');
+    });
 
     net.on('shot', (msg) => this.onRemoteShot(msg));
     net.on('impact', (msg) => {
@@ -1509,7 +1522,7 @@ export class Game {
     this.local.height = y[7];
 
     for (const inp of this.pending) {
-      step(this.local, inp, this.world, K.TICK_DT, { speedMult: this.speedMultFor(inp.keys) });
+      step(this.local, inp, this.world, K.TICK_DT, { speedMult: this.speedMultFor(inp.keys), fly: this.godMode });
     }
 
     // Any residual error is absorbed visually instead of snapping the camera.
@@ -2299,7 +2312,7 @@ export class Game {
 
     const wasGrounded = this.local.onGround;
     const wasSliding = this.local.sliding;
-    step(this.local, inp, this.world, K.TICK_DT, { speedMult: this.speedMultFor(keys) });
+    step(this.local, inp, this.world, K.TICK_DT, { speedMult: this.speedMultFor(keys), fly: this.godMode });
 
     // Local-only feedback the server doesn't need to tell us about.
     if (this.local.landed) {
