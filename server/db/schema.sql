@@ -296,6 +296,33 @@ CREATE TABLE IF NOT EXISTS clan_invites (
   PRIMARY KEY (clan_id, user_id)
 );
 
+-- ── Friends ────────────────────────────────────────────────────────────────
+--
+-- Two tables, and the asymmetry between them is deliberate.
+--
+-- A friendship has no direction, so it is stored once with the two ids sorted
+-- rather than twice — "are these two friends" is then one primary-key lookup
+-- and there is no way for half a friendship to exist. A *request* very much has
+-- a direction, so it gets its own row per direction; accepting one deletes it
+-- and writes the pair. Two people who happen to request each other at the same
+-- time therefore become friends the moment the second request lands, which is
+-- the only behaviour that is not surprising.
+CREATE TABLE IF NOT EXISTS friends (
+  user_a     TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_b     TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_a, user_b)
+);
+CREATE INDEX IF NOT EXISTS idx_friends_b ON friends(user_b);
+
+CREATE TABLE IF NOT EXISTS friend_requests (
+  from_id    TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  to_id      TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (from_id, to_id)
+);
+CREATE INDEX IF NOT EXISTS idx_friend_requests_to ON friend_requests(to_id);
+
 -- ── Telemetry ──────────────────────────────────────────────────────────────
 -- Two tables, and the split between them is the whole design.
 --

@@ -304,14 +304,26 @@
     <section class="panel" data-panel="reports">
       <div class="page-head">
         <h2>REPORTS</h2>
-        <p>The moderation queue. Open first, oldest first.</p>
+        <p>Two piles: what nobody has settled yet, and everything that was. Settled
+           reports are kept — the history behind a name is the point of keeping them.</p>
+      </div>
+
+      <!-- The two queues. OPEN is the to-do list, read oldest-first because the
+           oldest unanswered report is the one somebody has been waiting on
+           longest; HANDLED is the history, read newest-first. -->
+      <div class="queue-tabs" id="reportQueues">
+        <button class="queue-tab active" data-queue="open" type="button">
+          OPEN <span class="queue-count" id="reportOpenCount">0</span>
+        </button>
+        <button class="queue-tab" data-queue="handled" type="button">
+          HANDLED <span class="queue-count" id="reportHandledCount">0</span>
+        </button>
       </div>
 
       <div class="toolbar">
         <input id="reportSearch" type="search" placeholder="Search a player, a reporter or their words…" autocomplete="off">
         <select id="reportStatus">
-          <option value="open">Open</option>
-          <option value="">All</option>
+          <option value="">Any verdict</option>
           <option value="actioned">Actioned</option>
           <option value="rejected">Rejected</option>
         </select>

@@ -57,6 +57,7 @@ export class Hud {
       sbRows: $('sbRows'), sbTitle: $('sbTitle'), sbMap: $('sbMap'), sbHint: $('sbHint'),
       sbModHead: $('sbModHead'), sbReportHead: $('sbReportHead'),
       sbAdmin: $('sbAdmin'), sbGod: $('sbGod'), godBadge: $('godBadge'),
+      afkNotice: $('afkNotice'), afkNoticeText: $('afkNoticeText'),
       matchClock: $('matchClock'), matchMode: $('matchMode'), matchBar: $('matchBar'),
       scoreRed: $('scoreRed'), scoreBlue: $('scoreBlue'), objStrip: $('objStrip'),
       deathScreen: $('deathScreen'), deathKiller: $('deathKiller'), deathWeapon: $('deathWeapon'),
@@ -1069,6 +1070,19 @@ export class Hud {
     this.onGodMode = handler;
     this.el.sbAdmin?.classList.toggle('hidden', !this.adminTools);
     if (!this.adminTools) this.setGodMode(false);
+  }
+
+  /**
+   * The away-from-keyboard notice, or null to take it down.
+   *
+   * The server owns the rule; this only draws what it said. It is deliberately
+   * large and central rather than a toast — it is the answer to "why has my
+   * respawn stopped", and a toast that has already faded is not an answer.
+   */
+  setAfkNotice(text) {
+    if (!this.el.afkNotice) return;
+    this.el.afkNotice.classList.toggle('hidden', !text);
+    if (text) this.el.afkNoticeText.textContent = text;
   }
 
   /** Draws whatever god-mode state the server last confirmed. */

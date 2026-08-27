@@ -904,20 +904,23 @@ export function createAdminApi({ db, hub, telemetry = null, banPayload = null })
   /* ── Reports ───────────────────────────────────────────────────────────── */
 
   /**
-   * The moderation queue.
+   * The moderation queue, in two piles.
    *
-   * Open reports sort first regardless of age, because the queue is a to-do
-   * list rather than a history; the history is what `status` filters for.
+   * `status=open` is the to-do list and `status=handled` is everything already
+   * settled — the panel's two tabs. Both counts come back on every request
+   * whichever pile was asked for, so the tabs can carry their own size without
+   * a second round trip. A stored state (`actioned`, `rejected`) still works as
+   * a filter for anyone querying the API directly.
    */
   r.get('/admin/reports', (ctx) => {
     requireAdmin(ctx);
-    const { rows, total, open } = db.reports.list({
+    const { rows, total, open, handled } = db.reports.list({
       status: ctx.query.get('status') ?? '',
       q: ctx.query.get('q') ?? '',
       limit: num(ctx.query.get('limit'), 1, 200, 50),
       offset: num(ctx.query.get('offset'), 0, 1e6, 0),
     });
-    ok(ctx.res, { total, open, reports: rows.map(reportPayload) });
+    ok(ctx.res, { total, open, handled, reports: rows.map(reportPayload) });
   });
 
   r.get('/admin/reports/:id', (ctx) => {

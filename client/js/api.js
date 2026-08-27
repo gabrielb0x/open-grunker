@@ -267,6 +267,23 @@ export const api = {
   /** Every report this account has filed, and what a moderator made of each. */
   myReports() { return request('GET', '/reports/mine'); },
 
+  /* ── Friends ───────────────────────────────────────────────────────────── */
+
+  /**
+   * The list, both request queues and who is online, in one request.
+   *
+   * Every one of these returns the same whole payload rather than the row it
+   * changed, because a friend list is a live thing — accepting a request moves
+   * a name from one column to another and may bring a room code with it, and
+   * two round trips to draw that is a panel that flickers.
+   */
+  friends() { return request('GET', '/friends'); },
+  addFriend: (username) => request('POST', '/friends/requests', { username }),
+  acceptFriend: (id) => request('POST', `/friends/requests/${encodeURIComponent(id)}/accept`, {}),
+  /** Declining theirs and cancelling ours are the same row, so the same call. */
+  dropFriendRequest: (id) => request('DELETE', `/friends/requests/${encodeURIComponent(id)}`),
+  removeFriend: (id) => request('DELETE', `/friends/${encodeURIComponent(id)}`),
+
   /* ── Clans ─────────────────────────────────────────────────────────────── */
 
   /**

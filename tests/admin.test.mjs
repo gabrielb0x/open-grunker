@@ -233,4 +233,27 @@ export default async function run() {
     return !!body.querySelector('#btnUnban') && !body.querySelector('#btnBan')
       && body.innerHTML.includes('aimbot');
   })());
+
+  /* ── The report queue's two piles ──────────────────────────────────────── */
+
+  suite('Admin panel — the report queue');
+
+  check('the queue has an open pile and a handled one, open first', (() => {
+    const tabs = [...document.querySelectorAll('#reportQueues .queue-tab')]
+      .map((b) => b.dataset.queue);
+    info(tabs.join(' · '));
+    return tabs.length === 2 && tabs[0] === 'open' && tabs[1] === 'handled';
+  })());
+
+  check('each carries its own count, so how much is waiting takes no click',
+    !!$('reportOpenCount') && !!$('reportHandledCount'));
+
+  // The verdict dropdown narrows the settled pile; an open report has no
+  // verdict yet, so it is hidden rather than left there filtering nothing.
+  check('the verdict filter starts hidden over the open queue',
+    $('reportStatus').classList.contains('hidden'));
+
+  const verdicts = [...$('reportStatus').querySelectorAll('option')].map((o) => o.getAttribute('value'));
+  check('and lists only verdicts, since the queue itself is the status filter',
+    verdicts.join(',') === ',actioned,rejected', verdicts.map((v) => v || '(any)').join(' · '));
 }

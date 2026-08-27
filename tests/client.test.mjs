@@ -684,6 +684,79 @@ export default async function run() {
     return played.length === 1 && played[0].classId === menu.selectedClass;
   })());
 
+  /* ── Friends ─────────────────────────────────────────────────────────── */
+
+  check('the friends panel draws the list, both queues and who is online', (() => {
+    menu.friendState = {
+      friends: [
+        { id: 'u1', username: 'InAMatch', level: 12, online: true, playing: true,
+          room: 'FRA:7K2Q', map: 'Subzero', mode: 'Team Deathmatch' },
+        { id: 'u2', username: 'InTheMenu', level: 4, online: true, playing: false },
+        { id: 'u3', username: 'Offline', level: 9, online: false, lastLogin: 1 },
+      ],
+      incoming: [{ id: 'u4', username: 'Asking', level: 3, askedAt: 1 }],
+      outgoing: [{ id: 'u5', username: 'Asked', level: 6, askedAt: 1 }],
+      online: 2,
+      limits: { max: 100 },
+    };
+    menu.renderFriends();
+    const rows = document.getElementById('friendList').querySelectorAll('.friend-row');
+    info(`${rows.length} friends · ${document.getElementById('friendCount').textContent}`);
+    return rows.length === 3
+      && document.getElementById('friendIncoming').querySelectorAll('.friend-row').length === 1
+      && document.getElementById('friendOutgoing').querySelectorAll('.friend-row').length === 1
+      && !document.getElementById('friendRequests').classList.contains('hidden')
+      && document.getElementById('friendCount').textContent.startsWith('2 of 3 online');
+  })());
+
+  check('only a friend in a room you can walk into gets a JOIN button', (() => {
+    const html = document.getElementById('friendList').innerHTML;
+    const joins = document.getElementById('friendList')
+      .querySelectorAll('button[data-friend-act=join]');
+    return joins.length === 1 && joins[0].dataset.arg === 'FRA:7K2Q'
+      && html.includes('Team Deathmatch') && html.includes('IN THE MENU');
+  })());
+
+  check('a waiting request is badged on the tab, so nobody misses one', (() => {
+    const badge = document.getElementById('friendTabBadge');
+    const shown = badge.textContent === '1' && !badge.classList.contains('hidden');
+    menu.setFriendBadge(0);
+    return shown && badge.classList.contains('hidden');
+  })());
+
+  check('JOIN drops straight into their match', (() => {
+    played.length = 0;
+    menu.friendAction('join', 'FRA:7K2Q');
+    return played.length === 1 && played[0].room === 'FRA:7K2Q';
+  })());
+
+  /* ── The address that is not on your stream ──────────────────────────── */
+
+  check('the account panel masks the email address', (() => {
+    menu.renderEmailState({ email: 'gabriel@proton.me', emailVerified: true });
+    const shown = document.getElementById('emailAddr').textContent;
+    const overview = document.getElementById('ovEmail').textContent;
+    info(`${shown} · reveal reads ${document.getElementById('btnEmailReveal').textContent}`);
+    return shown === overview && shown.includes('@') && shown.endsWith('.me')
+      && !shown.includes('gabriel') && !shown.includes('proton')
+      && shown.startsWith('g') && document.getElementById('emailAddr').classList.contains('masked');
+  })());
+
+  check('SHOW puts it back, and HIDE takes it away again', (() => {
+    menu.toggleEmail();
+    const revealed = document.getElementById('emailAddr').textContent === 'gabriel@proton.me'
+      && document.getElementById('btnEmailReveal').textContent === 'HIDE';
+    menu.toggleEmail();
+    return revealed && document.getElementById('emailAddr').textContent !== 'gabriel@proton.me'
+      && document.getElementById('btnEmailReveal').textContent === 'SHOW';
+  })());
+
+  check('the change-address form does not print it either', (() => {
+    const placeholder = document.getElementById('emailForm')
+      .querySelector('input[name=email]').placeholder;
+    return !placeholder.includes('gabriel@proton.me') && placeholder.includes('@');
+  })());
+
   check('every account sub-tab has a view behind it, and one click swaps them', (() => {
     // The account panel used to be one column three screens tall; this is the
     // navigation that replaced it, so a tab pointing at nothing is a dead end.

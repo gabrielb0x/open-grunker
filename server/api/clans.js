@@ -270,6 +270,7 @@ export function registerClanRoutes({ r, db, hub, requireAuth, limit, avatarUrl }
   });
 
   r.delete('/clans/:tag/invites/:name', (ctx) => {
+    limit(ctx, 'clan', 60);
     const user = requireAuth(ctx);
     const clan = requireOwner(ctx, user);
     const target = findMemberAccount(ctx.params.name);
@@ -279,6 +280,7 @@ export function registerClanRoutes({ r, db, hub, requireAuth, limit, avatarUrl }
 
   /** Turning an invitation down. Nobody is told; it simply stops existing. */
   r.post('/clans/:tag/decline', (ctx) => {
+    limit(ctx, 'clan', 60);
     const user = requireAuth(ctx);
     const clan = findClan(ctx);
     ok(ctx.res, { declined: db.clans.cancelInvite(clan.id, user.id) });
@@ -287,6 +289,7 @@ export function registerClanRoutes({ r, db, hub, requireAuth, limit, avatarUrl }
   /* ── Joining and leaving ───────────────────────────────────────────────── */
 
   r.post('/clans/:tag/join', (ctx) => {
+    limit(ctx, 'clan', 60);
     const user = requireAuth(ctx);
     requireClans();
     limit(ctx, 'clan', 30);
@@ -325,6 +328,7 @@ export function registerClanRoutes({ r, db, hub, requireAuth, limit, avatarUrl }
    * remove or disband it, so they hand it over or disband it on purpose.
    */
   r.post('/clans/:tag/leave', (ctx) => {
+    limit(ctx, 'clan', 30);
     const user = requireAuth(ctx);
     const clan = findClan(ctx);
     const seat = db.clans.membership(user.id);
@@ -343,6 +347,7 @@ export function registerClanRoutes({ r, db, hub, requireAuth, limit, avatarUrl }
 
   /** Removing somebody. The owner's own seat is not removable this way. */
   r.delete('/clans/:tag/members/:name', (ctx) => {
+    limit(ctx, 'clan', 60);
     const user = requireAuth(ctx);
     const clan = requireOwner(ctx, user);
     const target = findMemberAccount(ctx.params.name);
@@ -361,6 +366,7 @@ export function registerClanRoutes({ r, db, hub, requireAuth, limit, avatarUrl }
 
   /** Handing the clan over. The old owner stays on as a plain member. */
   r.post('/clans/:tag/transfer', async (ctx) => {
+    limit(ctx, 'clan', 20);
     const user = requireAuth(ctx);
     const clan = requireOwner(ctx, user);
     const { username } = await readJson(ctx.req);
@@ -378,6 +384,7 @@ export function registerClanRoutes({ r, db, hub, requireAuth, limit, avatarUrl }
 
   /** Disbanding. Every member loses the tag and the rows go with the clan. */
   r.delete('/clans/:tag', (ctx) => {
+    limit(ctx, 'clan', 20);
     const user = requireAuth(ctx);
     const clan = requireOwner(ctx, user);
     const members = db.clans.members(clan.id).map((m) => m.id);
@@ -430,6 +437,7 @@ export function registerClanRoutes({ r, db, hub, requireAuth, limit, avatarUrl }
   });
 
   r.delete('/clans/:tag/avatar', async (ctx) => {
+    limit(ctx, 'avatar', 12);
     const user = requireAuth(ctx);
     const clan = requireOwner(ctx, user);
     const removed = await clanAvatars.remove(clan.id);

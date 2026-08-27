@@ -17,7 +17,7 @@
  * wrote it: what they can now do, or what stopped going wrong.
  */
 
-export const GAME_VERSION = '1.8.0';
+export const GAME_VERSION = '1.9.0';
 
 export const PATCH_KINDS = {
   new: { label: 'NEW', color: '#4ddb7a' },
@@ -26,6 +26,24 @@ export const PATCH_KINDS = {
 };
 
 export const PATCH_NOTES = [
+  {
+    version: '1.9.0',
+    date: '2026-08-27',
+    title: 'The server stops taking your word for it \u2014 plus friends, a queue with a history, and an address that is not on your stream',
+    changes: [
+      { kind: 'change', text: 'Shots are fired where you are actually looking. The server used to trace a bullet from whatever angles the shoot packet carried, without ever asking whether they matched the view the same client had been sending a millisecond earlier. They are checked against it now, with room for however fast your mouse is really moving \u2014 so a hard flick is untouched, and a crosshair that never moves cannot hit somebody behind you.' },
+      { kind: 'change', text: 'Spread is the server\u2019s draw, not a number you can pick. Both sides still compute the identical cone from the shot\u2019s sequence, which is why the tracer sits on the ray that was tested \u2014 but that sequence is now the server\u2019s own counter. Searching a couple of hundred of them for the one that lands dead centre is not a thing there is anything left to search.' },
+      { kind: 'change', text: 'Aiming down sights is something you hold, not something you claim. The cone tightens because your own input stream had the key down, not because the shot packet said so \u2014 asserting it while hip-firing bought scoped accuracy at walking pace, and buys nothing now.' },
+      { kind: 'fix', text: 'Quickscopes fire the scoped cone again. A shot taken on the very instant the sights come down was being resolved as if they were still up, so the round went out with the hip-fire spread instead of pinpoint \u2014 and the kill did not count as a quickscope.' },
+      { kind: 'change', text: 'Your ping is measured rather than reported. The server hands out a token, your client answers it the instant it arrives, and the gap between the two is what lag compensation rewinds by. Claiming a fifth of a second more than you have used to be a fifth of a second of free backtracking; it now moves nothing.' },
+      { kind: 'change', text: 'Movement is capped by the clock. Simulation steps are spent out of a budget that refills in real time with room for a burst after a stall, so a client feeding three inputs per tick now moves at exactly the speed everybody else does. Nothing about honest movement changed \u2014 a bad connection still catches up the way it always did.' },
+      { kind: 'new', text: 'None of the above quietly eats a bullet. A refused packet is played as though it had told the truth: the round still fires, down the barrel you were really pointing. What it also does is get counted, and a sustained run of them drops the connection and files a report into the same queue the report button writes to \u2014 read by a person before anything happens to an account.' },
+      { kind: 'new', text: 'Friends. Add somebody by nickname, see who is online, and drop straight into their match from the row. Requests go both ways, two people who happen to ask each other at the same time simply end up friends, and declining tells the other person nothing.' },
+      { kind: 'change', text: 'Standing still no longer plays the game for you. Being away from the keyboard now means no key held and no mouse moved \u2014 not a socket that is still open \u2014 so a page left running on a match gets a warning, stops respawning, and after a minute and a half hands its seat back and returns to the menu.' },
+      { kind: 'change', text: 'Your email address is hidden on your own account panel. It was printed in full on the page that is open while you pick a class, which for anybody sharing a screen was an address handed to everybody watching. SHOW puts it back for ten seconds.' },
+      { kind: 'change', text: 'Settled reports are kept, and there are two tabs for them: OPEN, the queue, and HANDLED, everything that was decided. Verdicts used to be deleted on a ninety-day timer, which threw away exactly the thing anybody wants when the same name turns up again.' },
+    ],
+  },
   {
     version: '1.8.0',
     date: '2026-08-27',

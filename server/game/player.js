@@ -7,6 +7,7 @@
 import * as K from '../../shared/constants.js';
 import { createState, eyeY } from '../../shared/movement.js';
 import { getClass, loadoutFor, PISTOL, KNIFE } from '../../shared/weapons.js';
+import { CheatState } from './anticheat.js';
 
 const HISTORY = 40;                                  // ~0.66 s at 60 Hz
 
@@ -68,9 +69,102 @@ export class Player {
 
     this.inputQueue = [];
     this.lastSeq = 0;
+    /** The room's own shot counter — what a round's spread is actually seeded from. */
     this.shotSeq = 0;
+    /**
+     * The last sequence this client *claimed*, which is a different number.
+     *
+     * The client counts every round it fires; the room counts every round it
+     * accepts, and it declines plenty. Only the client's claim against its own
+     * previous claim says anything about whether a seed was picked rather than
+     * counted — see `Room.checkShotSeq`.
+     */
+    this.claimedShotSeq = null;
     this.rtt = 0.08;
     this.lastMessageAt = Date.now();
+
+    /* ── What the server will not take this client's word for ──────────────
+     * Everything below is measured or counted here rather than read out of a
+     * packet, because every one of them used to be a field a client could
+     * simply fill in: how far behind it was running, where it was looking, how
+     * many simulation steps it was owed, whether it was aiming down sights.
+     * ────────────────────────────────────────────────────────────────────── */
+
+    /** Anti-cheat bookkeeping for this connection — see game/anticheat.js. */
+    this.cheat = new CheatState();
+
+    /**
+     * Round trip, timed by the server.
+     *
+     * Every PONG carries a token; the client hands the last one it saw back on
+     * its next PING, and the gap between sending that token and seeing it again
+     * is one measured round trip. A median of the last few is what lag
+     * compensation rewinds by, and a claim in a packet is never read again —
+     * inflating it was the whole of the backtrack exploit.
+     */
+    this.rttSamples = [];
+    this.pingToken = 0;
+    this.pingSentAt = 0;
+    /** What the client last claimed its ping was. Kept only to compare. */
+    this.claimedRtt = 0;
+
+    /**
+     * Simulation steps this connection has earned but not yet spent.
+     *
+     * Refilled one per tick, capped at INPUT_BUDGET_BURST. A client that sends
+     * three inputs per tick forever gets one per tick forever, which is what
+     * turns the speed hack into a queue that only ever grows.
+     */
+    this.inputCredit = K.INPUT_BUDGET_START;
+    /** Inputs discarded because the budget ran dry — the speed-hack signature. */
+    this.inputOverflow = 0;
+
+    /**
+     * The view this client has actually been streaming, newest last.
+     *
+     * A shot's claimed angles are checked against this rather than believed.
+     * Two entries is all the check needs — the freshest view and the one before
+     * it, which together give the turn rate the tolerance opens with.
+     */
+    this.viewYaw = 0;
+    this.viewPitch = 0;
+    this.viewAt = 0;
+    this.viewTurnRate = 0;
+    /**
+     * The ADS bit of the freshest input received, queued or not.
+     *
+     * `ads` below is the one the tick spent, which is what the body moved at;
+     * this is what the trigger was pulled under. They differ for exactly one
+     * shot — the one fired on the tick the sights come down — and that shot is
+     * a quickscope.
+     */
+    this.heldAds = null;
+    /** Consecutive shots claiming sights the stream never held. */
+    this.adsMismatch = 0;
+
+    /**
+     * When this connection last did something a person does.
+     *
+     * A page left open still streams sixty inputs a second and answers every
+     * ping; none of that is playing. Only a key held or the view moving counts,
+     * which is also why an anti-AFK cheat has nothing to send.
+     */
+    this.lastActiveAt = Date.now();
+    /**
+     * What the client currently has on screen about it: 'warn', 'out', or null.
+     *
+     * Kept apart from the idleness itself on purpose. The sweep compares this
+     * against what is now true and sends the difference, so a notice is put up
+     * once, taken down once, and never re-sent every second it stands — and
+     * coming back to the keyboard is what takes it down rather than anything
+     * having to remember it was up.
+     */
+    this.afkNotified = null;
+    /** Set once the seat has been handed back, so it is handed back once. */
+    this.afk = false;
+    /** Input packets seen in the current second — the flood ceiling. */
+    this.packetWindow = 0;
+    this.packetWindowAt = -1;
     this.lastChatAt = 0;
     this.lastModAt = 0;
     this.lastGodAt = 0;
@@ -209,6 +303,60 @@ export class Player {
     const base = d.moveMult ?? 1;
     return ads ? base * (d.adsMoveMult ?? 0.6) : base;
   }
+
+  /* ── What the server measures for itself ───────────────────────────────── */
+
+  /**
+   * Records the view an input packet carried, and the rate it is turning at.
+   *
+   * The rate is the whole reason the previous sample is kept: a shot that
+   * arrives a few milliseconds after the input it belongs to is allowed to have
+   * moved by however fast the mouse was already going, and no faster. Someone
+   * mid-flick gets a wide gate; someone holding perfectly still — which is
+   * exactly what a silent aim looks like from here — gets a narrow one.
+   *
+   * @param {number} yaw
+   * @param {number} pitch
+   * @param {number} atSec server clock, seconds
+   */
+  recordView(yaw, pitch, atSec) {
+    if (this.viewAt > 0) {
+      const dt = atSec - this.viewAt;
+      if (dt > 1e-4 && dt < 0.5) {
+        const moved = Math.hypot(yaw - this.viewYaw, pitch - this.viewPitch);
+        // Smoothed, and only ever upwards in a hurry: the gate must already be
+        // open on the first packet of a flick, not one packet late.
+        const rate = moved / dt;
+        this.viewTurnRate = rate > this.viewTurnRate
+          ? rate
+          : this.viewTurnRate + (rate - this.viewTurnRate) * 0.25;
+      }
+    }
+    this.viewYaw = yaw;
+    this.viewPitch = pitch;
+    this.viewAt = atSec;
+  }
+
+  /**
+   * Folds one server-timed round trip into the median this player is
+   * lag-compensated by. Nothing the client says about its own latency is read.
+   */
+  noteRtt(seconds) {
+    if (!(seconds >= 0) || seconds > K.RTT_MAX) return;
+    this.rttSamples.push(seconds);
+    if (this.rttSamples.length > K.RTT_SAMPLES) this.rttSamples.shift();
+    const sorted = [...this.rttSamples].sort((a, b) => a - b);
+    this.rtt = sorted[sorted.length >> 1];
+  }
+
+  /** Marks this connection as still being played by a person. */
+  noteActivity(nowMs = Date.now()) {
+    this.lastActiveAt = nowMs;
+    this.afk = false;
+  }
+
+  /** Seconds since this connection last did something a person does. */
+  idleSec(nowMs = Date.now()) { return (nowMs - this.lastActiveAt) / 1000; }
 
   /* ── Life cycle ────────────────────────────────────────────────────────── */
 

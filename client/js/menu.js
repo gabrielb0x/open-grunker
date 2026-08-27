@@ -62,6 +62,18 @@ export class Menu {
     this.widgets = { register: null, login: null };
     /** The last /clans/mine answer, so the panel can redraw without refetching. */
     this.clanState = null;
+    /** The last /friends answer — list, both queues and who is online. */
+    this.friendState = null;
+    /**
+     * The address behind the mask on the account panel, and whether it is
+     * currently showing. Never persisted: revealing it is a decision made once,
+     * for ten seconds, and never remembered into the next session.
+     */
+    this.emailShown = null;
+    this.emailRevealed = false;
+    this.emailHideTimer = null;
+    /** Live polling handle, running only while the friends tab is the open one. */
+    this.friendTimer = null;
     /** Which profile the player card is currently showing. */
     this.cardName = null;
 
@@ -78,6 +90,7 @@ export class Menu {
     this._bindAccountNav();
     this._bindAvatar();
     this._bindClans();
+    this._bindFriends();
     this._bindPlayerCard();
     this.buildClasses($('classGrid'));
     this.buildClasses($('classGridModal'), true);
@@ -136,7 +149,7 @@ export class Menu {
 
   get panelOpen() { return !$('menuPanel').classList.contains('hidden'); }
   openPanel() { $('menuPanel').classList.remove('hidden'); }
-  closePanel() { $('menuPanel').classList.add('hidden'); sfx.ui(); }
+  closePanel() { this.closePanelSilently(); sfx.ui(); }
 
   /**
    * The name this client would connect under.
@@ -202,7 +215,11 @@ export class Menu {
 
   hide() { this.root.classList.add('hidden'); this.closePanelSilently(); }
 
-  closePanelSilently() { $('menuPanel').classList.add('hidden'); }
+  closePanelSilently() {
+    $('menuPanel').classList.add('hidden');
+    // The friends poll belongs to the open tab, not to the session.
+    this.watchFriends(false);
+  }
   get visible() { return !this.root.classList.contains('hidden'); }
 
   /* ── Tabs ──────────────────────────────────────────────────────────────── */
@@ -217,6 +234,10 @@ export class Menu {
         }
         if (tab.dataset.tab === 'leaderboard') this.refreshLeaderboard();
         if (tab.dataset.tab === 'clans') this.refreshClans();
+        // Presence is the whole point of the friends list, so it is the one
+        // panel that keeps looking while it is open — and stops the moment it
+        // is not, rather than polling a tab nobody is on.
+        this.watchFriends(tab.dataset.tab === 'friends');
         if (tab.dataset.tab === 'servers') this.refreshServers();
         if (tab.dataset.tab === 'shop') this.buildShop();
         if (tab.dataset.tab === 'profile') this.refreshAccount();
@@ -630,6 +651,200 @@ export class Menu {
     note.textContent = `A ${rules.tagMin}–${rules.tagMax} character tag, drawn in front of your `
       + `name everywhere it appears. Joining needs level ${rules.joinLevel}; founding one needs `
       + `level ${rules.createLevel} and ${fmtNum(rules.createCost)} GR.`;
+  }
+
+  /* ── Friends ───────────────────────────────────────────────────────────
+   *
+   * The list is an address book; the presence on it is the product. Everything
+   * below is arranged around one question — "who is on, and can I get into
+   * their match" — which is why the JOIN button lives on the row rather than
+   * behind a profile, and why the panel keeps refreshing itself while it is the
+   * open tab and stops the second it is not.
+   * ────────────────────────────────────────────────────────────────────────*/
+
+  _bindFriends() {
+    $('btnFriendsSignIn')?.addEventListener('click', () => { sfx.ui(); this.openAuth('login'); });
+    $('btnFriendRefresh')?.addEventListener('click', () => { sfx.ui(); this.refreshFriends(); });
+
+    $('friendAddForm')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = $('friendAddName');
+      const name = input.value.trim();
+      if (!name) return;
+      await this.friendAction('add', name);
+      input.value = '';
+    });
+
+    // Every row names its action rather than carrying a handler, so redrawing
+    // the panel — which it does every few seconds — never leaks a listener.
+    for (const id of ['friendList', 'friendIncoming', 'friendOutgoing']) {
+      $(id)?.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-friend-act]');
+        if (!btn) return;
+        e.preventDefault();
+        this.friendAction(btn.dataset.friendAct, btn.dataset.arg ?? '', btn);
+      });
+    }
+  }
+
+  /** Starts or stops the presence poll. Only ever runs while the tab is open. */
+  watchFriends(on) {
+    clearInterval(this.friendTimer);
+    this.friendTimer = null;
+    if (!on) return;
+    this.refreshFriends();
+    this.friendTimer = setInterval(() => {
+      // A backgrounded tab is not somebody looking at a friend list.
+      if (!document.hidden && this.visible) this.refreshFriends({ quiet: true });
+    }, 12_000);
+  }
+
+  /**
+   * Pulls the list and redraws it.
+   *
+   * `quiet` is the polling case: it must never blank the panel on a hiccup, and
+   * must never steal a message the player is still reading.
+   */
+  async refreshFriends({ quiet = false } = {}) {
+    const signedIn = api.isAuthed;
+    $('friendsSignedOut')?.classList.toggle('hidden', signedIn);
+    $('friendsSignedIn')?.classList.toggle('hidden', !signedIn);
+    if (!signedIn) {
+      this.friendState = null;
+      this.setFriendBadge(0);
+      return;
+    }
+    try {
+      this.friendState = await api.friends();
+    } catch (ex) {
+      if (!quiet) this.friendNote(ex.message || 'Friends are unavailable right now.', 'error');
+      return;
+    }
+    this.renderFriends();
+  }
+
+  /** The waiting-request count, on the tab. */
+  setFriendBadge(n) {
+    const badge = $('friendTabBadge');
+    if (!badge) return;
+    badge.textContent = String(n);
+    badge.classList.toggle('hidden', !n);
+  }
+
+  friendNote(text, kind = '') {
+    const el = $('friendMsg');
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = `form-msg${text ? '' : ' hidden'}${kind ? ` ${kind}` : ''}`;
+  }
+
+  renderFriends() {
+    const state = this.friendState;
+    if (!state) return;
+    const { friends = [], incoming = [], outgoing = [], limits = {} } = state;
+
+    this.setFriendBadge(incoming.length);
+    $('friendCount').textContent = friends.length
+      ? `${state.online ?? 0} of ${friends.length} online · ${friends.length}/${limits.max ?? K.FRIENDS_MAX}`
+      : 'nobody yet';
+
+    $('friendRequests').classList.toggle('hidden', !incoming.length);
+    $('friendReqCount').textContent = String(incoming.length);
+    $('friendIncoming').innerHTML = incoming.map((f) => this.friendRowHtml(f, 'incoming')).join('');
+
+    $('friendList').innerHTML = friends.length
+      ? friends.map((f) => this.friendRowHtml(f, 'friend')).join('')
+      : `<p class="empty">Add somebody by their nickname. Once they accept, you will see
+         when they are playing and can drop into their match from here.</p>`;
+
+    $('friendOutgoingWrap').classList.toggle('hidden', !outgoing.length);
+    $('friendOutgoing').innerHTML = outgoing.map((f) => this.friendRowHtml(f, 'outgoing')).join('');
+
+    for (const host of ['friendList', 'friendIncoming', 'friendOutgoing']) {
+      for (const frame of $(host).querySelectorAll('.fr-pic')) {
+        paintAvatar(frame, frame.dataset.avatar || null, frame.dataset.name || '?');
+      }
+    }
+  }
+
+  /**
+   * One row.
+   *
+   * The status line is the whole reason to open this panel, so it is the thing
+   * that changes: a room somebody can be joined in, the fact that a full room
+   * cannot be, or how long ago they were last seen at all.
+   */
+  friendRowHtml(f, kind) {
+    const state = f.playing
+      ? (f.room
+        ? `<span class="fr-live">IN A MATCH</span> ${escapeHtml(f.mode ?? '')} · ${escapeHtml(f.map ?? '')}`
+        : `<span class="fr-live">IN A MATCH</span> that room is full`)
+      : f.online ? '<span class="fr-idle">IN THE MENU</span>'
+        : kind === 'friend' ? `last seen ${fmtAgo(f.lastLogin)}`
+          : `asked ${fmtAgo(f.askedAt)}`;
+
+    const actions = kind === 'incoming'
+      ? `<button class="btn-primary sm" data-friend-act="accept" data-arg="${escapeHtml(f.id)}" type="button">ACCEPT</button>
+         <button class="btn-ghost sm" data-friend-act="decline" data-arg="${escapeHtml(f.id)}" type="button">DECLINE</button>`
+      : kind === 'outgoing'
+        ? `<button class="btn-ghost sm" data-friend-act="cancel" data-arg="${escapeHtml(f.id)}" type="button">CANCEL</button>`
+        : `${f.room ? `<button class="btn-primary sm" data-friend-act="join" data-arg="${escapeHtml(f.room)}" type="button">JOIN</button>` : ''}
+           <button class="btn-ghost sm" data-friend-act="profile" data-arg="${escapeHtml(f.username)}" type="button">PROFILE</button>
+           <button class="btn-ghost sm danger" data-friend-act="remove" data-arg="${escapeHtml(f.id)}" type="button">REMOVE</button>`;
+
+    return `<div class="friend-row${f.playing ? ' playing' : f.online ? ' online' : ''}">
+      <div class="fr-pic av-frame" data-avatar="${escapeHtml(f.avatar ?? '')}" data-name="${escapeHtml(f.username)}">
+        <img class="av-img hidden" alt="" width="40" height="40"><span class="av-initial">?</span>
+      </div>
+      <div class="fr-id">
+        <div class="fr-name">${escapeHtml(f.username)}${
+  f.verified ? '<img class="verified" src="/check.png" alt="verified" width="13" height="13">' : ''}${
+  f.clan ? `<span class="clan-tag${f.clanVerified ? ' verified' : ''}">[${escapeHtml(f.clan)}]</span>` : ''}</div>
+        <div class="fr-state">${state}</div>
+      </div>
+      <div class="fr-lv">LV ${f.level ?? 1}</div>
+      <div class="fr-actions">${actions}</div>
+    </div>`;
+  }
+
+  /** Every button on the panel lands here. The server decides; this only asks. */
+  async friendAction(action, arg, btn = null) {
+    if (btn) btn.disabled = true;
+    this.friendNote('');
+    try {
+      if (action === 'join') {
+        // Straight into their room, by the same code the server browser joins by.
+        sfx.ui('ok');
+        this.selectedRoom = arg;
+        this.onPlay({ name: this.currentName(), classId: this.selectedClass, room: arg });
+        return;
+      }
+      if (action === 'profile') { this.openPlayerCard(arg); return; }
+
+      if (action === 'add') {
+        const r = await api.addFriend(arg);
+        this.friendState = r;
+        this.friendNote(r.outcome === 'accepted'
+          ? `${r.friend} had already asked you — you are friends now.`
+          : `Asked ${r.friend}. They will see it next time they open the menu.`, 'good');
+      } else if (action === 'accept') {
+        this.friendState = await api.acceptFriend(arg);
+        this.friendNote('Added.', 'good');
+      } else if (action === 'decline' || action === 'cancel') {
+        this.friendState = await api.dropFriendRequest(arg);
+      } else if (action === 'remove') {
+        const r = await api.removeFriend(arg);
+        this.friendState = r;
+        this.friendNote(`${r.removed} is no longer on your list.`, '');
+      }
+      sfx.ui('ok');
+      this.renderFriends();
+    } catch (ex) {
+      sfx.ui('error');
+      this.friendNote(ex.message || 'That did not work.', 'error');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
 
   _bindClans() {
@@ -1837,31 +2052,80 @@ export class Menu {
     }
   }
 
-  /** Paints the address block in the profile panel. */
+  /**
+   * Paints the address block in the profile panel.
+   *
+   * Masked, both here and on the overview card. The account panel is what is on
+   * screen while somebody picks a class or reads their stats, which is exactly
+   * when a screen is most likely to be shared — and an address printed in full
+   * on that panel is an address handed to everybody watching. SHOW puts the
+   * real one back for ten seconds and then takes it away again, because the one
+   * failure this is guarding against is forgetting it is up there.
+   *
+   * The placeholder on the change-address form is masked for the same reason;
+   * it is the same string, in the same panel, drawn slightly greyer.
+   */
   renderEmailState(user) {
     const state = api.verification;
-    const addr = $('emailAddr');
-    const badge = $('emailBadge');
-    addr.textContent = user.email || 'no address on file';
     const verified = !!state?.verified || !!user.emailVerified;
-    badge.textContent = verified ? 'CONFIRMED' : 'UNCONFIRMED';
-    badge.classList.toggle('good', verified);
-    badge.classList.toggle('bad', !verified);
-    $('btnResendVerify').classList.toggle('hidden', verified || !user.email);
-    $('emailForm').querySelector('input[name=email]').placeholder = user.email || 'you@example.com';
+    this.emailShown = user.email ?? null;
 
-    // The same fact, on the overview card that opens first.
-    const ovAddr = $('ovEmail');
-    const ovBadge = $('ovEmailBadge');
-    if (ovAddr) ovAddr.textContent = user.email || 'none on file';
-    if (ovBadge) {
-      ovBadge.textContent = verified ? 'CONFIRMED' : 'UNCONFIRMED';
-      ovBadge.classList.toggle('good', verified);
-      ovBadge.classList.toggle('bad', !verified);
+    this.paintEmail(false);
+    $('btnEmailReveal')?.classList.toggle('hidden', !user.email);
+    $('btnOvEmailReveal')?.classList.toggle('hidden', !user.email);
+    $('btnResendVerify').classList.toggle('hidden', verified || !user.email);
+    $('emailForm').querySelector('input[name=email]').placeholder =
+      maskEmail(user.email) || 'you@example.com';
+
+    for (const id of ['emailBadge', 'ovEmailBadge']) {
+      const badge = $(id);
+      if (!badge) continue;
+      badge.textContent = verified ? 'CONFIRMED' : 'UNCONFIRMED';
+      badge.classList.toggle('good', verified);
+      badge.classList.toggle('bad', !verified);
     }
   }
 
+  /** Draws the address masked or in full, in both places it appears. */
+  paintEmail(reveal) {
+    const email = this.emailShown;
+    const text = email
+      ? (reveal ? email : maskEmail(email))
+      : 'no address on file';
+    for (const id of ['emailAddr', 'ovEmail']) {
+      const el = $(id);
+      if (!el) continue;
+      el.textContent = text;
+      el.classList.toggle('masked', !!email && !reveal);
+    }
+    for (const id of ['btnEmailReveal', 'btnOvEmailReveal']) {
+      const btn = $(id);
+      if (btn) btn.textContent = reveal ? 'HIDE' : 'SHOW';
+    }
+  }
+
+  /**
+   * Shows the address, then puts it away on its own.
+   *
+   * The timer is the point: somebody who reveals it to check a typo and then
+   * walks off is the case this whole thing exists for.
+   */
+  toggleEmail() {
+    clearTimeout(this.emailHideTimer);
+    this.emailRevealed = !this.emailRevealed;
+    this.paintEmail(this.emailRevealed);
+    if (!this.emailRevealed) return;
+    this.emailHideTimer = setTimeout(() => {
+      this.emailRevealed = false;
+      this.paintEmail(false);
+    }, 10_000);
+  }
+
   _bindProfile() {
+    for (const id of ['btnEmailReveal', 'btnOvEmailReveal']) {
+      $(id)?.addEventListener('click', () => { sfx.ui(); this.toggleEmail(); });
+    }
+
     $('btnSignOut').addEventListener('click', async () => {
       await api.logout();
       sfx.ui();
@@ -2504,10 +2768,20 @@ export class Menu {
       $('acXpFill').style.width = '0%';
       $('acVerified').classList.add('hidden');
       $('grBalance').textContent = '0';
+      $('friendsSignedOut')?.classList.remove('hidden');
+      $('friendsSignedIn')?.classList.add('hidden');
+      this.friendState = null;
+      this.setFriendBadge(0);
       this.refreshMyClan();
       this.refreshGlobal();
       return;
     }
+
+    // A friend request waiting is the one thing on this panel somebody has to
+    // answer, so the badge is fetched with the account rather than only when
+    // the friends tab is opened — a request nobody is told about is a request
+    // nobody accepts.
+    this.refreshFriends({ quiet: true }).catch(() => {});
 
     const s = user.stats ?? {};
 
@@ -2733,6 +3007,30 @@ const fmtDate2 = (iso) => {
   const d = new Date(`${iso}T00:00:00Z`);
   return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString();
 };
+
+/**
+ * An address as it is safe to leave on a screen somebody else can see.
+ *
+ * The first character of each side and the top-level domain survive, which is
+ * enough for the owner to recognise their own address and not enough for anyone
+ * watching to write it down. The run of bullets is clamped at both ends, so it
+ * is never the length of the thing it is hiding either. Anything not shaped
+ * like an address is masked whole rather than guessed at.
+ */
+function maskEmail(email) {
+  const raw = String(email ?? '').trim();
+  if (!raw) return '';
+  const at = raw.lastIndexOf('@');
+  if (at < 1 || at === raw.length - 1) return '\u2022'.repeat(Math.min(12, raw.length));
+  const local = raw.slice(0, at);
+  const domain = raw.slice(at + 1);
+  const dot = domain.lastIndexOf('.');
+  const host = dot > 0 ? domain.slice(0, dot) : domain;
+  const tld = dot > 0 ? domain.slice(dot) : '';
+  const hide = (part, keep) => part.slice(0, keep)
+    + '\u2022'.repeat(Math.max(1, Math.min(10, part.length - keep)));
+  return `${hide(local, 1)}@${hide(host, 1)}${tld}`;
+}
 
 function fmtAgo(ts) {
   if (!ts) return '—';

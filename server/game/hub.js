@@ -374,6 +374,43 @@ export class Hub {
   }
 
   /**
+   * Where a set of accounts is right now, if anywhere.
+   *
+   * One pass over the connection table rather than one lookup per name, because
+   * a friend list asks about everybody on it at once and the answer for an
+   * account that is not online is the common case. A watcher is *present* but
+   * not *playing* — it is somebody sitting in the menu with the map behind it —
+   * and the two are told apart because "join them" only means something for the
+   * second.
+   *
+   * @param {Iterable<string>} userIds
+   * @returns {Map<string, {online:boolean, playing:boolean, room:string|null,
+   *                        map:string|null, mode:string|null}>}
+   */
+  presence(userIds) {
+    const wanted = new Set([...userIds].filter(Boolean));
+    const out = new Map();
+    if (!wanted.size) return out;
+    for (const { player, room } of this.playersById.values()) {
+      if (!player.userId || !wanted.has(player.userId)) continue;
+      const playing = !player.spectator;
+      const seen = out.get(player.userId);
+      // A player with two connections — the menu backdrop and a seat — reads as
+      // playing, which is the one of the two anybody wants to follow.
+      if (seen?.playing && !playing) continue;
+      out.set(player.userId, {
+        online: true,
+        playing,
+        room: room.code ?? null,
+        map: room.map?.name ?? null,
+        mode: room.mode?.name ?? null,
+        full: room.isFull,
+      });
+    }
+    return out;
+  }
+
+  /**
    * Re-badges every live connection for an account whose clan just changed, and
    * refreshes the scoreboards that were drawing the old tag.
    *

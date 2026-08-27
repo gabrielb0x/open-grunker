@@ -54,6 +54,16 @@ export default function run() {
     return { yaw: Math.atan2(-dx, -dz), pitch: Math.atan2(dy, flat) };
   };
 
+  /**
+   * Fires one round at `heightFrac` of the target's body.
+   *
+   * `a.ads` is set on the player rather than claimed in the packet, because the
+   * room no longer reads `a` off a shoot frame at all — the sight picture is
+   * whatever the ADS bit of the last simulated input said, which is the only
+   * version of it that matches the speed the body moved at. Claiming it was
+   * free scoped accuracy while hip-firing, and is now a flag; see
+   * anticheat.test.mjs.
+   */
   const fire = (heightFrac) => {
     events.length = 0;
     const w = a.weapons[a.slot];
@@ -64,6 +74,7 @@ export default function run() {
     a.state.yaw = aim.yaw;
     a.state.pitch = aim.pitch;
     a.state.onGround = true;
+    a.ads = true;
     room.onShoot(a, { y: aim.yaw, p: aim.pitch, a: 1, n: a.shotSeq + 1 });
     return events[0] ?? null;
   };

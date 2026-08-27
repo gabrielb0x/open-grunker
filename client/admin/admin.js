@@ -579,17 +579,33 @@ function setReportBadge(open) {
   badge.classList.toggle('hidden', !open);
 }
 
+/**
+ * Which pile is being read: `open`, the to-do list, or `handled`, the history.
+ *
+ * Settled reports used to be reachable only by remembering to change a dropdown
+ * that defaulted to "Open", and were deleted off a ninety-day timer besides —
+ * so the answer to "what has been decided about this name before" was usually
+ * nothing, whether or not anything had. They are kept now, and this is the tab
+ * that shows them.
+ */
+let rQueue = 'open';
+
 async function loadReports() {
   const q = $('reportSearch').value.trim();
-  const status = $('reportStatus').value;
+  // The verdict filter narrows the handled pile; an open report has no verdict
+  // yet, so it is meaningless there and the queue itself is the filter.
+  const verdict = rQueue === 'handled' ? $('reportStatus').value : '';
+  const status = verdict || rQueue;
   try {
     const res = await call('GET',
       `/reports?status=${encodeURIComponent(status)}&q=${encodeURIComponent(q)}`
       + `&limit=${pageSize}&offset=${rPage * pageSize}`);
     rTotal = res.total;
     setReportBadge(res.open ?? 0);
+    $('reportOpenCount').textContent = String(res.open ?? 0);
+    $('reportHandledCount').textContent = String(res.handled ?? 0);
     $('reportCount').textContent = `${res.total} report${res.total === 1 ? '' : 's'}`
-      + (res.open ? ` · ${res.open} open` : '');
+      + (rQueue === 'open' ? '' : ' settled');
     $('reportPageInfo').textContent =
       `${Math.min(rTotal, rPage * pageSize + 1)}–${Math.min(rTotal, (rPage + 1) * pageSize)} of ${rTotal}`;
     $('btnReportPrev').disabled = rPage === 0;
@@ -604,7 +620,8 @@ async function loadReports() {
         <td class="r-when">${fmtAgo(rep.at)}</td>
         <td><span class="tag ${esc(rep.status)}">${esc(rep.statusLabel ?? rep.status)}</span></td>
       </tr>`).join('')
-      || '<tr><td colspan="6" style="text-align:center;color:var(--muted)">Nothing in the queue.</td></tr>';
+      || `<tr><td colspan="6" style="text-align:center;color:var(--muted)">${
+        rQueue === 'open' ? 'Nothing waiting — the queue is clear.' : 'Nothing settled yet.'}</td></tr>`;
 
     for (const row of $('reportRows').querySelectorAll('tr[data-id]')) {
       row.addEventListener('click', () => selectReport(row.dataset.id));
@@ -1030,6 +1047,22 @@ $('reportSearch').addEventListener('input', () => {
   reportSearchTimer = setTimeout(() => { rPage = 0; loadReports(); }, 220);
 });
 $('reportStatus').addEventListener('change', () => { rPage = 0; loadReports(); });
+
+/* The two piles. The verdict dropdown only narrows the settled one, so it is
+   hidden over the open queue rather than left there filtering nothing. */
+for (const btn of document.querySelectorAll('#reportQueues .queue-tab')) {
+  btn.addEventListener('click', () => {
+    if (rQueue === btn.dataset.queue) return;
+    rQueue = btn.dataset.queue;
+    rPage = 0;
+    for (const other of document.querySelectorAll('#reportQueues .queue-tab')) {
+      other.classList.toggle('active', other === btn);
+    }
+    $('reportStatus').classList.toggle('hidden', rQueue !== 'handled');
+    loadReports();
+  });
+}
+$('reportStatus').classList.add('hidden');
 $('btnReportReload').addEventListener('click', () => loadReports());
 $('btnReportPrev').addEventListener('click', () => { if (rPage > 0) { rPage--; loadReports(); } });
 $('btnReportNext').addEventListener('click', () => {

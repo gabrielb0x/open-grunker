@@ -29,8 +29,8 @@ register('./client-loader.mjs', import.meta.url);
 // And `moderation` closes the shared database module when it is done, so every
 // suite that uses that module directly has to have had its turn by then.
 const suites = ['movement', 'combat', 'lagcomp', 'simulation', 'keybinds', 'modes', 'rooms',
-  'godmode', 'progression', 'twofactor', 'moderation', 'accounts', 'clans', 'client', 'gamepad',
-  'charts', 'admin'];
+  'anticheat', 'godmode', 'progression', 'twofactor', 'moderation', 'accounts', 'clans', 'friends',
+  'client', 'gamepad', 'charts', 'admin'];
 const only = process.argv[2];
 
 for (const name of suites) {

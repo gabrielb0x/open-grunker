@@ -58,6 +58,21 @@ const server = createServer(async (req, res) => {
   const path = url.pathname;
 
   res.setHeader('x-powered-by', 'open-grunker');
+  /*
+   * The four headers a browser will act on without being asked twice.
+   *
+   * `nosniff` matters most next to the avatar routes, where the bytes are
+   * user-supplied and the content type is decided by us rather than by the
+   * uploader — sniffing is the one way a picture becomes a script. The frame
+   * rules are the account panel and the admin panel: both carry buttons that
+   * change something, and a button that can be framed is a button that can be
+   * clicked by somebody else's page. `no-referrer` keeps a verification link's
+   * token out of the Referer of whatever it loads next.
+   */
+  res.setHeader('x-content-type-options', 'nosniff');
+  res.setHeader('x-frame-options', 'SAMEORIGIN');
+  res.setHeader('content-security-policy', "frame-ancestors 'self'");
+  res.setHeader('referrer-policy', 'no-referrer');
   if (cors(req, res)) return;
 
   // ── API ──

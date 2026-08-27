@@ -106,6 +106,14 @@ export class Game {
      */
     this.respawnHeld = false;
     this.respawnSentAt = 0;
+    /**
+     * The AFK warning, while it stands.
+     *
+     * The server owns the rule and sends the frames; this is only what is on
+     * screen, and it doubles as a hold on the automatic respawn so an idle body
+     * is never put back into the match by the client either.
+     */
+    this.afkNotice = null;
     this.skin = 'default';
     this.classId = 'triggerman';
     this.deathCam = null;
@@ -271,6 +279,8 @@ export class Game {
   /** Leaves the match and drops back to watching it from the menu. */
   leaveMatch() {
     const code = this.roomCode;
+    this.afkNotice = null;
+    this.hud.setAfkNotice(null);
     this.net.disconnect();
     this.state = 'menu';
     this.alive = false;
@@ -667,6 +677,39 @@ export class Game {
     });
 
     net.on('nuke', (msg) => this.onNuke(msg));
+
+    /*
+     * The match noticing that nobody is at the keyboard.
+     *
+     * `warn` puts a notice up and, while it stands, stops the automatic respawn
+     * — the point of the whole rule is that an empty body stops being fed back
+     * into the match. `held` is the same answer to a respawn the server just
+     * refused. `clear` arrives the moment a key or the mouse moves again, so
+     * nothing here has to duplicate the server's rule; it only draws it.
+     *
+     * `out` is the end of it: the seat goes back and the player goes to the
+     * menu, which is where somebody who is not playing belongs. The socket is
+     * closed behind this frame either way, so a client that ignored it would
+     * land in the same place a second later — this only makes it land gently,
+     * with an explanation rather than a "connection lost".
+     */
+    net.on('afk', (msg) => {
+      if (msg.phase === 'out') {
+        this.afkNotice = null;
+        this.hud.setAfkNotice(null);
+        this.leaveMatch();
+        this.menu.notify(msg.message ?? 'You were away, so the match gave your seat back.', '');
+        return;
+      }
+      if (msg.phase === 'clear') {
+        this.afkNotice = null;
+        this.hud.setAfkNotice(null);
+        return;
+      }
+      this.afkNotice = msg.message
+        ?? `Still there? You are out of the match in ${msg.in ?? 30}s without an input.`;
+      this.hud.setAfkNotice(this.afkNotice);
+    });
 
     net.on('god', (msg) => {
       this.godMode = !!msg.on;
@@ -2529,7 +2572,8 @@ export class Game {
       // deliberate version of the same thing.
       const busy = this.respawnHeld || this.inGameMenuOpen || this.hud.chatOpen
         || this.menu.classModalOpen || this.menu.visible || this.hud.matchEndOpen
-        || this.scoreboardPinned || !$('pause').classList.contains('hidden');
+        || this.scoreboardPinned || !!this.afkNotice
+        || !$('pause').classList.contains('hidden');
       this.hud.updateDeathTimer(this.respawnAt - nowSec, busy);
       if (!busy && this.matchPhase === 'live') this.requestRespawn();
     }

@@ -19,6 +19,15 @@ import {
   CLAN_MAX_MEMBERS as K_CLAN_MAX_MEMBERS,
   CLAN_MAX_INVITES as K_CLAN_MAX_INVITES,
   CLAN_INVITE_TTL_HOURS as K_CLAN_INVITE_TTL_HOURS,
+  AFK_WARN_SEC as K_AFK_WARN_SEC,
+  AFK_KICK_SEC as K_AFK_KICK_SEC,
+  CHEAT_WARN_SCORE as K_CHEAT_WARN_SCORE,
+  CHEAT_KICK_SCORE as K_CHEAT_KICK_SCORE,
+  FRIENDS_MAX as K_FRIENDS_MAX,
+  FRIEND_REQUESTS_MAX as K_FRIEND_REQUESTS_MAX,
+  FRIEND_REQUESTS_INBOX_MAX as K_FRIEND_REQUESTS_INBOX_MAX,
+  FRIEND_REQUEST_COOLDOWN_SEC as K_FRIEND_REQUEST_COOLDOWN_SEC,
+  FRIEND_MIN_LEVEL as K_FRIEND_MIN_LEVEL,
 } from '../shared/constants.js';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -81,6 +90,37 @@ export const config = {
     cacheSeconds: num('AVATAR_CACHE_SEC', 31_536_000),
   },
 
+  /**
+   * Away-from-keyboard.
+   *
+   * Counted from real input — a key held or the view moving — and never from
+   * the socket being alive, because a page left open answers every heartbeat
+   * and so does the timer an anti-AFK script is built out of.
+   */
+  afk: {
+    enabled: bool('AFK_ENABLED', true),
+    warnSec: num('AFK_WARN_SEC', K_AFK_WARN_SEC),
+    kickSec: num('AFK_KICK_SEC', K_AFK_KICK_SEC),
+  },
+
+  /**
+   * The anti-cheat.
+   *
+   * Every check refuses a packet and hands back the authoritative value
+   * whatever these say; what they turn on is the *scoring* of those refusals
+   * and the kick at the end of it, which is the part with a false-positive cost
+   * attached. Turning it off leaves a server that is still not fooled — just
+   * one that never drops anybody for trying.
+   */
+  anticheat: {
+    enabled: bool('ANTICHEAT_ENABLED', true),
+    // Drop the connection, or only ever warn and log. A server that would
+    // rather review its own queue by hand sets this false.
+    kick: bool('ANTICHEAT_KICK', true),
+    warnScore: num('ANTICHEAT_WARN_SCORE', K_CHEAT_WARN_SCORE),
+    kickScore: num('ANTICHEAT_KICK_SCORE', K_CHEAT_KICK_SCORE),
+  },
+
   // Player reports
   reports: {
     enabled: bool('REPORTS_ENABLED', true),
@@ -98,8 +138,34 @@ export const config = {
     dismissedMax: num('REPORTS_DISMISSED_MAX', K_REPORT_DISMISSED.max),
     dismissedWindowDays: num('REPORTS_DISMISSED_WINDOW_DAYS', K_REPORT_DISMISSED.windowDays),
     dismissedLockoutHours: num('REPORTS_DISMISSED_LOCKOUT_HOURS', K_REPORT_DISMISSED.lockoutHours),
-    // Settled reports are kept this long, then pruned. Open ones stay forever.
-    keepResolvedDays: num('REPORTS_KEEP_RESOLVED_DAYS', 90),
+    /**
+     * How long a *settled* report is kept. `0` — the default — keeps it for
+     * good.
+     *
+     * The queue is a to-do list, but the history behind it is the only record
+     * of what a moderator decided and why, and it is the thing anyone asks for
+     * six months later when the same name comes back. Deleting it on a ninety
+     * day timer threw away exactly the evidence that a repeat offender is a
+     * repeat offender, and the admin panel's own HANDLED tab had nothing older
+     * than a quarter in it. Open reports were never pruned and still are not.
+     */
+    keepResolvedDays: num('REPORTS_KEEP_RESOLVED_DAYS', 0),
+  },
+
+  /**
+   * Friends.
+   *
+   * Each ceiling answers one way of turning a friend list into a nuisance
+   * vector: a list nobody can fill, a request queue nobody can flood, and a
+   * name that cannot be asked over and over.
+   */
+  friends: {
+    enabled: bool('FRIENDS_ENABLED', true),
+    max: num('FRIENDS_MAX', K_FRIENDS_MAX),
+    maxRequests: num('FRIEND_REQUESTS_MAX', K_FRIEND_REQUESTS_MAX),
+    maxInbox: num('FRIEND_REQUESTS_INBOX_MAX', K_FRIEND_REQUESTS_INBOX_MAX),
+    cooldownSec: num('FRIEND_REQUEST_COOLDOWN_SEC', K_FRIEND_REQUEST_COOLDOWN_SEC),
+    minLevel: num('FRIEND_MIN_LEVEL', K_FRIEND_MIN_LEVEL),
   },
 
   // Clans

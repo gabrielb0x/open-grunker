@@ -235,6 +235,8 @@ const UUID_TABLES = {
   clans: { self: 'clan', refs: { owner_id: 'user' }, avatarOf: 'clan' },
   clan_members: { refs: { clan_id: 'clan', user_id: 'user' } },
   clan_invites: { refs: { clan_id: 'clan', user_id: 'user' } },
+  friends: { refs: { user_a: 'user', user_b: 'user' } },
+  friend_requests: { refs: { from_id: 'user', to_id: 'user' } },
 };
 
 /**
@@ -544,8 +546,43 @@ const S = {
       WHERE id = ?`),
   deleteReport: db.prepare('DELETE FROM reports WHERE id = ?'),
   countOpenReports: db.prepare("SELECT COUNT(*) AS n FROM reports WHERE status = 'open'"),
+  countHandledReports: db.prepare("SELECT COUNT(*) AS n FROM reports WHERE status <> 'open'"),
   countReports: db.prepare('SELECT COUNT(*) AS n FROM reports'),
   pruneReports: db.prepare("DELETE FROM reports WHERE status <> 'open' AND resolved_at > 0 AND resolved_at <= ?"),
+
+  // Friends. The pair is stored once with the ids sorted, so membership is a
+  // primary-key hit and half a friendship cannot exist; the listing has to look
+  // down both columns, which is what the second index is for.
+  insertFriend: db.prepare(
+    'INSERT OR IGNORE INTO friends (user_a, user_b, created_at) VALUES (?,?,?)'),
+  friendPair: db.prepare('SELECT * FROM friends WHERE user_a = ? AND user_b = ?'),
+  deleteFriend: db.prepare('DELETE FROM friends WHERE user_a = ? AND user_b = ?'),
+  countFriends: db.prepare(
+    'SELECT COUNT(*) AS n FROM friends WHERE user_a = ? OR user_b = ?'),
+  friendsOf: db.prepare(`SELECT u.*, f.created_at AS since
+      FROM friends f
+      JOIN users u ON u.id = CASE WHEN f.user_a = ? THEN f.user_b ELSE f.user_a END
+      WHERE f.user_a = ? OR f.user_b = ?
+      ORDER BY LOWER(u.username)`),
+
+  insertFriendRequest: db.prepare(
+    'INSERT OR IGNORE INTO friend_requests (from_id, to_id, created_at) VALUES (?,?,?)'),
+  friendRequest: db.prepare('SELECT * FROM friend_requests WHERE from_id = ? AND to_id = ?'),
+  deleteFriendRequest: db.prepare('DELETE FROM friend_requests WHERE from_id = ? AND to_id = ?'),
+  deleteFriendRequestsBetween: db.prepare(
+    'DELETE FROM friend_requests WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)'),
+  incomingRequests: db.prepare(`SELECT u.*, r.created_at AS asked_at
+      FROM friend_requests r JOIN users u ON u.id = r.from_id
+      WHERE r.to_id = ? ORDER BY r.created_at DESC`),
+  outgoingRequests: db.prepare(`SELECT u.*, r.created_at AS asked_at
+      FROM friend_requests r JOIN users u ON u.id = r.to_id
+      WHERE r.from_id = ? ORDER BY r.created_at DESC`),
+  countOutgoingRequests: db.prepare(
+    'SELECT COUNT(*) AS n FROM friend_requests WHERE from_id = ?'),
+  countIncomingRequests: db.prepare(
+    'SELECT COUNT(*) AS n FROM friend_requests WHERE to_id = ?'),
+  lastRequestBy: db.prepare(
+    'SELECT created_at FROM friend_requests WHERE from_id = ? ORDER BY created_at DESC LIMIT 1'),
 
   insertClan: db.prepare(
     'INSERT INTO clans (id, tag, tag_lower, owner_id, created_at, created_by) VALUES (?,?,?,?,?,?)'),
@@ -1368,25 +1405,42 @@ export const reports = {
     reportRow(S.lastReportOn.get(userId, String(name ?? '').toLowerCase())),
 
   /**
-   * Paged listing for the admin panel. `status` filters, `q` searches either
-   * side of the report plus the reporter's own words.
+   * Paged listing for the admin panel.
+   *
+   * `status` takes either one stored state or one of the two queues the panel
+   * is built around — `open`, the to-do list, and `handled`, everything already
+   * settled whichever way it went. They are worked in opposite directions: the
+   * open pile is read oldest-first, because the oldest unanswered report is the
+   * one somebody has been waiting on longest, and the handled pile newest-first,
+   * because it is a history and the last decision is the interesting one.
+   *
+   * `q` searches either side of the report plus the reporter's own words.
    */
   list({ status = '', q = '', limit = 50, offset = 0 } = {}) {
     const where = [];
     const args = [];
-    if (REPORT_STATUSES.includes(status)) { where.push('status = ?'); args.push(status); }
+    const handled = status === 'handled';
+    if (handled) where.push("status <> 'open'");
+    else if (REPORT_STATUSES.includes(status)) { where.push('status = ?'); args.push(status); }
     if (q) {
       const like = `%${String(q).toLowerCase()}%`;
       where.push('(LOWER(target_name) LIKE ? OR LOWER(reporter_name) LIKE ? OR LOWER(IFNULL(detail, \'\')) LIKE ?)');
       args.push(like, like, like);
     }
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const order = handled
+      ? 'IFNULL(resolved_at, created_at) DESC, created_at DESC'
+      : "CASE status WHEN 'open' THEN 0 ELSE 1 END, created_at DESC";
     const rows = db.prepare(
-      `SELECT * FROM reports ${clause} ORDER BY
-         CASE status WHEN 'open' THEN 0 ELSE 1 END, created_at DESC
-       LIMIT ? OFFSET ?`).all(...args, Math.min(limit, 200), Math.max(0, offset));
+      `SELECT * FROM reports ${clause} ORDER BY ${order} LIMIT ? OFFSET ?`)
+      .all(...args, Math.min(limit, 200), Math.max(0, offset));
     const total = db.prepare(`SELECT COUNT(*) AS n FROM reports ${clause}`).get(...args).n;
-    return { rows: rows.map(reportRow), total, open: reports.countOpen() };
+    return {
+      rows: rows.map(reportRow),
+      total,
+      open: reports.countOpen(),
+      handled: reports.countHandled(),
+    };
   },
 
   /**
@@ -1410,9 +1464,107 @@ export const reports = {
 
   remove: (id) => int(S.deleteReport.run(id).changes),
   countOpen: () => int(S.countOpenReports.get().n),
+  /** Everything already settled — the size of the history behind the queue. */
+  countHandled: () => int(S.countHandledReports.get().n),
   count: () => int(S.countReports.get().n),
-  /** Drops settled reports older than `maxAgeSec`. Open ones are never pruned. */
-  prune: (maxAgeSec) => int(S.pruneReports.run(now() - Math.max(0, maxAgeSec)).changes),
+  /**
+   * Drops settled reports older than `maxAgeSec`. Open ones are never pruned,
+   * and a `maxAgeSec` of 0 or less is a no-op rather than "delete everything
+   * that was ever settled" — which is what the caller means by "keep them".
+   */
+  prune: (maxAgeSec) => (maxAgeSec > 0
+    ? int(S.pruneReports.run(now() - maxAgeSec).changes)
+    : 0),
+};
+
+/* ── Friends ─────────────────────────────────────────────────────────────── */
+
+/**
+ * The pair, in the order it is stored.
+ *
+ * A friendship has no direction, so it is written once under the two ids sorted
+ * rather than twice under each. Everything else in here goes through this, and
+ * that is the whole reason "A has B but B does not have A" is not a state this
+ * table can be in.
+ */
+const pair = (a, b) => (String(a) < String(b) ? [a, b] : [b, a]);
+
+/** One friend, as the list draws them. The presence half is the hub's, not ours. */
+const friendRow = (u) => (u ? {
+  id: u.id,
+  username: u.username,
+  level: int(u.level),
+  verified: !!u.verified,
+  avatar: u.avatar ?? null,
+  clan: u.clan ?? null,
+  clanVerified: !!u.clan_verified,
+  role: u.role,
+  lastLogin: u.last_login ?? null,
+  since: u.since !== undefined ? int(u.since) : null,
+  askedAt: u.asked_at !== undefined ? int(u.asked_at) : null,
+} : null);
+
+export const friends = {
+  /** Everyone this account is friends with, by nickname. */
+  list: (userId) => (userId ? S.friendsOf.all(userId, userId, userId).map(friendRow) : []),
+  incoming: (userId) => (userId ? S.incomingRequests.all(userId).map(friendRow) : []),
+  outgoing: (userId) => (userId ? S.outgoingRequests.all(userId).map(friendRow) : []),
+
+  are: (a, b) => {
+    if (!a || !b || a === b) return false;
+    const [x, y] = pair(a, b);
+    return !!S.friendPair.get(x, y);
+  },
+  count: (userId) => int(S.countFriends.get(userId, userId).n),
+  countOutgoing: (userId) => int(S.countOutgoingRequests.get(userId).n),
+  countIncoming: (userId) => int(S.countIncomingRequests.get(userId).n),
+  requested: (from, to) => !!S.friendRequest.get(from, to),
+  lastRequestAt: (userId) => int(S.lastRequestBy.get(userId)?.created_at ?? 0),
+
+  /**
+   * Asks somebody to be friends, or accepts their standing ask.
+   *
+   * Two people who happen to request each other are friends the moment the
+   * second one presses the button, which is the only behaviour that is not
+   * surprising — the alternative is two people both staring at a pending
+   * request from the other.
+   *
+   * @returns {'sent'|'accepted'|'already'} what actually happened
+   */
+  request(from, to) {
+    if (!from || !to || from === to) return 'already';
+    if (friends.are(from, to)) return 'already';
+    if (S.friendRequest.get(to, from)) { friends.accept(to, from); return 'accepted'; }
+    S.insertFriendRequest.run(from, to, now());
+    return 'sent';
+  },
+
+  /** Turns `from`'s standing request to `to` into a friendship. */
+  accept(from, to) {
+    if (!S.friendRequest.get(from, to)) return false;
+    const [x, y] = pair(from, to);
+    db.exec('BEGIN');
+    try {
+      // Both directions go: an accept must not leave the other person's own
+      // pending ask sitting in their outbox against somebody they now have.
+      S.deleteFriendRequestsBetween.run(from, to, to, from);
+      S.insertFriend.run(x, y, now());
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+    return true;
+  },
+
+  /** Throws a request away, from either end — declining and cancelling are one row. */
+  drop: (from, to) => int(S.deleteFriendRequest.run(from, to).changes) > 0,
+
+  /** Ends a friendship. It ends for both, because there was only ever one row. */
+  remove(a, b) {
+    const [x, y] = pair(a, b);
+    return int(S.deleteFriend.run(x, y).changes) > 0;
+  },
 };
 
 /* ── Clans ───────────────────────────────────────────────────────────────── */
@@ -1962,9 +2114,15 @@ export function maintain() {
   // is somebody's home connection this week.
   const forgotten = ipIntel.prune(Math.max(3600, config.vpn.cacheHours * 3600) * 4);
   if (forgotten) logger.info(`forgot ${forgotten} stale address lookup(s)`);
-  // Settled reports age out; an open one is never dropped from under a queue.
-  const closed = reports.prune(config.reports.keepResolvedDays * 86400);
-  if (closed) logger.info(`pruned ${closed} settled report(s)`);
+  // Settled reports age out only if an operator asked for it. The default is
+  // to keep them: the queue is a to-do list, but the settled rows behind it are
+  // the whole history of what was decided about a name, and that is exactly
+  // what anybody wants when the same name comes back. An open report was never
+  // pruned and still is not.
+  if (config.reports.keepResolvedDays > 0) {
+    const closed = reports.prune(config.reports.keepResolvedDays * 86400);
+    if (closed) logger.info(`pruned ${closed} settled report(s)`);
+  }
   // An invitation nobody accepted is not a standing offer.
   const lapsed = clans.pruneInvites();
   if (lapsed) logger.info(`dropped ${lapsed} lapsed clan invite(s)`);
@@ -1982,6 +2140,6 @@ export function close() {
 
 export default {
   db, users, stats, loadouts, sessions, matches, mastery, challenges, ipBans, chatBans, audit,
-  reportBans, emailTokens, totp, milestones, ipIntel, reports, clans, normaliseIp,
+  reportBans, emailTokens, totp, milestones, ipIntel, reports, friends, clans, normaliseIp,
   summary, maintain, close, metrics, events, analytics,
 };

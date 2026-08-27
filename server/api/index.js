@@ -566,6 +566,7 @@ export function createApi({ db, hub }) {
   });
 
   r.post('/auth/logout', (ctx) => {
+    limit(ctx, 'auth', config.rateMaxAuth * 4);
     if (ctx.token) db.sessions.destroy(hashToken(ctx.token));
     json(ctx.res, 200, { ok: true }, { 'set-cookie': cookieHeader(COOKIE, '', { clear: true }) });
   });
@@ -938,6 +939,7 @@ export function createApi({ db, hub }) {
   });
 
   r.delete('/avatar', async (ctx) => {
+    limit(ctx, 'avatar', 12);
     const user = requireAuth(ctx);
     const removed = await avatars.remove(user.id);
     const fresh = db.users.setAvatar(user.id, null);
@@ -989,6 +991,170 @@ export function createApi({ db, hub }) {
     });
   });
 
+  /* ── Friends ───────────────────────────────────────────────────────────
+   *
+   * Presence is the whole reason this exists — a list of names is an address
+   * book, and what anybody wants from a friend list is "who is on, and can I
+   * get into their match". So every response here carries the live half from
+   * the hub rather than a `last seen` out of the database, and a friend in a
+   * room comes back with the code the server browser joins by.
+   * ──────────────────────────────────────────────────────────────────────── */
+
+  /** One friend, plus where they are this second. */
+  const friendCard = (row, where) => ({
+    id: row.id,
+    username: row.username,
+    level: row.level,
+    verified: !!row.verified,
+    avatar: avatars.urlFor(row.avatar),
+    clan: row.clan ?? null,
+    clanVerified: !!row.clanVerified,
+    role: row.role,
+    since: row.since ?? null,
+    askedAt: row.askedAt ?? null,
+    lastLogin: row.lastLogin ?? null,
+    online: !!where?.online,
+    playing: !!where?.playing,
+    // Only ever a room somebody could actually walk into: a full one is not an
+    // invitation, and neither is the menu backdrop a watcher is sitting in.
+    room: where?.playing && !where?.full ? where.room : null,
+    map: where?.playing ? where.map : null,
+    mode: where?.playing ? where.mode : null,
+    full: !!where?.full,
+  });
+
+  /** Everything the friends panel draws, in one request. */
+  const friendsPayload = (user) => {
+    const list = db.friends.list(user.id);
+    const incoming = db.friends.incoming(user.id);
+    const outgoing = db.friends.outgoing(user.id);
+    const where = hub.presence([...list, ...incoming, ...outgoing].map((f) => f.id));
+    return {
+      friends: list.map((f) => friendCard(f, where.get(f.id)))
+        // Whoever can be joined right now sorts first: that is the one row on
+        // this panel anybody is actually looking for.
+        .sort((a, b) => (b.playing - a.playing) || (b.online - a.online)
+          || a.username.localeCompare(b.username)),
+      incoming: incoming.map((f) => friendCard(f, where.get(f.id))),
+      outgoing: outgoing.map((f) => friendCard(f, where.get(f.id))),
+      online: list.filter((f) => where.get(f.id)?.online).length,
+      // The operator's numbers rather than the defaults, so the panel greys a
+      // button out on the same ceiling the route refuses with.
+      limits: {
+        max: config.friends.max,
+        maxRequests: config.friends.maxRequests,
+        minLevel: config.friends.minLevel,
+      },
+    };
+  };
+
+  const requireFriends = () => {
+    if (!config.friends.enabled) {
+      throw new ApiError(403, 'disabled', 'friends are switched off on this server');
+    }
+  };
+
+  r.get('/friends', (ctx) => {
+    const user = requireAuth(ctx);
+    requireFriends();
+    ok(ctx.res, friendsPayload(user));
+  });
+
+  /**
+   * Asks somebody by nickname.
+   *
+   * Every refusal below is a way this button could otherwise be used on
+   * somebody rather than with them: a full list, a flood of asks, a fresh
+   * throwaway account, and the same name twice. The one deliberate asymmetry is
+   * that a standing ask from the other side is *accepted* instead of a second
+   * request being filed — two people who both pressed the button are friends,
+   * not two people each waiting on the other.
+   */
+  r.post('/friends/requests', async (ctx) => {
+    const user = requireAuth(ctx);
+    requireFriends();
+    limit(ctx, 'friend', 30);
+    const body = await readJson(ctx.req);
+    const name = String(body.username ?? body.name ?? '').trim();
+    if (!name) throw new ApiError(400, 'bad_request', 'who do you want to add?');
+
+    const target = db.users.byName(name);
+    if (!target) throw new ApiError(404, 'not_found', `nobody plays under the name ${name}`);
+    if (target.id === user.id) throw new ApiError(400, 'bad_request', 'you already have yourself');
+    if ((user.level ?? 1) < config.friends.minLevel) {
+      throw new ApiError(403, 'level_too_low', `reach level ${config.friends.minLevel} to add friends`);
+    }
+    if (db.friends.are(user.id, target.id)) {
+      throw new ApiError(409, 'already_friends', `you and ${target.username} are already friends`);
+    }
+    if (db.friends.count(user.id) >= config.friends.max) {
+      throw new ApiError(409, 'list_full', `your friend list is full at ${config.friends.max}`);
+    }
+    if (db.friends.count(target.id) >= config.friends.max) {
+      throw new ApiError(409, 'list_full', `${target.username}'s friend list is full`);
+    }
+    if (db.friends.requested(user.id, target.id)) {
+      throw new ApiError(409, 'already_asked', `${target.username} has not answered your last request yet`);
+    }
+    if (db.friends.countOutgoing(user.id) >= config.friends.maxRequests) {
+      throw new ApiError(409, 'too_many', `you have ${config.friends.maxRequests} requests outstanding — `
+        + 'wait for some of them to be answered');
+    }
+    if (db.friends.countIncoming(target.id) >= config.friends.maxInbox) {
+      throw new ApiError(409, 'too_many', `${target.username} has too many requests waiting`);
+    }
+    const gap = db.friends.lastRequestAt(user.id) + config.friends.cooldownSec
+      - Math.floor(Date.now() / 1000);
+    if (gap > 0) throw new ApiError(429, 'rate_limited', `one at a time — try again in ${gap}s`);
+
+    const outcome = db.friends.request(user.id, target.id);
+    ok(ctx.res, { outcome, friend: target.username, ...friendsPayload(user) });
+  });
+
+  /** Takes a standing request — theirs to us. */
+  r.post('/friends/requests/:id/accept', (ctx) => {
+    const user = requireAuth(ctx);
+    requireFriends();
+    limit(ctx, 'friend', 60);
+    const other = db.users.byId(String(ctx.params.id));
+    if (!other) throw new ApiError(404, 'not_found', 'no such player');
+    if (db.friends.count(user.id) >= config.friends.max) {
+      throw new ApiError(409, 'list_full', `your friend list is full at ${config.friends.max}`);
+    }
+    if (!db.friends.accept(other.id, user.id)) {
+      throw new ApiError(404, 'not_found', 'that request is no longer standing');
+    }
+    ok(ctx.res, { friend: other.username, ...friendsPayload(user) });
+  });
+
+  /**
+   * Throws a request away — declining theirs or cancelling ours.
+   *
+   * One route for both, because it is one row either way and the person on the
+   * other end is told nothing in both cases. A decline that notified the asker
+   * would make declining a thing people avoid doing.
+   */
+  r.delete('/friends/requests/:id', (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'friend', 60);
+    const otherId = String(ctx.params.id);
+    const dropped = db.friends.drop(otherId, user.id) || db.friends.drop(user.id, otherId);
+    if (!dropped) throw new ApiError(404, 'not_found', 'no such request');
+    ok(ctx.res, friendsPayload(user));
+  });
+
+  /** Ends a friendship. It ends for both — there was only ever one row. */
+  r.delete('/friends/:id', (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'friend', 60);
+    const other = db.users.byId(String(ctx.params.id));
+    if (!other) throw new ApiError(404, 'not_found', 'no such player');
+    if (!db.friends.remove(user.id, other.id)) {
+      throw new ApiError(404, 'not_found', 'you are not friends');
+    }
+    ok(ctx.res, { removed: other.username, ...friendsPayload(user) });
+  });
+
   /* ── Players & leaderboard ─────────────────────────────────────────────── */
 
   r.get('/players/:name', (ctx) => {
@@ -1034,6 +1200,9 @@ export function createApi({ db, hub }) {
 
   r.put('/loadout', async (ctx) => {
     const user = requireAuth(ctx);
+    // The client saves on every settings change, so this is deliberately loose
+    // — it is a write ceiling, not a gameplay one.
+    limit(ctx, 'loadout', 120);
     const body = await readJson(ctx.req);
     const cur = db.loadouts.get(user.id);
     const owned = safeJson(cur.owned, []);
@@ -1063,6 +1232,7 @@ export function createApi({ db, hub }) {
 
   r.post('/shop/buy', async (ctx) => {
     const user = requireAuth(ctx);
+    limit(ctx, 'shop', 60);
     const { skinId } = await readJson(ctx.req);
     const skin = SKINS[skinId];
     if (!skin) throw new ApiError(404, 'no_such_skin', 'unknown skin');

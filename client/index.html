@@ -77,6 +77,10 @@
   <!-- God mode is loud on purpose: nobody should be invincible by accident. -->
   <div id="godBadge" class="hidden"><i></i>GOD MODE<small>SPACE / CTRL to fly</small></div>
 
+  <!-- Away from keyboard. The automatic respawn is held while this is up, so
+       the notice is also the reason nothing is happening. -->
+  <div id="afkNotice" class="hidden"><b>STILL THERE?</b><span id="afkNoticeText">—</span></div>
+
   <!-- Killstreak nuke: armed prompt, then the countdown the whole room sees. -->
   <div id="nukePrompt" class="hidden">
     <div class="nk-label">NUKE READY</div>
@@ -367,6 +371,8 @@
         <button class="tab" data-tab="challenges">CHALLENGES</button>
         <button class="tab" data-tab="profile">ACCOUNT</button>
         <button class="tab" data-tab="leaderboard">LEADERBOARD</button>
+        <button class="tab" data-tab="friends">FRIENDS
+          <span class="tab-badge hidden" id="friendTabBadge">0</span></button>
         <button class="tab" data-tab="clans">CLANS
           <span class="tab-badge hidden" id="clanTabBadge">0</span></button>
         <button class="tab" data-tab="shop">SKINS</button>
@@ -472,9 +478,16 @@
             <div class="acct-view active" data-acct-view="overview">
               <div class="stat-grid" id="phStats"></div>
               <div class="acct-cards">
+                <!-- Masked by default. This panel is open on screen for as long
+                     as somebody is picking a class, and half the people who do
+                     that are sharing their screen while they do it. -->
                 <div class="acct-card">
                   <span class="ac-k">EMAIL</span>
-                  <b id="ovEmail">—</b>
+                  <div class="ac-reveal">
+                    <b id="ovEmail" class="masked">—</b>
+                    <button class="reveal" id="btnOvEmailReveal" type="button"
+                            title="Show the address for a few seconds">SHOW</button>
+                  </div>
                   <span class="pill" id="ovEmailBadge">UNCONFIRMED</span>
                 </div>
                 <div class="acct-card">
@@ -591,9 +604,14 @@
                 <div class="profile-col">
                   <h4>EMAIL</h4>
                   <div class="email-state" id="emailState">
-                    <span id="emailAddr">—</span>
+                    <span id="emailAddr" class="masked">—</span>
+                    <button class="reveal" id="btnEmailReveal" type="button"
+                            title="Show the address for a few seconds">SHOW</button>
                     <span class="pill" id="emailBadge">UNCONFIRMED</span>
                   </div>
+                  <p class="panel-note">Hidden by default — this panel is on screen
+                     while you pick a class, and a shared screen should not be a
+                     leaked address. SHOW puts it back for ten seconds.</p>
                   <form id="emailForm" class="mini-form">
                     <label>EMAIL ADDRESS<input name="email" type="email" autocomplete="email" required></label>
                     <label>PASSWORD<input name="password" type="password" autocomplete="current-password" required></label>
@@ -748,6 +766,49 @@
              than being written into the page, so a server that changes them
              does not need a new client.
              ─────────────────────────────────────────────────────────────── -->
+        <!-- ── Friends ──────────────────────────────────────────────────
+             Presence is the point. A list of names is an address book; what
+             anybody opens this for is "who is on, and can I get into their
+             match", so the JOIN button sits on the row and the people who can
+             be joined sort to the top of it.
+             ──────────────────────────────────────────────────────────────── -->
+        <section class="tab-panel" data-panel="friends">
+          <div id="friendsSignedOut" class="profile-empty">
+            <h3>FRIENDS NEED AN ACCOUNT</h3>
+            <p>Create a free account to keep a friend list, see who is online and drop
+               straight into their match.</p>
+            <button class="btn-primary" id="btnFriendsSignIn">SIGN IN / REGISTER</button>
+          </div>
+
+          <div id="friendsSignedIn" class="hidden">
+            <div class="panel-head">
+              <h3>FRIENDS</h3>
+              <span class="panel-note" id="friendCount">—</span>
+              <div class="head-actions">
+                <form id="friendAddForm" class="inline-form">
+                  <input id="friendAddName" class="mini-input" maxlength="16" autocomplete="off"
+                         spellcheck="false" placeholder="Add by nickname…">
+                  <button class="btn-ghost" type="submit">ADD</button>
+                </form>
+                <button class="btn-ghost" id="btnFriendRefresh" type="button">REFRESH</button>
+              </div>
+            </div>
+            <div class="form-msg hidden" id="friendMsg"></div>
+
+            <div id="friendRequests" class="friend-requests hidden">
+              <h4>WAITING FOR YOU<span class="req-count" id="friendReqCount">0</span></h4>
+              <div id="friendIncoming" class="friend-list"></div>
+            </div>
+
+            <div id="friendList" class="friend-list"></div>
+
+            <div id="friendOutgoingWrap" class="friend-sent hidden">
+              <h4>ASKED, NOT YET ANSWERED</h4>
+              <div id="friendOutgoing" class="friend-list"></div>
+            </div>
+          </div>
+        </section>
+
         <section class="tab-panel" data-panel="clans">
           <div class="panel-head">
             <h3>CLANS</h3>

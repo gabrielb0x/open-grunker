@@ -106,6 +106,11 @@ export class Net {
         break;
 
       case K.S2C.PONG: {
+        // Straight back, before anything else in this frame: the server times
+        // its own round trip through this token, and that measurement is what
+        // it lag-compensates our shots by. Sitting on it for even a moment
+        // would make the server think we are further away than we are.
+        if (msg.k) this.send({ o: K.C2S.ACK, k: msg.k });
         const rtt = (performance.now() - msg.t) / 1000;
         if (rtt >= 0 && rtt < 2) {
           this.rttSamples.push(rtt);
@@ -140,6 +145,7 @@ export class Net {
       case K.S2C.REPORTSTATE: this.emit('reportstate', msg); break;
       case K.S2C.NUKE: this.emit('nuke', msg); break;
       case K.S2C.GOD: this.emit('god', msg); break;
+      case K.S2C.AFK: this.emit('afk', msg); break;
       case K.S2C.SCORE: this.emit('score', msg); break;
       case K.S2C.POINTS: this.emit('points', msg); break;
       case K.S2C.MATCH: this.emit('match', msg); break;
@@ -164,7 +170,14 @@ export class Net {
   }
 
   ping() {
-    this.send({ o: K.C2S.PING, t: performance.now(), rtt: Math.round(this.rtt * 1000) });
+    this.send({
+      o: K.C2S.PING,
+      t: performance.now(),
+      // Ours, for the ping readout. The server keeps its own measurement and
+      // only ever compares this against it — they agree for an honest client,
+      // because both are a median of the same round trips timed at each end.
+      rtt: Math.round(this.rtt * 1000),
+    });
   }
 
   /** Queues one simulation tick's input; flushed on the next flushInputs(). */

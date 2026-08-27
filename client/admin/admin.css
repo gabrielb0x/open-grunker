@@ -260,6 +260,36 @@ main { padding: 22px 18px 40px; }
   border-radius: var(--r); box-shadow: var(--shadow-sm), var(--ring);
 }
 .toolbar input[type=search] { flex: 1; min-width: 240px; }
+
+/* ── Queue tabs ───────────────────────────────────────────────────────────
+   The two piles a moderator works in. Underlined rather than pill-shaped, so
+   they read as a division *inside* the reports page and never compete with the
+   filled pills in the top bar, which switch pages. Each carries its own size:
+   how much is waiting is the number being looked for, and it should not take a
+   click on the tab to find out. */
+.queue-tabs {
+  display: flex; gap: 4px; margin-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.queue-tab {
+  display: flex; align-items: center; gap: 8px;
+  padding: 11px 18px; margin-bottom: -1px;
+  background: transparent; border: 0; border-bottom: 2px solid transparent;
+  color: var(--muted); cursor: pointer;
+  font: 800 11px/1 var(--font); letter-spacing: .16em; text-transform: uppercase;
+  transition: color .16s, border-color .16s;
+}
+.queue-tab:hover { color: var(--text); }
+.queue-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.queue-count {
+  min-width: 20px; padding: 3px 7px; border-radius: var(--r-pill);
+  background: var(--panel-2); border: 1px solid var(--line);
+  font: 800 10px/1 var(--font); letter-spacing: .06em; color: var(--muted);
+  text-align: center;
+}
+.queue-tab.active .queue-count {
+  background: rgba(245,166,35,.14); border-color: rgba(245,166,35,.4); color: var(--accent);
+}
 .count {
   padding: 7px 14px; border-radius: var(--r-pill); background: var(--panel-2);
   border: 1px solid var(--line);

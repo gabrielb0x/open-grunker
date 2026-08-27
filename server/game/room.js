@@ -15,6 +15,7 @@ import { Player } from './player.js';
 import { BotBrain } from './bot.js';
 import log from '../util/log.js';
 import { reportStanding, repeatDenial } from '../util/reports.js';
+import * as ac from './anticheat.js';
 import config from '../config.js';
 
 const logger = log.child('room');
@@ -48,6 +49,19 @@ const BLAST_OFFSET = 0.12;
 const MAX_INPUTS_PER_TICK = 3;
 const MAX_QUEUED_INPUTS = 40;
 const INPUT_STARVE_GRACE = 0.25;   // s before we simulate a silent client
+/**
+ * Input packets one connection may send per second.
+ *
+ * The client flushes at SNAPSHOT_RATE (30/s) plus one extra flush per shot, so
+ * the fastest legitimate weapon emptying a magazine still lands well inside
+ * this. Anything above it is a client producing ticks a second does not hold.
+ */
+const INPUT_PACKETS_PER_SEC = 90;
+/** Shots in a row claiming sights the input stream never held, before it counts. */
+const ADS_MISMATCH_RUN = 3;
+/** Keys whose being held means somebody is at the keyboard. */
+const ACTIVE_KEYS = KEY.FWD | KEY.BACK | KEY.LEFT | KEY.RIGHT
+  | KEY.JUMP | KEY.CROUCH | KEY.FIRE | KEY.ADS;
 
 export class Room {
   constructor({ id, mapId = 'littletown', modeId = 'ffa', hub = null, code = null, permanent = false }) {
@@ -106,6 +120,8 @@ export class Room {
     /** When the flash stops holding and the end card comes up. */
     this.nukeEndAt = 0;
     this.nukeStateAcc = 0;
+    /** Wall clock of the last AFK sweep — it runs once a second, not per tick. */
+    this.afkSweptAt = 0;
     /**
      * Asleep until somebody is in it.
      *
@@ -1454,7 +1470,7 @@ export class Room {
   onMessage(player, msg) {
     player.lastMessageAt = Date.now();
     if (player.spectator
-        && msg.o !== K.C2S.PLAY && msg.o !== K.C2S.PING
+        && msg.o !== K.C2S.PLAY && msg.o !== K.C2S.PING && msg.o !== K.C2S.ACK
         && msg.o !== K.C2S.CLASS && msg.o !== K.C2S.SPECTATE
         && msg.o !== K.C2S.SPECMODE) return;
     switch (msg.o) {
@@ -1474,12 +1490,153 @@ export class Room {
       case K.C2S.REPORT: return this.onReport(player, msg);
       case K.C2S.NUKE: return this.onNukeRequest(player);
       case K.C2S.GOD: return this.onGodMode(player, msg);
-      case K.C2S.PING:
-        this.sendTo(player, { o: K.S2C.PONG, t: msg.t, s: Math.round(this.now * 1000) });
-        if (typeof msg.rtt === 'number') player.rtt = clamp(msg.rtt / 1000, 0, K.MAX_LAG_COMP);
-        return;
+      case K.C2S.PING: return this.onPing(player, msg);
+      case K.C2S.ACK: return this.onAck(player, msg);
       default:
         return;
+    }
+  }
+
+  /**
+   * The heartbeat, and the only place the server learns how far away a client
+   * really is.
+   *
+   * Every PONG carries a token; the client hands the last one it saw back on
+   * its next PING, so the gap between issuing that token and seeing it again is
+   * a round trip the server timed on its own clock. It is timed on the *room's*
+   * clock specifically, because that is the clock `rewindFor` then subtracts it
+   * from — measuring on one and rewinding on another would leave the two free
+   * to drift apart. The room's clock always advances while anybody is connected
+   * to it: a human walking in is what wakes it.
+   *
+   * What the client *says* its ping is arrives in `rtt` and is now kept for one
+   * purpose only: a client claiming a fifth of a second more than the server
+   * measured is the fake-lag exploit, which used to be the entire backtrack
+   * cheat and is now a flag.
+   */
+  onPing(player, msg) {
+    if (typeof msg.rtt === 'number' && Number.isFinite(msg.rtt)) {
+      player.claimedRtt = clamp(msg.rtt / 1000, 0, 2);
+      this.checkLagClaim(player);
+    }
+    // A fresh token every heartbeat, so a client cannot bank an old one and
+    // answer it late to buy a rewind window it never earned.
+    player.pingToken = (player.pingToken + 1 + Math.floor(Math.random() * 1e6)) % 0x7fffffff || 1;
+    player.pingSentAt = this.now;
+    this.sendTo(player, {
+      o: K.S2C.PONG, t: msg.t, s: Math.round(this.now * 1000), k: player.pingToken,
+    });
+  }
+
+  /**
+   * The client answering a PONG's token, which closes one timed round trip.
+   *
+   * It has its own frame rather than riding the next PING because the client
+   * only pings once a second: echoing the token there would have measured the
+   * *interval between two heartbeats* — a flat second, for everybody — and
+   * handed the whole room the maximum rewind. This lands the moment the PONG
+   * does, so what is measured is one trip out and back and nothing else.
+   *
+   * A client that simply never answers keeps the default 80 ms, which is well
+   * under the ceiling: refusing to be measured buys nothing.
+   */
+  onAck(player, msg) {
+    if (!player.pingToken || msg.k !== player.pingToken) return;
+    player.pingToken = 0;
+    player.noteRtt(this.now - player.pingSentAt);
+    this.checkLagClaim(player);
+  }
+
+  /**
+   * Compares what the client says its latency is against what was measured.
+   *
+   * Honest clients agree: both numbers are a median of the same round trips,
+   * one timed at each end. Disagreement in *either* direction is worth a flag,
+   * and the two directions are two different attempts at the same exploit —
+   * claiming more than you have, which is what the userscript did, or sitting
+   * on the acknowledgement to make the measurement itself say more than you
+   * have. The second is bounded by MAX_LAG_COMP whatever it buys, which is the
+   * same ceiling an honest player on a bad line already gets.
+   */
+  checkLagClaim(player) {
+    if (player.rttSamples.length < K.RTT_SAMPLES || player.claimedRtt <= 0) return;
+    // Relative as well as absolute: the two numbers are medians of different
+    // halves of different round trips, so a genuinely jittery 300 ms line will
+    // have them disagree by tens of milliseconds all evening without anybody
+    // lying about anything. What is not jitter is a claim half again as big as
+    // the measurement.
+    const gap = Math.abs(player.claimedRtt - player.rtt);
+    if (gap <= Math.max(0.10, player.rtt * 0.5)) return;
+    const verdict = ac.flag(player, 'lag',
+      `claims ${Math.round(player.claimedRtt * 1000)}ms, measured ${Math.round(player.rtt * 1000)}ms`);
+    if (verdict !== 'none') ac.enforce(this, player, verdict, 'lag');
+  }
+
+  /**
+   * Who has stopped playing, and what the match does about it.
+   *
+   * A page left open on a match still streams sixty inputs a second and answers
+   * every heartbeat, and until now that was indistinguishable from playing:
+   * death respawned you whether or not anybody was at the keyboard, so an empty
+   * body kept a seat, kept feeding the other team kills, and the only thing
+   * that ever moved it was the socket dying. An anti-AFK cheat is a one-line
+   * timer sending exactly the heartbeat that used to be enough.
+   *
+   * Activity is therefore counted from the one thing a script has no reason to
+   * fake and a person cannot avoid: a key held, or the view actually moving.
+   * The warning comes first and is answered by playing; ignoring it hands the
+   * seat back and returns the player to the menu, which is where somebody who
+   * is not at the keyboard belongs.
+   *
+   * Spectators are exempt on purpose — watching the map from the menu is what
+   * the menu's backdrop *is*, and sitting still in it is not idling.
+   */
+  sweepAfk() {
+    if (this.state !== 'live' || !config.afk.enabled) return;
+    const nowMs = Date.now();
+    if (nowMs - this.afkSweptAt < 1000) return;
+    this.afkSweptAt = nowMs;
+
+    for (const p of this.players.values()) {
+      if (p.isBot || p.spectator || !p.ws) continue;
+      const idle = p.idleSec(nowMs);
+      const want = idle >= config.afk.kickSec ? 'out'
+        : idle >= config.afk.warnSec ? 'warn'
+          : null;
+      // Only the difference is sent. A notice goes up once and comes down once,
+      // rather than being re-sent every second it stands.
+      if (want === p.afkNotified) continue;
+      p.afkNotified = want;
+
+      if (want === null) {
+        this.sendTo(p, { o: K.S2C.AFK, phase: 'clear' });
+        continue;
+      }
+
+      if (want === 'warn') {
+        this.sendTo(p, {
+          o: K.S2C.AFK,
+          phase: 'warn',
+          in: Math.max(1, Math.round(config.afk.kickSec - idle)),
+        });
+        continue;
+      }
+
+      if (p.afk) continue;
+      p.afk = true;
+      logger.info(`${p.name} (${p.id}) left the match — ${Math.round(idle)}s idle`);
+      this.sendTo(p, {
+        o: K.S2C.AFK,
+        phase: 'out',
+        idle: Math.round(idle),
+        message: `You were away for ${Math.round(idle)} seconds, so the match gave your seat back.`,
+      });
+      // Enforced rather than requested: a client that ignores the frame still
+      // loses the seat, which is the only version of this rule that a modified
+      // page cannot simply switch off.
+      setTimeout(() => {
+        try { p.ws?.close(4011, 'afk'); } catch { /* already gone */ }
+      }, 250);
     }
   }
 
@@ -1494,15 +1651,85 @@ export class Room {
     this.sendTo(player, { o: K.S2C.MATCH, phase: 'spectate', targetId: next.id, name: next.name });
   }
 
+  /**
+   * The client's movement stream.
+   *
+   * Three things happen here that used to happen nowhere. The packet rate is
+   * capped, because a client that produces more ticks than a second contains is
+   * not a client with a fast computer. Every view the packet carries is
+   * recorded, because that stream — and not a field on the shoot packet — is
+   * where a shot's angles are checked against. And a key held or a mouse moved
+   * is the only thing on this connection that counts as *playing*, which is
+   * what the AFK sweep reads and what an idle heartbeat cannot fake.
+   *
+   * What is *not* done here is throttling the queue: the ceiling on how fast a
+   * player can move lives in the tick, where credit is spent, so that a burst
+   * arriving after a stall still catches up instead of being thrown away.
+   */
   onInput(player, msg) {
     if (!Array.isArray(msg.i)) return;
-    if (player.inputQueue.length > MAX_QUEUED_INPUTS) player.inputQueue.length = 0;
+
+    // A packet-per-second ceiling, counted on the room's own clock: it is the
+    // one that advances at the tick rate whatever the machine is doing, so a
+    // stalled process cannot turn a normal second into a flood. The client
+    // flushes at SNAPSHOT_RATE and once more per shot, so even a player
+    // emptying a magazine stays far under this.
+    const nowMs = Date.now();
+    if (player.packetWindowAt < 0 || this.now - player.packetWindowAt >= 1) {
+      player.packetWindowAt = this.now;
+      player.packetWindow = 0;
+    }
+    if (++player.packetWindow > INPUT_PACKETS_PER_SEC) {
+      if (player.packetWindow === INPUT_PACKETS_PER_SEC + 1) {
+        const verdict = ac.flag(player, 'rate', `${player.packetWindow} input packets in one second`);
+        if (verdict !== 'none') ac.enforce(this, player, verdict, 'rate');
+      }
+      return;
+    }
+
+    /*
+     * The queue is a buffer, not an allowance.
+     *
+     * Dropping the oldest keeps the freshest inputs — the ones the player is
+     * actually feeling — rather than wiping the lot and stalling the body for a
+     * tick. It also *is* the speed-hack detector, and a far better one than any
+     * count of inputs: the client's own batch holds at most
+     * MAX_INPUTS_PER_PACKET, so a backlog this deep cannot be built out of
+     * jitter or a stall however bad the line is. It is only ever a client
+     * producing more simulation steps than a second contains, and finding the
+     * bucket refuses to pay for them.
+     */
+    if (player.inputQueue.length > MAX_QUEUED_INPUTS) {
+      player.inputQueue.splice(0, player.inputQueue.length - MAX_QUEUED_INPUTS);
+      if (++player.inputOverflow % 30 === 0) {
+        const verdict = ac.flag(player, 'speed',
+          `${player.inputOverflow} inputs discarded past a ${MAX_QUEUED_INPUTS}-deep backlog`);
+        if (verdict !== 'none') ac.enforce(this, player, verdict, 'speed');
+      }
+    } else if (!player.inputQueue.length) {
+      player.inputOverflow = 0;
+    }
+
     for (const e of msg.i.slice(0, K.MAX_INPUTS_PER_PACKET)) {
       if (!Array.isArray(e) || e.length < 4) continue;
       const [seq, keys, yaw, pitch] = e;
-      if (typeof seq !== 'number' || seq <= player.lastSeq) continue;
+      if (typeof seq !== 'number' || !Number.isFinite(seq) || seq <= player.lastSeq) continue;
       if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) continue;
-      player.inputQueue.push({ seq, keys: keys | 0, yaw, pitch: clamp(pitch, -1.56, 1.56) });
+      const clean = { seq, keys: keys | 0, yaw, pitch: clamp(pitch, -1.56, 1.56) };
+
+      // Recorded on arrival rather than on application: a shot arrives on the
+      // same ordered socket immediately behind the input that carried its aim,
+      // and the check has to see that input even though the tick has not spent
+      // it yet.
+      const moved = Math.hypot(ac.angleDelta(clean.yaw, player.viewYaw), clean.pitch - player.viewPitch);
+      player.recordView(clean.yaw, clean.pitch, this.now);
+      // The sight picture travels with the view for the same reason: a shot
+      // fired on the very tick the sights come down arrives while that input is
+      // still in the queue, and a quickscope is exactly that shot.
+      player.heldAds = (clean.keys & KEY.ADS) !== 0;
+      if ((clean.keys & ACTIVE_KEYS) !== 0 || moved > K.AFK_VIEW_EPSILON) player.noteActivity(nowMs);
+
+      player.inputQueue.push(clean);
     }
   }
 
@@ -1559,6 +1786,17 @@ export class Room {
 
   onRespawnRequest(player) {
     if (player.alive || this.state !== 'live' || this.now < player.respawnAt) return;
+    // Dying is not activity, and neither is a client that respawns itself. An
+    // idle body goes back to the menu instead of back into the match — this is
+    // the half of the AFK rule that an auto-respawn script runs into first.
+    if (config.afk.enabled && player.ws && !player.isBot
+        && player.idleSec() >= config.afk.warnSec) {
+      this.sendTo(player, {
+        o: K.S2C.AFK, phase: 'held',
+        message: 'Move or look around to respawn — the match is waiting for a sign of life.',
+      });
+      return;
+    }
     if (this.mode.gunGame) this.applyGunGameRung(player, true);
     else if (player.pendingClass) { player.setClass(player.pendingClass); player.pendingClass = null; }
     this.respawn(player);
@@ -1759,11 +1997,105 @@ export class Room {
 
   /* ── Combat ────────────────────────────────────────────────────────────── */
 
+  /**
+   * Where this player was really pointing when they pulled the trigger.
+   *
+   * A shoot packet has always carried its own yaw and pitch, and the room has
+   * always traced from them without ever asking whether they matched the view
+   * the same client had been streaming a millisecond earlier. That single
+   * missing question was silent aim: a shot fired at a target a hundred and
+   * eighty degrees behind the crosshair, with the crosshair never moving.
+   *
+   * The stream is the answer. Input and shoot travel the same ordered socket
+   * and the client flushes its batch immediately before firing, so an honest
+   * shot arrives with its own view a millisecond or two old — the gate only has
+   * to cover the mouse movement of one frame the tick loop had not sampled yet,
+   * plus whatever the mouse was already doing. Someone mid-flick is forgiven
+   * their own measured turn rate; someone perfectly still, which is what an
+   * aimbot looks like from here, is forgiven almost nothing.
+   *
+   * Both halves of that are bounded, and deliberately: staleness is clamped and
+   * the whole allowance has a ceiling, so going quiet for a moment before
+   * firing cannot be used to *buy* a wider gate than the mouse ever earned.
+   *
+   * A shot that fails is still fired. It goes down the barrel the player was
+   * actually pointing, which is both the honest outcome for a dropped packet
+   * and, for a cheat, strictly worse than not cheating at all.
+   *
+   * @returns {{yaw:number, pitch:number}} the angles to trace from
+   */
+  resolveAim(player, msg) {
+    const held = { yaw: player.viewAt > 0 ? player.viewYaw : player.state.yaw,
+      pitch: player.viewAt > 0 ? player.viewPitch : player.state.pitch };
+    if (!Number.isFinite(msg.y) || !Number.isFinite(msg.p)) return held;
+
+    const claimed = { yaw: msg.y, pitch: clamp(msg.p, -1.56, 1.56) };
+    // No stream yet — a shot in the first frames after a spawn. Take the claim:
+    // there is nothing to check it against, and one shot is not an exploit.
+    if (player.viewAt <= 0 || player.isBot) return claimed;
+
+    const age = clamp(this.now - player.viewAt, 0, K.AIM_VIEW_MAX_AGE);
+    const allowed = Math.min(K.AIM_TOLERANCE_MAX, K.AIM_TOLERANCE
+      + age * (K.AIM_TOLERANCE_RATE + player.viewTurnRate * K.AIM_TOLERANCE_TURN_MULT));
+    const off = ac.viewDistance(claimed.yaw, claimed.pitch, held.yaw, held.pitch);
+    if (off <= allowed) return claimed;
+
+    const verdict = ac.flag(player, 'aim',
+      `shot ${(off * 180 / Math.PI).toFixed(1)}\u00b0 off the streamed view `
+      + `(allowed ${(allowed * 180 / Math.PI).toFixed(1)}\u00b0)`);
+    if (verdict !== 'none') ac.enforce(this, player, verdict, 'aim');
+    return held;
+  }
+
+  /**
+   * Whether this client picked the sequence it is claiming, or just counted.
+   *
+   * The seed a round is drawn from is the server's own counter and nothing
+   * else, so this decides no gameplay — it is evidence, and it exists because a
+   * client that searches a couple of hundred sequences for the one whose cone
+   * lands dead centre has to *ask* for one, and asking is visible.
+   *
+   * What it must be measured against is the client's own last claim, never the
+   * server's counter. The two are not the same number and were never going to
+   * be: the client counts every round it fires, the room counts every round it
+   * *accepts*, and it declines plenty — a shot that arrived a hair inside the
+   * fire-rate window, one fired into a magazine the server had already emptied,
+   * one that landed during a reload. Every one of those puts the two counters
+   * one further apart for the rest of the life, and comparing them meant that
+   * from the first divergence onward, every single round somebody fired was
+   * flagged. Holding the trigger on a fast weapon reached the kick threshold in
+   * about two seconds.
+   *
+   * Counted from its own last claim, an honest client is exactly one further on
+   * every packet, forever, however many of them the room turns down. A grinder
+   * jumps ahead by as many seeds as it searched.
+   */
+  checkShotSeq(player, msg) {
+    if (!Number.isInteger(msg.n)) return;
+    const previous = player.claimedShotSeq;
+    player.claimedShotSeq = msg.n;
+    // No baseline yet, or a counter that went backwards — a fresh connection
+    // rather than a jump. Take the new number as the baseline and say nothing:
+    // only going *forward* by more than one is a search.
+    if (previous === null || msg.n <= previous) return;
+    if (msg.n === previous + 1) return;
+
+    const verdict = ac.flag(player, 'seq',
+      `skipped ${msg.n - previous - 1} sequence(s) — claimed ${msg.n} after ${previous}`);
+    if (verdict !== 'none') ac.enforce(this, player, verdict, 'seq');
+  }
+
   onShoot(player, msg) {
     if (!player.alive || this.state !== 'live') return;
     const w = player.weapon;
     const d = w.def;
     if (d.melee) return this.onMelee(player, msg);
+
+    // Before any of the reasons this shot might be refused: what the client
+    // *called* it is checked against what it called the last one, and every
+    // packet counts whether or not the round goes out. See `checkShotSeq`.
+    this.checkShotSeq(player, msg);
+
     if (w.reloading || this.now < w.pumpUntil) return;
 
     const interval = shotInterval(d);
@@ -1774,8 +2106,7 @@ export class Room {
       return;
     }
 
-    const yaw = Number.isFinite(msg.y) ? msg.y : player.state.yaw;
-    const pitch = clamp(Number.isFinite(msg.p) ? msg.p : player.state.pitch, -1.56, 1.56);
+    const { yaw, pitch } = this.resolveAim(player, msg);
     player.state.yaw = yaw;
     player.state.pitch = pitch;
 
@@ -1800,19 +2131,51 @@ export class Room {
     this.counters.shots++;
     if (d.boltTime) w.pumpUntil = this.now + d.boltTime;
     player.score.shotsFired++;
-    const wasAds = player.ads;
-    player.ads = !!msg.a;
-    if (player.ads && !wasAds) player.adsStart = this.now;
+    player.noteActivity();
 
-    // The client sends the sequence it seeded its own tracers with, so both
-    // sides compute byte-identical pellet directions. Fall back if it's bogus.
-    const seq = Number.isInteger(msg.n) && msg.n > player.shotSeq ? msg.n : player.shotSeq + 1;
-    player.shotSeq = seq;
+    /*
+     * The sight picture is held, never claimed.
+     *
+     * A shoot packet asserting `a: 1` used to be believed outright, which was
+     * scoped accuracy while hip-firing and moving at hip-fire speed. What
+     * settles it now is the ADS bit of the client's own input stream.
+     *
+     * Specifically the freshest input *received*, not the last one the tick
+     * spent. Input and shoot arrive on the same ordered socket and the client
+     * flushes before firing, so a shot fired on the very tick the sights come
+     * down lands with that input received but still queued — and a quickscope
+     * is precisely that shot. Reading the consumed state instead meant the
+     * server thought the sights were up for every quickscope in the game: the
+     * wide cone, and a flag on top of it.
+     */
+    const adsHeld = player.heldAds ?? player.ads;
+    if (msg.a !== undefined && !!msg.a !== adsHeld) {
+      // A run of them, not one: a transient at the edge of a key press is not
+      // the same thing as a client that claims the sights it never holds.
+      if (++player.adsMismatch >= ADS_MISMATCH_RUN) {
+        const verdict = ac.flag(player, 'ads',
+          `claimed ads=${msg.a ? 1 : 0} on ${player.adsMismatch} shots the input stream never held it for`);
+        if (verdict !== 'none') ac.enforce(this, player, verdict, 'ads');
+      }
+    } else {
+      player.adsMismatch = 0;
+    }
+
+    /*
+     * The spread seed is the server's counter, not the client's pick.
+     *
+     * Both sides still derive byte-identical pellet directions from it, which
+     * is the whole reason a drawn tracer sits on the ray that was tested — but
+     * the number is ours. Being allowed to *choose* it was the no-spread cheat
+     * entire: search a couple of hundred seeds, keep the one whose cone lands
+     * dead centre, fire that one. There is nothing left to search.
+     */
+    const seq = ++player.shotSeq;
     const seed = shotSeed(player.id, seq);
     const spread = spreadFor(d, {
       moving: Math.hypot(player.state.vx, player.state.vz) > 1.5,
       airborne: !player.state.onGround,
-      ads: player.ads,
+      ads: adsHeld,
       crouching: player.state.crouching,
       burst,
     });
@@ -1826,8 +2189,20 @@ export class Room {
     }
 
     const dirs = shotDirections(yaw, pitch, spread, seed, d.pellets ?? 1);
-    const lag = clamp(player.rtt / 2 + K.INTERP_DELAY, 0, K.MAX_LAG_COMP);
-    const rewindTime = this.now - lag;
+
+    // How centred that draw came out. One round says nothing; the average over
+    // a magazine is the only thing left that a client burning rounds to skip a
+    // seed it does not like cannot hide from — see anticheat.trackSpread.
+    if ((d.pellets ?? 1) === 1 && dirs[0]) {
+      const f = lookDir(yaw, pitch);
+      const dot = clamp(dirs[0].x * f.x + dirs[0].y * f.y + dirs[0].z * f.z, -1, 1);
+      if (ac.trackSpread(player, Math.acos(dot), spread)) {
+        const verdict = ac.flag(player, 'spread', 'rounds landing at the centre of every cone');
+        if (verdict !== 'none') ac.enforce(this, player, verdict, 'spread');
+      }
+    }
+
+    const rewindTime = this.now - this.rewindFor(player);
 
     const impacts = [];
     const perVictim = new Map();
@@ -1848,7 +2223,11 @@ export class Room {
     }
 
     const shotCtx = {
-      ads: player.ads,
+      ads: adsHeld,
+      // Deliberately the *consumed* state and not `adsHeld`: this is how long
+      // the sights have actually been up, and a shot taken on the tick they
+      // came down has been up for no time at all. That is what a quickscope is,
+      // and it is the number the award below is looking for.
       scopeTime: player.ads ? Math.max(0, this.now - (player.adsStart ?? this.now)) : 0,
       airborne: !player.state.onGround,
       sliding: player.state.sliding,
@@ -1870,6 +2249,23 @@ export class Room {
       x: r2(eye.x), y: r2(eye.y), z: r2(eye.z),
       yaw: r2(yaw), pitch: r2(pitch), spread: Math.round(spread * 1e4) / 1e4,
     }, eye.x, eye.y, eye.z, 220, player);
+  }
+
+  /**
+   * How far back this player's shots are allowed to reach.
+   *
+   * Half a round trip, plus the interpolation delay every client renders remote
+   * bodies at: together that is where the target genuinely was on the shooter's
+   * screen. The round trip is the one the server timed off its own PONG token
+   * (see `onPing`) — before that it was whatever number the client put in a
+   * field, and a userscript writing `rtt: 300` bought itself a third of a
+   * second of rewind and shot at where everybody used to be.
+   *
+   * A bot has no socket and no latency, so it gets none.
+   */
+  rewindFor(player) {
+    if (player.isBot) return 0;
+    return clamp(player.rtt / 2 + K.INTERP_DELAY, 0, K.MAX_LAG_COMP);
   }
 
   /**
@@ -2139,8 +2535,7 @@ export class Room {
 
     const eye = player.eye();
     const dir = lookDir(player.state.yaw, player.state.pitch);
-    const lag = clamp(player.rtt / 2 + K.INTERP_DELAY, 0, K.MAX_LAG_COMP);
-    const rewindTime = this.now - lag;
+    const rewindTime = this.now - this.rewindFor(player);
 
     let best = null, bestDist = knife.def.range;
     for (const other of this.players.values()) {
@@ -2450,9 +2845,22 @@ export class Room {
       }
 
       if (p.alive) {
+        /*
+         * One simulation step per tick, and no more.
+         *
+         * The drain used to be capped at three inputs a tick with no clock
+         * attached to it, so a client that produced three inputs per tick
+         * forever ran at three times everybody else's speed and the physics
+         * never noticed: every step it asked for was a legal step. The cap
+         * stays — a burst still catches up after a stall — but each step is now
+         * paid for out of credit that refills at exactly real time, so the
+         * sustained rate is the tick rate no matter what arrives.
+         */
+        p.inputCredit = Math.min(K.INPUT_BUDGET_BURST, p.inputCredit + 1 + K.INPUT_BUDGET_SLACK);
         let applied = 0;
-        while (p.inputQueue.length && applied < MAX_INPUTS_PER_TICK) {
+        while (p.inputQueue.length && applied < MAX_INPUTS_PER_TICK && p.inputCredit >= 1) {
           const input = p.inputQueue.shift();
+          p.inputCredit--;
           p.lastSeq = input.seq;
           p.lastInputAt = this.now;
           const wasAds = p.ads;
@@ -2487,13 +2895,35 @@ export class Room {
           }
         }
         p.regen(this.now, dt);
-      } else if (p.isBot && this.now >= p.respawnAt) {
-        this.respawn(p);
+      } else {
+        /*
+         * A body with nobody in it still has a client streaming sixty inputs a
+         * second at it, and nothing was consuming them.
+         *
+         * They piled up behind a queue that only drains inside the branch above,
+         * which is the branch for the living — so a death was enough to build a
+         * forty-deep backlog, and a backlog that deep is the speed-hack
+         * signature. Somebody who blew themselves up with their own rocket was
+         * being flagged for it while they waited to respawn.
+         *
+         * Dropping them is also the right thing on its own terms: they describe
+         * a body that no longer exists, and replaying them into a fresh spawn
+         * would walk it off the spawn point with input from before the death.
+         */
+        if (p.inputQueue.length) {
+          p.lastSeq = p.inputQueue[p.inputQueue.length - 1].seq;
+          p.lastInputAt = this.now;
+          p.inputQueue.length = 0;
+        }
+        p.inputOverflow = 0;
+        if (p.isBot && this.now >= p.respawnAt) this.respawn(p);
       }
 
       p.recordHistory(this.now);
+      ac.decay(p, this.now);
     }
 
+    this.sweepAfk();
     this.stepProjectiles(dt);
     this.stepObjectives(dt);
     this.maybePushScore(dt);

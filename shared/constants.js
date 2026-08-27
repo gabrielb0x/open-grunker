@@ -28,7 +28,7 @@
  * launch nor see coming — a seven-second countdown that draws nothing is worse
  * than no countdown at all.
  */
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 export const API_VERSION = 'v1';
 
 /* ── Simulation ───────────────────────────────────────────────────────────── */
@@ -40,6 +40,123 @@ export const SNAPSHOT_DT = 1 / SNAPSHOT_RATE;
 export const INTERP_DELAY = 0.10;             // remote-entity render lag (s)
 export const MAX_LAG_COMP = 0.30;             // max rewind for hit validation (s)
 export const MAX_INPUTS_PER_PACKET = 12;      // client input batching cap
+
+/* ── Anti-cheat ───────────────────────────────────────────────────────────────
+ *
+ * Every number here answers one thing a client was previously allowed to say
+ * about itself. The room believed all of them, and a userscript that only ever
+ * changed what it *said* was enough to aim through walls, delete spread, rewind
+ * a target a third of a second and run at three times everybody else's speed.
+ *
+ * The rule this file now enforces is the one the netcode was written under and
+ * never checked: a packet may describe what a player did, never what the world
+ * is. Angles are matched against the view the same client has been streaming,
+ * the spread seed is the server's counter and not the client's pick, the rewind
+ * comes off a round trip the server timed itself, and simulation steps are
+ * spent out of a bucket that refills in real time.
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+/**
+ * How far a shot's claimed angles may sit from the view the client streamed.
+ *
+ * The client flushes its input batch immediately before the shoot packet on the
+ * same ordered socket, so an honest shot arrives with its own view one or two
+ * milliseconds old: the base tolerance only has to cover the mouse movement of
+ * a single frame the tick loop had not sampled yet.
+ */
+export const AIM_TOLERANCE = 0.10;            // rad (~5.7°) at zero staleness
+/** Extra tolerance per second of staleness, on top of the measured turn rate. */
+export const AIM_TOLERANCE_RATE = 7.0;        // rad/s
+/** How much of the client's own recent turn rate is forgiven while it flicks. */
+export const AIM_TOLERANCE_TURN_MULT = 2.0;
+/**
+ * How stale the streamed view may be before the gate stops widening.
+ *
+ * Input and shoot travel the same ordered socket, and the room's clock only
+ * moves on a tick, so an honest shot's view is either from this tick or the
+ * last one. Three ticks is already generous; letting the gate keep opening past
+ * that would hand a client a way to *buy* tolerance by going quiet for a moment
+ * before firing, which is the exploit this whole check exists to close.
+ */
+export const AIM_VIEW_MAX_AGE = 0.05;         // s
+/**
+ * And the ceiling on the whole allowance, however fast the mouse is going.
+ *
+ * A hard flick at thirty radians a second covers 0.5 rad inside one tick, so
+ * this never cuts into a real one. What it does cut into is every version of
+ * shooting at something that is not in front of you.
+ */
+export const AIM_TOLERANCE_MAX = 0.60;        // rad (~34°)
+
+/**
+ * Simulation steps refill at exactly real time, with a small burst so a client
+ * that lost a moment to a stall can catch up without being held back.
+ *
+ * A speed hack is nothing but spending more steps than the clock hands out, so
+ * the ceiling on movement is the bucket rather than a speed check anywhere in
+ * the physics.
+ */
+export const INPUT_BUDGET_BURST = 10;         // ticks of catch-up allowed
+export const INPUT_BUDGET_START = 4;          // credit a fresh connection opens with
+/**
+ * How much faster than real time the bucket refills.
+ *
+ * Two machines never agree on how long a second is. A client whose clock runs a
+ * tenth of a percent fast produces a tenth of a percent more ticks than the
+ * server hands out, and over a long match that difference is the whole burst
+ * reserve — so a bucket refilled at *exactly* the tick rate would eventually
+ * flag every honest player with a slightly quick oscillator. Two percent is
+ * two orders of magnitude more than real crystal drift, and a two percent
+ * speed hack is not one.
+ */
+export const INPUT_BUDGET_SLACK = 0.02;
+
+/** Server-measured round trip: a client's own claim is never read again. */
+export const RTT_SAMPLES = 8;                 // median window
+export const RTT_MAX = 1.0;                   // s — anything slower is a stall
+
+/**
+ * How long a body may go without a single meaningful input before the match
+ * stops holding a seat for it.
+ *
+ * "Meaningful" is a key held or the view actually moving — a page left open
+ * still streams sixty empty inputs a second, and an idle heartbeat is exactly
+ * what an anti-AFK cheat sends. The warning lands first, and the fact that it
+ * is the *player* who has to answer it is the whole point.
+ */
+export const AFK_WARN_SEC = 75;
+export const AFK_KICK_SEC = 105;
+/** Below this the view has not moved; it is mouse noise or a stuck axis. */
+export const AFK_VIEW_EPSILON = 0.004;        // rad
+
+/** What the anti-cheat calls each thing it catches. */
+export const CHEAT_KINDS = [
+  'aim',        // shot angles that do not match the streamed view
+  'seq',        // a spread seed picked rather than taken
+  'speed',      // more simulation steps asked for than the clock allows
+  'rate',       // packets faster than the client that sends them can produce
+  'lag',        // a claimed round trip the server never measured
+  'ads',        // a sight picture claimed in a packet rather than held
+  'spread',     // shots that land far closer to centre than the cone allows
+];
+
+/**
+ * What a caught client costs itself.
+ *
+ * Weight is per incident; the running total decays so an unlucky frame on a bad
+ * connection is never the same thing as a suite of them every second. Crossing
+ * `CHEAT_KICK_SCORE` drops the connection and files a report the moderators
+ * read next to the human ones, which is the only outcome that survives the
+ * player simply reconnecting.
+ */
+export const CHEAT_WEIGHTS = {
+  aim: 12, seq: 6, speed: 4, rate: 3, lag: 8, ads: 2, spread: 10,
+};
+export const CHEAT_DECAY_PER_SEC = 0.6;       // points shed per second of clean play
+export const CHEAT_WARN_SCORE = 40;
+export const CHEAT_KICK_SCORE = 120;
+/** Below this many incidents nothing is ever acted on, whatever the score. */
+export const CHEAT_MIN_INCIDENTS = 4;
 
 /* ── Player body ──────────────────────────────────────────────────────────── */
 
@@ -828,6 +945,21 @@ export const REPORT_STATUS = {
 };
 export const REPORT_STATUSES = Object.keys(REPORT_STATUS);
 
+/**
+ * The two piles a moderator actually works in.
+ *
+ * `open` is the to-do list; `handled` is everything that has been settled,
+ * whichever way it went. They are a filter rather than a state — a row is still
+ * stored as one of REPORT_STATUSES — but they are the split the panel is built
+ * around, because "has anybody dealt with this" is the only question being
+ * asked when the queue is opened.
+ */
+export const REPORT_QUEUES = {
+  open: { label: 'OPEN', note: 'Nobody has settled these yet.' },
+  handled: { label: 'HANDLED', note: 'Settled, and kept — this is the history behind a name.' },
+};
+export const REPORT_QUEUE_IDS = Object.keys(REPORT_QUEUES);
+
 /** What a moderator did about it. Shown to the reporter, so keep it plain. */
 export const REPORT_ACTIONS = {
   none: 'Nothing — no rule was broken',
@@ -909,6 +1041,30 @@ export const CLAN_MAX_MEMBERS = 24;
 export const CLAN_MAX_INVITES = 25;
 export const CLAN_INVITE_TTL_HOURS = 72;
 
+/* ── Friends ──────────────────────────────────────────────────────────────────
+ *
+ * A friend list is a small thing that becomes a nuisance vector the moment it
+ * is unbounded, so each ceiling here answers one way of turning it into one:
+ * a list nobody can fill, a request queue nobody can flood, and a name that
+ * cannot be asked twice in a row.
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+/** Friends one account may hold. */
+export const FRIENDS_MAX = 100;
+/** Requests one account may have outstanding, so the button is not a megaphone. */
+export const FRIEND_REQUESTS_MAX = 40;
+/** And how many may be waiting for one account to answer. */
+export const FRIEND_REQUESTS_INBOX_MAX = 60;
+/** Seconds between two requests from the same account. */
+export const FRIEND_REQUEST_COOLDOWN_SEC = 5;
+/**
+ * Level needed to send one.
+ *
+ * The same reasoning as the report button: a fresh throwaway account costs
+ * nothing to make, and an invitation from one is spam with a nickname on it.
+ */
+export const FRIEND_MIN_LEVEL = 2;
+
 /**
  * Tags nobody may found a clan under.
  *
@@ -989,6 +1145,15 @@ export const C2S = {
   SWITCH: 'sw',
   CHAT: 'ch',
   PING: 'pi',
+  /**
+   * The other half of the round trip the server times for itself.
+   *
+   * Sent the instant a PONG lands, carrying the token that PONG issued, so what
+   * the server measures is one real trip out and back — not the interval
+   * between two of the client's own heartbeats, which is what echoing the token
+   * on the *next* PING would have measured.
+   */
+  ACK: 'ak',
   RESPAWN: 'rs',
   CLASS: 'cl',
   TEAM: 'tm',
@@ -1032,6 +1197,7 @@ export const S2C = {
   REPORTSTATE: 'rt',  // may you report anyone at all, and why not
   NUKE: 'nk',         // nuke armed / launched / landed
   GOD: 'gd',          // god mode is on, off, or was refused
+  AFK: 'af',          // you stopped playing: a warning, then the way out
 };
 
 /* ── Misc ─────────────────────────────────────────────────────────────────── */

@@ -3,8 +3,8 @@
 An open-source, self-hostable 3D arena FPS for the browser — heavily inspired by
 Krunker.io, written from scratch. Nine classes, six maps, bunny-hopping,
 crouch-sliding, quickscoping, accounts, XP, **GR**, skins, profile pictures,
-clans, clickable player profiles, player reports, rebindable keyboard *and*
-controller bindings, and a leaderboard. Every weapon is modelled part by part
+clans, friends you can drop into a match with, clickable player profiles, player
+reports, rebindable keyboard *and* controller bindings, and a leaderboard. Every weapon is modelled part by part
 and every skin paints it zone by zone, so a finish reads as a finish rather than
 a coat of paint. Four-minute matches, eight players to a
 room, as many rooms as there are people to fill them, unlimited ammo.
@@ -24,7 +24,11 @@ match, with no reconnect and no loading screen.
 - **No native dependencies.** Accounts live in SQLite through Node's built-in
   `node:sqlite`; the only runtime dependency is `ws`.
 - **Authoritative server** with client-side prediction, entity interpolation and
-  lag-compensated hit registration.
+  lag-compensated hit registration — and it takes the client's word for none of
+  it: shot angles are matched against the view that client streamed, the spread
+  seed is the server's counter, the rewind comes off a round trip the server
+  timed, and simulation steps are spent out of a budget that refills in real
+  time. See [the anti-cheat](#the-anti-cheat).
 - **Shareable matches.** Every room has a code like `FRA:7K2Q`; the address bar
   reads `grunker.g0x.dev/?game=FRA:7K2Q` while you are in one, and sending that
   link to someone puts them in the same match.
@@ -1079,6 +1083,100 @@ open to render its backdrop, and pressing PLAY reconnects.
 The client shows each of these refusals on its own screen, with the action that
 resolves it — *I turned it off*, *send a new link*, *play here instead*.
 
+### The anti-cheat
+
+The netcode was written on one rule and, for a long time, never checked it: **a
+packet may describe what a player did, never what the world is.** Everything a
+client used to be able to simply assert about itself is now decided from state
+the server built. `server/game/anticheat.js` is the bookkeeping; the refusals
+themselves live in the room, next to the thing they refuse.
+
+| What a client used to claim | What decides it now |
+| --- | --- |
+| The angles a shot was fired at | The view that same client has been streaming, within a tolerance that opens with its own measured turn rate |
+| Which spread seed the round uses | The server's own shot counter, incremented per shot |
+| Whether it was aiming down sights | The ADS bit of the freshest input received — the one the trigger was pulled under, which for a quickscope is not yet the one the tick has spent |
+| Its round-trip time, which sets the lag-comp rewind | A round trip the server timed itself: the PONG carries a token, the client answers it in its own frame the moment it lands, and the gap between the two is the measurement |
+| How many simulation steps it is owed | A budget that refills at the tick rate, with a burst for catching up after a stall |
+
+Two properties matter more than the list.
+
+**A refused packet is played, not dropped.** Every check hands back the
+authoritative value, so a caught shot still fires — down the barrel the shooter
+was really pointing. That is what makes a cheat *useless* rather than merely
+detected, and it is also the only behaviour that is safe when the check is
+wrong: a false positive costs a player nothing they would notice, where one that
+silently ate their bullets would be indistinguishable from a broken server.
+
+**Nothing is decided by a machine alone.** Refusals are scored, the score decays
+in real time so an evening of jitter never accumulates, and crossing the kick
+threshold drops the connection *and files a report* — into the same queue the
+scoreboard's report button writes to, with the counts, the evidence and the
+match it happened in, read by a person before anything happens to an account.
+`ANTICHEAT_KICK=false` keeps the refusals and the reports without the kick.
+
+Every check is measured against something the *client itself* said earlier, never
+against the server's own bookkeeping — and the difference is not academic. The
+room counts the rounds it accepts; a client counts the rounds it fires, and the
+room declines plenty of them (a shot a hair inside the fire-rate window, one
+fired into a magazine the server had already emptied, one that landed during a
+reload). An early version compared the two and so flagged every round anybody
+fired after the first divergence: holding the trigger reached the kick threshold
+in about two seconds. `tests/anticheat.test.mjs` plays all nine classes at four
+frame rates with the client's own frame ordering for exactly this reason, and it
+is the half of the suite that has caught things.
+
+There is one residue worth naming rather than hiding: with the shot counter
+taken away from the client, a determined grinder can still *burn* rounds to skip
+a seed it does not like. It cannot hide from the average — the draw in
+`shared/shot.js` puts a round 0.78 of the cone half-angle from point of aim, a
+seed search puts it at 0.04, and forty rounds of that is eight standard errors
+from honest. That gap is what `trackSpread` watches.
+
+### Away from keyboard
+
+Being away is **no key held and no view movement** — not a socket that has gone
+quiet. A page left open on a match still streams sixty inputs a second and
+answers every heartbeat, which is exactly what an anti-AFK script sends, and
+under the old rule an empty body kept its seat and kept feeding the other team
+kills for as long as the browser stayed open.
+
+At `AFK_WARN_SEC` (75) a notice goes up and the automatic respawn stops: a dead
+idle body is not put back into the match by the server or by the client. At
+`AFK_KICK_SEC` (105) the seat goes back and the player lands in the menu. The
+frame that says so is a courtesy — the socket is closed behind it either way, so
+a client that ignored it ends up in the same place a second later.
+
+Spectators are exempt on purpose: watching the map from the menu is what the
+menu's backdrop *is*, and sitting still in it is not idling.
+
+### Friends
+
+A list of names is an address book; the presence on it is the product. `GET
+/friends` answers with the list, both request queues and where everybody is this
+second, so the panel can put a **JOIN** button on the row of anybody in a room
+that has space, and sort the people who can be joined to the top.
+
+A friendship has no direction, so it is one row with the two ids sorted — there
+is no state in which A has B and B does not have A. A *request* does have one,
+so it gets a row per direction; accepting deletes both and writes the pair, and
+two people who happen to ask each other at the same time simply end up friends
+rather than each waiting on the other. Declining tells the asker nothing, which
+is what keeps declining a thing people are willing to do.
+
+Every ceiling (`FRIENDS_MAX`, `FRIEND_REQUESTS_MAX`,
+`FRIEND_REQUESTS_INBOX_MAX`, `FRIEND_REQUEST_COOLDOWN_SEC`, `FRIEND_MIN_LEVEL`)
+answers one way of turning the button into a megaphone.
+
+### Your address is not on your stream
+
+The account panel is what is open while somebody picks a class or reads their
+stats, which is precisely when a screen is most likely to be shared. The email
+address on it is masked — first character of each side and the top-level domain,
+with a run of bullets that is not the length of what it hides — and **SHOW** puts
+the real one back for ten seconds before hiding it again. Nothing about that
+choice is remembered into the next session.
+
 ---
 
 ## Architecture
@@ -1096,7 +1194,7 @@ open-grunker/
 │   ├── index.js       HTTP + WebSocket + static + the admin listener
 │   ├── config.js      env-driven configuration
 │   ├── api/           REST router, /api/v1 endpoints, admin API
-│   ├── game/          room, player, bot AI, hub loop
+│   ├── game/          room, player, bot AI, hub loop, anticheat.js
 │   ├── db/            SQLite schema, migrations and access layer
 │   └── util/          auth, http, logging, rate limiting, static files,
 │                      image sniffing and avatar storage
@@ -1200,12 +1298,24 @@ material per shadow class.
 JSON over one WebSocket at `/ws`, with short opcodes. Roughly **9 KB/s down per
 client** in a full 12-player room. Client→server messages: `hello`, `in` (batched
 input), `sh` (shoot), `ml`, `rl`, `sw`, `ch`, `md` (moderate), `rp` (report),
+`ak` (acknowledge the server's round-trip token),
 `sp` (move the spectator camera), `sm` (spectator mode on/off), `nk` (launch a
 nuke), `gd` (god mode on/off, admins), `pi`, `rs`, `cl`, `pl`, `vo`. Server→client: `we` (welcome + map), `sn`
 (snapshot), `jn`/`lv`, `ht`/`dm`/`kf`/`de`/`sp`, `fx`/`im`/`ex`, `ch`, `cs` (chat
 standing), `rp` (report accepted or refused), `rt` (report standing — may you
 file at all, and why not), `nk` (nuke armed / launched / aborted / detonated),
-`gd` (god mode confirmed or refused), `sc`, `mt`, `am`, `po`, `er`.
+`gd` (god mode confirmed or refused), `af` (away from keyboard — warned, held,
+cleared, or out), `sc`, `mt`, `am`, `po`, `er`.
+
+Two of those are load-bearing rather than informational. `ak` answers the token
+a `po` carried, the instant it lands, and the gap between the two is the round
+trip lag compensation rewinds by — it has its own frame rather than riding the
+next `pi` because the client only pings once a second, so echoing it there would
+have timed *the gap between two heartbeats* and handed the whole room the
+maximum rewind. A client's own `rtt` is still sent, and read only to be compared
+against the measurement. And `sh` carries angles that are matched against the
+view the same client streamed in its last `in`, rather than believed.
+See [the anti-cheat](#the-anti-cheat).
 
 A snapshot carries one entry per player on the roster plus the recipient's own
 body, health and clock. Spectators get one field more — `sa`, the magazine of
@@ -1509,6 +1619,27 @@ when Cloudflare itself is unreachable), `email_required` (400), `bad_token`
 the second factor is still owed) and `totp_invalid` (401, wrong or already
 spent).
 
+### Friends
+
+Every one of these answers with the **whole** payload — the list, both queues and
+who is online — rather than the row it changed, because accepting a request moves
+a name from one column to another and may bring a room code with it, and two
+round trips to draw that is a panel that flickers.
+
+| Method | Path | Body |
+| --- | --- | --- |
+| `GET` | `/friends` | *(auth)* the list with live presence, `incoming`, `outgoing`, and the ceilings |
+| `POST` | `/friends/requests` | *(auth)* `{ username }` — answers `outcome: "sent"`, or `"accepted"` when they had already asked you |
+| `POST` | `/friends/requests/:id/accept` | *(auth)* `:id` is the **asker's** account id |
+| `DELETE` | `/friends/requests/:id` | *(auth)* declining theirs and cancelling yours are the same row |
+| `DELETE` | `/friends/:id` | *(auth)* ends it for both — there was only ever one row |
+
+A friend who is playing comes back with `playing: true` and the `room` code the
+server browser joins by; a full room answers `full: true` and `room: null`,
+because a room nobody can enter is not an invitation. These answer
+`already_friends` (409), `already_asked` (409), `list_full` (409), `too_many`
+(409), `level_too_low` (403) and `rate_limited` (429).
+
 ### Clans
 
 Invite-only, one clan per player, and every rule below is checked here rather
@@ -1640,7 +1771,19 @@ Copy `.env.example` to `.env`; every value has a working default.
 | `REPORTS_DISMISSED_MAX` | `5` | Dismissals inside the window before the button shuts. `0` disables it |
 | `REPORTS_DISMISSED_WINDOW_DAYS` | `7` | How far back dismissals count |
 | `REPORTS_DISMISSED_LOCKOUT_HOURS` | `24` | Measured from the last dismissal, so it clears itself |
-| `REPORTS_KEEP_RESOLVED_DAYS` | `90` | Settled reports are pruned after this; open ones never are |
+| `REPORTS_KEEP_RESOLVED_DAYS` | `0` | Days a *settled* report is kept. `0` keeps it for good — the HANDLED tab is the history behind a name. Open ones are never pruned either way |
+| `FRIENDS_ENABLED` | `true` | The friends panel and everything under `/friends` |
+| `FRIENDS_MAX` | `100` | Friends one account may hold |
+| `FRIEND_REQUESTS_MAX` | `40` | Requests one account may have outstanding |
+| `FRIEND_REQUESTS_INBOX_MAX` | `60` | Requests that may be waiting for one account to answer |
+| `FRIEND_REQUEST_COOLDOWN_SEC` | `5` | Between any two requests from one account |
+| `FRIEND_MIN_LEVEL` | `2` | A fresh throwaway account is not somebody's friend |
+| `AFK_ENABLED` | `true` | Counting away-from-keyboard at all |
+| `AFK_WARN_SEC` | `75` | Seconds without a key held or the view moving before the notice, which also holds the automatic respawn |
+| `AFK_KICK_SEC` | `105` | And before the seat goes back and the player lands in the menu |
+| `ANTICHEAT_ENABLED` | `true` | Scoring refusals and acting on them. The refusals themselves happen regardless |
+| `ANTICHEAT_KICK` | `true` | Drop the connection at the threshold, or only warn, log and file the report |
+| `ANTICHEAT_WARN_SCORE` / `ANTICHEAT_KICK_SCORE` | `40` / `120` | Points, decaying at 0.6/s. A silent-aim shot is 12, a claimed round trip 8 |
 | `CLANS_ENABLED` | `true` | Founding and joining clans at all |
 | `CLAN_JOIN_LEVEL` | `5` | Needed to accept an invitation |
 | `CLAN_CREATE_LEVEL` / `CLAN_CREATE_COST` | `15` / `1000` | What founding one takes, and what it costs in GR |
@@ -1734,8 +1877,9 @@ Set `ADMIN_PASSWORD` in `.env` and restart. Five tabs:
   account also shows what has been reported about it and what it has reported
   about others. **Guests appear here too, at the top of the first page, for as
   long as they are connected** — see below.
-- **Reports** — the moderation queue, with the count of open reports on the tab
-  itself. See below.
+- **Reports** — the moderation queue in two tabs, OPEN and HANDLED, with the
+  count of open reports on the tab itself. Settled reports are kept rather than
+  aged out. See below.
 - **Clans** — every clan with its owner, roster and outstanding invitations.
   **Verifying** one turns its tag gold everywhere a nickname is drawn, and that
   is all verification does — which is why it is a judgement call rather than a
@@ -1786,9 +1930,25 @@ bars and arcs.
 
 ### Working the report queue
 
-Open reports sort first however old they are: the queue is a to-do list, and the
-status filter is what turns it back into a history. Selecting one shows
-everything needed to settle it without leaving the pane:
+Two tabs, because "has anybody dealt with this" is the only question being asked
+when the queue is opened:
+
+- **OPEN** — the to-do list, read oldest-first: the oldest unanswered report is
+  the one somebody has been waiting on longest.
+- **HANDLED** — everything settled, whichever way it went, read newest-first,
+  with a verdict filter for narrowing it to `actioned` or `rejected`.
+
+Both tabs carry their own size, so how much is waiting never takes a click to
+find out. Settled reports are **kept**: they used to be deleted on a ninety-day
+timer, which threw away exactly what anybody wants when the same name turns up
+again. `REPORTS_KEEP_RESOLVED_DAYS` can put a horizon back if an operator wants
+one; open reports were never pruned and still are not.
+
+Reports filed by the anti-cheat land in the same queue, under the reporter name
+`anti-cheat`, carrying the counts and one line of evidence per kind. Nothing it
+catches results in a ban without a person reading that first.
+
+Selecting a report shows everything needed to settle it without leaving the pane:
 
 - **Who was reported** — their picture, level, K/D, whether they are already
   banned, muted or online right now, and the address they played from (the only
