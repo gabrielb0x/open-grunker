@@ -1159,39 +1159,172 @@ kbd {
 #menu.in-game .menu-bottom,
 #menu.in-game .mb-pill { display: none; }
 
-/* ── Panels ──────────────────────────────────────────────────────────── */
+/* ── Panels ──────────────────────────────────────────────────────────────
+   The panel is two columns: a rail you navigate with and a page you read.
+   Neither scrolls the other — the rail is short enough to never need it and
+   the page is the only thing that moves, which is what makes "where am I"
+   answerable at a glance. Below 900px the rail lies down into a horizontal
+   scroller across the top, because a sidebar on a phone is a sidebar you
+   cannot see the page past.
+   ──────────────────────────────────────────────────────────────────────── */
 
+/* Deliberately a tint rather than a frost. `backdrop-filter` on a full-screen
+   sheet makes the compositor copy and blur the region behind it every frame,
+   and behind this one is a WebGL canvas that repaints every frame — the same
+   reason the HUD corners gave theirs up. A slightly heavier tint buys the same
+   separation for nothing. */
 #menuPanel {
   position: absolute; inset: 0; z-index: 4; display: grid; place-items: center;
-  padding: 20px; background: rgba(4,6,10,.84);
+  padding: 20px;
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(10,14,22,.72), rgba(3,5,9,.9)),
+    rgba(4,6,10,.4);
   animation: panelIn .16s ease-out;
 }
 .panel-card {
-  position: relative; width: min(1120px, 96vw); max-height: min(86vh, 900px);
-  display: flex; flex-direction: column;
-  background: rgba(11,15,21,.97); border: 1px solid var(--line-2); border-radius: var(--r-lg);
+  position: relative; width: min(1180px, 96vw); max-height: min(88vh, 920px);
+  display: grid; grid-template-columns: 234px minmax(0, 1fr);
+  /* The row is pinned to the card rather than left to size itself to whatever
+     is in it. An `auto` row grows to its content, and a card that clips its
+     overflow then simply cuts a long page off at the bottom — the scroller
+     inside it never gets a height to scroll within. `minmax(0, 1fr)` is what
+     makes the page the thing that moves. */
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(16,21,29,.985), rgba(10,13,19,.985));
+  border: 1px solid var(--line-2); border-radius: var(--r-lg);
   box-shadow: var(--shadow);
 }
-.panel-scroll { overflow: auto; padding: 20px 22px 24px; }
 
-
-
-/* The right padding keeps the last tab clear of the close button. */
-.tabs { display: flex; gap: 2px; flex-wrap: wrap; flex: none;
-  padding: 0 46px 0 22px; border-bottom: 1px solid var(--line); background: rgba(15,20,28,.9);
-  border-radius: var(--r-lg) var(--r-lg) 0 0; }
-.panel-card > .modal-x { z-index: 2; }
-.tab {
-  padding: 10px 16px; font: inherit; font-size: 12px; letter-spacing: .16em; cursor: pointer;
-  color: var(--muted); background: transparent; border: none; border-bottom: 2px solid transparent;
-  transition: all .14s;
+/* — The rail — */
+.panel-nav {
+  display: flex; flex-direction: column; min-height: 0;
+  padding: 18px 12px 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,.008));
+  border-right: 1px solid var(--line);
 }
-.tab:hover { color: var(--text); background: rgba(255,255,255,.04); }
-.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.pn-brand { padding: 0 10px 14px; }
+.pn-brand b {
+  display: block; font-size: 17px; font-weight: 800; letter-spacing: .1em; line-height: 1;
+}
+.pn-brand b span { color: var(--accent); }
+.pn-brand small {
+  display: block; margin-top: 5px; font-size: 8.5px; letter-spacing: .28em; color: var(--dim);
+}
+
+.pn-search { position: relative; display: block; margin: 0 2px 12px; }
+/* The magnifier, drawn rather than fetched: a ring and a handle is two
+   pseudo-elements and no asset, and it tints with the rest of the box. */
+.pn-search::before,
+.pn-search::after { content: ""; position: absolute; pointer-events: none; opacity: .6; }
+.pn-search::before {
+  left: 11px; top: calc(50% - 2px); width: 9px; height: 9px;
+  border: 1.5px solid var(--muted); border-radius: 50%;
+}
+.pn-search::after {
+  left: 19px; top: calc(50% + 4px); width: 5px; height: 1.5px;
+  background: var(--muted); transform: rotate(45deg); transform-origin: left center;
+}
+.pn-search input {
+  width: 100%; padding: 9px 10px 9px 31px; font: inherit; font-size: 12px; color: var(--text);
+  background: rgba(0,0,0,.3); border: 1px solid var(--line); border-radius: var(--r-sm);
+  outline: none; transition: border-color .14s, background .14s;
+}
+.pn-search input::placeholder { color: var(--dim); }
+.pn-search input:focus { border-color: var(--accent); background: rgba(0,0,0,.45); }
+/* Safari draws its own X over ours and it does not match anything else here. */
+.pn-search input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+
+.pn-rail { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-bottom: 4px; }
+.pn-rail::-webkit-scrollbar { width: 6px; }
+.pn-rail::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: var(--r-pill); }
+.pn-group + .pn-group { margin-top: 14px; }
+.pn-group h6 {
+  margin: 0 0 6px; padding: 0 10px;
+  font-size: 8.5px; font-weight: 600; letter-spacing: .26em; color: var(--dim);
+}
+.pn-none { margin: 18px 10px; font-size: 12px; color: var(--dim); }
+
+/* One rail entry: an icon, a word, and a bar that says which one you are on. */
+.tab {
+  position: relative; display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 9px 11px; margin-bottom: 2px;
+  font: inherit; font-size: 12px; letter-spacing: .08em; text-align: left; cursor: pointer;
+  color: var(--muted); background: transparent; border: none; border-radius: var(--r-sm);
+  transition: color .14s, background .14s, transform .12s cubic-bezier(.2,.8,.3,1);
+}
+.tab .ic { flex: none; opacity: .8; transition: opacity .14s, transform .18s cubic-bezier(.2,.8,.3,1); }
+.tab .t-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab::before {
+  content: ""; position: absolute; left: 0; top: 50%; width: 3px; height: 0;
+  transform: translateY(-50%); border-radius: var(--r-pill);
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+  transition: height .18s cubic-bezier(.2,.8,.3,1);
+}
+.tab:hover { color: var(--text); background: rgba(255,255,255,.05); transform: translateX(2px); }
+.tab:hover .ic { opacity: 1; }
+.tab.active {
+  color: var(--text); background: rgba(245,166,35,.1);
+  box-shadow: inset 0 0 0 1px rgba(245,166,35,.2);
+}
+.tab.active::before { height: 60%; }
+.tab.active .ic { color: var(--accent); opacity: 1; transform: scale(1.06); }
+
+/* — The page — */
+.panel-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.panel-top {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex: none;
+  padding: 20px 22px 14px; border-bottom: 1px solid var(--line);
+}
+.pt-id { min-width: 0; }
+.panel-top h2 {
+  margin: 0; font-size: 21px; font-weight: 700; letter-spacing: .04em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.panel-top p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+/* The close button sits in the header's flow now, so it stops overlapping
+   whatever the first page happens to put in its top-right corner. */
+.panel-top .modal-x { position: static; flex: none; width: 32px; height: 32px; border-radius: var(--r-sm); }
+.panel-top .modal-x:hover { background: rgba(255,255,255,.07); }
+
+/* The page, and the only thing on this panel that scrolls. The gutter is
+   reserved whether or not a given page needs one, so moving between a short
+   tab and a long one does not shift the content sideways under the cursor. */
+.panel-scroll {
+  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  padding: 20px 22px 26px;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+.panel-scroll::-webkit-scrollbar { width: 10px; }
+.panel-scroll::-webkit-scrollbar-track { background: transparent; }
+.panel-scroll::-webkit-scrollbar-thumb {
+  background: var(--line-2); border-radius: var(--r-pill);
+  border: 3px solid transparent; background-clip: content-box;
+}
+.panel-scroll::-webkit-scrollbar-thumb:hover { background: var(--dim); background-clip: content-box; }
 
 .tab-panel { display: none; animation: panelIn .22s ease-out; }
 .tab-panel.active { display: block; }
 @keyframes panelIn { from { opacity: 0; transform: translateY(8px); } }
+
+@media (max-width: 900px) {
+  .panel-card { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .panel-nav {
+    border-right: none; border-bottom: 1px solid var(--line);
+    padding: 12px 12px 8px;
+  }
+  .pn-brand { display: none; }
+  .pn-rail { display: flex; gap: 6px; overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; }
+  .pn-group { display: contents; }
+  .pn-group h6 { display: none; }
+  .pn-group + .pn-group { margin-top: 0; }
+  .tab { width: auto; flex: none; margin-bottom: 0; white-space: nowrap; }
+  .tab::before { display: none; }
+  .panel-top { padding: 14px 16px 10px; }
+  .panel-top h2 { font-size: 18px; }
+  .panel-scroll { padding: 16px; }
+}
 
 .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 14px; }
 .panel-head h3 { margin: 0; font-size: 14px; letter-spacing: .22em; }
@@ -1801,77 +1934,281 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
 .pname:hover { color: var(--accent); }
 .pname:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
-/* ═══ Player card ══════════════════════════════════════════════════════
-   The one profile view, opened from anywhere a name is drawn.
+/* ═══ Player card ══════════════════════════════════════════════════════════
+   The card is painted in its owner's colour. `--pc-accent` is set on the shell
+   by the renderer and everything below is derived from it — the banner wash,
+   the pattern, the frame, the level bar, the buttons — so one custom property
+   is the whole of "this is somebody's card" and no rule here names a colour of
+   its own.
 
-   Laid out across rather than down. A profile is three things — who somebody
-   is, what their career says, and what they have been playing — and stacking
-   them made a column tall enough to scroll on a laptop for a card whose whole
-   job is to be read at a glance and dismissed. So: one hero band with the
-   identity on the left and the three figures anybody actually looks for on
-   the right, then two columns side by side under it. Below 900px wide there
-   is no room for two columns and it folds back into one.
-   ═══════════════════════════════════════════════════════════════════════ */
+   `color-mix` does the derivation. It keeps a hue somebody picked recognisable
+   at every strength instead of the usual trick of stacking translucent white
+   over it, which turns every colour towards the same grey.
+   ═════════════════════════════════════════════════════════════════════════ */
 
-/* Both classes, because `.modal-card` is declared later in this file and would
-   otherwise win the width and the padding on source order alone. The card that
-   lost that argument rendered at four hundred pixels with its name centred —
-   which is most of what made this thing read as a narrow vertical strip. */
-.modal-card.pc-card { width: min(1080px, 96vw); max-height: 90vh; overflow: auto; padding: 0; }
+.modal-card.pc-card {
+  width: min(1080px, 96vw); max-height: 90vh; overflow: auto; padding: 0;
+  border-color: color-mix(in srgb, var(--pc-accent, var(--accent)) 34%, var(--line-2));
+}
 .pc-body { display: flex; flex-direction: column; }
 
-/* — The hero band — */
-.pc-hero {
-  display: grid; grid-template-columns: 96px minmax(0, 1fr) auto;
-  gap: 22px; align-items: center;
-  padding: 26px 30px 24px;
+.pc-shell {
+  --pc-accent: var(--accent);
+  /* One readable ink for text laid over the accent, and one dark ground the
+     accent is washed onto. Both follow the accent so a pale colour and a deep
+     one are both legible without a second decision anywhere. */
+  --pc-ink: color-mix(in srgb, var(--pc-accent) 82%, #ffffff);
+  --pc-deep: color-mix(in srgb, var(--pc-accent) 16%, #0a0d13);
+  display: flex; flex-direction: column;
+}
+
+/* — The banner — */
+.pc-banner {
+  position: relative; overflow: hidden;
+  padding: 26px 30px 20px;
   background:
-    radial-gradient(120% 180% at 0% 0%, rgba(245,166,35,.13), transparent 58%),
-    linear-gradient(180deg, var(--panel-2), var(--panel));
-  border-bottom: 1px solid var(--line);
+    radial-gradient(120% 190% at 0% 0%, color-mix(in srgb, var(--pc-accent) 38%, transparent), transparent 62%),
+    linear-gradient(165deg, var(--pc-deep), var(--panel));
+  border-bottom: 1px solid color-mix(in srgb, var(--pc-accent) 26%, var(--line));
+}
+/* A hairline of the accent along the very top, so the colour reads even on a
+   card whose owner chose the quietest possible everything else. */
+.pc-banner::after {
+  content: ""; position: absolute; inset: 0 0 auto; height: 3px;
+  background: linear-gradient(90deg, var(--pc-accent), transparent 78%);
+}
+.pc-shell[data-intensity="subtle"] .pc-banner { --pc-deep: color-mix(in srgb, var(--pc-accent) 8%, #0a0d13); }
+.pc-shell[data-intensity="loud"] .pc-banner { --pc-deep: color-mix(in srgb, var(--pc-accent) 30%, #0a0d13); }
+.pc-shell[data-glow="on"] .pc-banner {
+  box-shadow: inset 0 34px 90px -40px color-mix(in srgb, var(--pc-accent) 65%, transparent);
+}
+
+/* — Backdrops —
+   Every one is a repeating gradient over the banner: no images, no requests,
+   and each one tints itself from the accent like everything else here. */
+.pc-pattern {
+  position: absolute; inset: 0; pointer-events: none;
+  --p-ink: color-mix(in srgb, var(--pc-accent) 42%, transparent);
+  opacity: .5;
+}
+.pc-shell[data-intensity="subtle"] .pc-pattern { opacity: .28; }
+.pc-shell[data-intensity="loud"] .pc-pattern { opacity: .78; }
+.pc-shell[data-pattern="none"] .pc-pattern { display: none; }
+
+.pc-shell[data-pattern="grid"] .pc-pattern {
+  background:
+    repeating-linear-gradient(0deg, var(--p-ink) 0 1px, transparent 1px 26px),
+    repeating-linear-gradient(90deg, var(--p-ink) 0 1px, transparent 1px 26px);
+  mask: radial-gradient(120% 130% at 12% 0%, #000 20%, transparent 78%);
+}
+.pc-shell[data-pattern="scan"] .pc-pattern {
+  background: repeating-linear-gradient(0deg, var(--p-ink) 0 1px, transparent 1px 5px);
+  mask: linear-gradient(160deg, #000 15%, transparent 85%);
+}
+.pc-shell[data-pattern="diag"] .pc-pattern {
+  background: repeating-linear-gradient(135deg,
+    var(--p-ink) 0 10px, transparent 10px 26px);
+  mask: linear-gradient(105deg, #000, transparent 72%);
+}
+.pc-shell[data-pattern="dots"] .pc-pattern {
+  background: radial-gradient(var(--p-ink) 1.4px, transparent 1.5px) 0 0 / 15px 15px;
+  mask: radial-gradient(110% 120% at 8% 10%, #000 15%, transparent 74%);
+}
+.pc-shell[data-pattern="rays"] .pc-pattern {
+  background: repeating-conic-gradient(from 200deg at 6% -10%,
+    var(--p-ink) 0deg 2.2deg, transparent 2.2deg 9deg);
+  mask: linear-gradient(120deg, #000, transparent 70%);
+}
+.pc-shell[data-pattern="hex"] .pc-pattern {
+  background:
+    repeating-linear-gradient(60deg, var(--p-ink) 0 1px, transparent 1px 22px),
+    repeating-linear-gradient(-60deg, var(--p-ink) 0 1px, transparent 1px 22px),
+    repeating-linear-gradient(0deg, var(--p-ink) 0 1px, transparent 1px 38px);
+  mask: radial-gradient(120% 140% at 90% 0%, #000 10%, transparent 76%);
+}
+.pc-shell[data-pattern="topo"] .pc-pattern {
+  background:
+    repeating-radial-gradient(circle at 18% 120%, transparent 0 16px, var(--p-ink) 16px 17px),
+    repeating-radial-gradient(circle at 88% -20%, transparent 0 21px, var(--p-ink) 21px 22px);
+  mask: linear-gradient(#000, transparent 88%);
+}
+.pc-shell[data-pattern="circuit"] .pc-pattern {
+  background:
+    repeating-linear-gradient(0deg, var(--p-ink) 0 1px, transparent 1px 34px),
+    repeating-linear-gradient(90deg, var(--p-ink) 0 1px, transparent 1px 34px),
+    radial-gradient(var(--p-ink) 2px, transparent 2.5px) 17px 17px / 34px 34px;
+  mask: linear-gradient(130deg, #000 10%, transparent 80%);
+}
+.pc-shell[data-pattern="noise"] .pc-pattern {
+  background:
+    repeating-conic-gradient(var(--p-ink) 0% 25%, transparent 0% 50%) 0 0 / 4px 4px,
+    repeating-conic-gradient(var(--p-ink) 0% 25%, transparent 0% 50%) 1px 3px / 7px 7px;
+  opacity: .22;
+  mask: linear-gradient(150deg, #000, transparent 78%);
+}
+.pc-shell[data-intensity="loud"][data-pattern="noise"] .pc-pattern { opacity: .34; }
+.pc-shell[data-pattern="camo"] .pc-pattern {
+  background:
+    radial-gradient(closest-side, var(--p-ink) 96%, transparent) 4% 22% / 84px 58px,
+    radial-gradient(closest-side, var(--p-ink) 96%, transparent) 34% 74% / 66px 44px,
+    radial-gradient(closest-side, var(--p-ink) 96%, transparent) 62% 12% / 96px 52px,
+    radial-gradient(closest-side, var(--p-ink) 96%, transparent) 86% 62% / 74px 62px;
+  background-repeat: no-repeat;
+  opacity: .3;
+}
+.pc-shell[data-pattern="bokeh"] .pc-pattern {
+  background:
+    radial-gradient(closest-side, var(--p-ink) 70%, transparent) 8% 18% / 120px 120px,
+    radial-gradient(closest-side, var(--p-ink) 60%, transparent) 30% 82% / 74px 74px,
+    radial-gradient(closest-side, var(--p-ink) 55%, transparent) 72% 26% / 150px 150px,
+    radial-gradient(closest-side, var(--p-ink) 65%, transparent) 92% 74% / 90px 90px;
+  background-repeat: no-repeat;
+  opacity: .34;
+}
+
+/* — The hero row — */
+.pc-hero {
+  position: relative; z-index: 1;
+  display: grid; grid-template-columns: 112px minmax(0, 1fr) auto;
+  gap: 22px; align-items: center;
 }
 .pc-avatar {
-  position: relative; width: 96px; height: 96px; border-radius: 50%; overflow: hidden;
+  position: relative; width: 112px; height: 112px; border-radius: 50%; overflow: hidden;
   display: grid; place-items: center; flex: none;
-  border: 1px solid var(--line-2); box-shadow: 0 10px 26px rgba(0,0,0,.45), var(--ring);
+  box-shadow: 0 12px 30px rgba(0,0,0,.5), var(--ring);
 }
 .pc-avatar .av-img { width: 100%; height: 100%; object-fit: cover; }
-.pc-avatar .av-initial { font: 800 38px/1 var(--hud-font); color: rgba(255,255,255,.9); }
-.pc-id { min-width: 0; }
-.pc-hero .pc-id h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 10px;
-  font-size: 24px; letter-spacing: .03em; text-align: left; }
-.pc-name { letter-spacing: .02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pc-id .ph-tags { flex-wrap: wrap; margin-bottom: 12px; }
+.pc-avatar .av-initial { font: 800 44px/1 var(--hud-font); color: rgba(255,255,255,.92); }
 
-/* Level, XP bar and the count, all on one line under the name. */
+/* Frames. Each is the same picture wearing a different edge. */
+.pc-shell[data-frame="none"] .pc-avatar { box-shadow: var(--ring); }
+.pc-shell[data-frame="ring"] .pc-avatar {
+  border: 2px solid color-mix(in srgb, var(--pc-accent) 72%, #ffffff);
+}
+.pc-shell[data-frame="glow"] .pc-avatar {
+  border: 2px solid color-mix(in srgb, var(--pc-accent) 80%, #ffffff);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--pc-accent) 22%, transparent),
+              0 0 34px color-mix(in srgb, var(--pc-accent) 55%, transparent);
+}
+.pc-shell[data-frame="dashed"] .pc-avatar {
+  border: 2px dashed color-mix(in srgb, var(--pc-accent) 70%, #ffffff);
+}
+.pc-shell[data-frame="square"] .pc-avatar {
+  border-radius: var(--r); border: 2px solid color-mix(in srgb, var(--pc-accent) 70%, #ffffff);
+}
+.pc-shell[data-frame="hex"] .pc-avatar {
+  border-radius: 0; border: none;
+  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
+  background: color-mix(in srgb, var(--pc-accent) 30%, transparent);
+}
+
+.pc-id { min-width: 0; }
+.pc-hero .pc-id h3 {
+  display: flex; align-items: center; gap: 6px; margin: 0 0 6px;
+  font-size: 25px; letter-spacing: .03em; text-align: left;
+}
+.pc-name { letter-spacing: .02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-flair {
+  margin: 0 0 9px; font-size: 12.5px; font-style: italic; letter-spacing: .02em;
+  color: var(--pc-ink);
+}
+.pc-id .ph-tags { flex-wrap: wrap; margin-bottom: 10px; }
+
+/* Where they are right now, when they let you see it. */
+.pc-live {
+  display: inline-flex; align-items: center; gap: 7px; margin-bottom: 11px;
+  padding: 5px 11px 5px 8px; border-radius: var(--r-pill);
+  font-size: 10.5px; letter-spacing: .14em;
+  background: rgba(0,0,0,.32); border: 1px solid var(--line);
+}
+.pc-live .ic { width: 14px; height: 14px; flex: none; }
+.pc-live i { font-style: normal; letter-spacing: .04em; color: var(--muted); }
+.pc-live.playing { color: var(--green); border-color: rgba(77,219,122,.4); }
+.pc-live.online { color: var(--pc-ink); border-color: color-mix(in srgb, var(--pc-accent) 40%, var(--line)); }
+.pc-live.off { color: var(--dim); }
+.pc-live b { letter-spacing: .16em; }
+
 .pc-xp { display: flex; align-items: center; gap: 12px; }
 .pc-lv { display: flex; align-items: baseline; gap: 5px; flex: none; }
-.pc-lv b { font-size: 22px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.pc-lv b { font-size: 22px; color: var(--pc-ink); font-variant-numeric: tabular-nums; }
 .pc-lv small { font-size: 9px; letter-spacing: .18em; color: var(--muted); }
 .pc-bar {
   position: relative; flex: 1; min-width: 80px; height: 8px; overflow: hidden;
-  background: rgba(255,255,255,.07); border-radius: var(--r-pill);
+  background: rgba(255,255,255,.08); border-radius: var(--r-pill);
 }
-.pc-bar i { position: absolute; inset: 0 auto 0 0; border-radius: var(--r-pill);
-  background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
-.pc-xp-num { flex: none; font: 600 10.5px/1 var(--mono); color: var(--muted);
-  font-variant-numeric: tabular-nums; }
+.pc-bar i {
+  position: absolute; inset: 0 auto 0 0; border-radius: var(--r-pill);
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--pc-accent) 88%, #ffffff), var(--pc-accent));
+}
+.pc-xp-num {
+  flex: none; font: 600 10.5px/1 var(--mono); color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
 
-/* The three figures on the right of the band. */
+/* The pinned figures. */
 .pc-headline { display: flex; gap: 10px; flex: none; }
 .pc-big {
-  min-width: 92px; padding: 12px 16px; text-align: center;
-  background: rgba(255,255,255,.035); border: 1px solid var(--line);
+  min-width: 94px; padding: 13px 16px; text-align: center;
+  background: rgba(0,0,0,.28);
+  border: 1px solid color-mix(in srgb, var(--pc-accent) 22%, var(--line));
   border-radius: var(--r); box-shadow: var(--ring);
 }
-.pc-big b { display: block; font: 700 24px/1.1 var(--hud-font); font-variant-numeric: tabular-nums; }
+.pc-big b {
+  display: block; font: 700 24px/1.1 var(--hud-font); font-variant-numeric: tabular-nums;
+  color: var(--pc-ink);
+}
 .pc-big span { font-size: 9px; letter-spacing: .18em; color: var(--muted); }
 
-/* — The two columns — */
+.pc-bio {
+  position: relative; z-index: 1; max-width: 68ch;
+  margin: 16px 0 0; padding-left: 11px;
+  font-size: 13px; line-height: 1.55; color: #cbd6e4;
+  border-left: 2px solid color-mix(in srgb, var(--pc-accent) 55%, transparent);
+}
+
+/* — What you can do about them — */
+.pc-actions {
+  position: relative; z-index: 1;
+  display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px;
+}
+.pc-act {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 9px 15px; font: inherit; font-size: 11px; letter-spacing: .14em; cursor: pointer;
+  color: var(--text); background: rgba(0,0,0,.34);
+  border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  transition: transform .12s cubic-bezier(.2,.8,.3,1), background .14s, border-color .14s, color .14s;
+}
+.pc-act .ic { width: 16px; height: 16px; flex: none; }
+.pc-act:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--pc-accent) 60%, var(--line-2));
+  background: rgba(0,0,0,.5);
+}
+.pc-act.primary {
+  color: #12161d; font-weight: 700; border-color: transparent;
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--pc-accent) 88%, #ffffff), var(--pc-accent));
+}
+.pc-act.primary:hover { filter: brightness(1.07); }
+.pc-act.danger { color: var(--danger); border-color: rgba(229,72,77,.42); background: transparent; }
+.pc-act.danger:hover { background: rgba(229,72,77,.14); border-color: var(--danger); }
+/* A statement rather than a button: "you are friends", "they are not taking
+   requests". Same shape so the row reads evenly, no hover so it reads as fact. */
+.pc-act.flat { cursor: default; color: var(--pc-ink); background: rgba(0,0,0,.24); }
+.pc-act.flat:hover { transform: none; background: rgba(0,0,0,.24); border-color: var(--line-2); }
+.pc-act.flat.muted { color: var(--dim); }
+.pc-act:disabled { opacity: .5; cursor: progress; }
+
+/* — The two columns under it — */
 .pc-cols { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); }
 .pc-col { padding: 20px 26px 26px; min-width: 0; }
 .pc-col + .pc-col { border-left: 1px solid var(--line); }
-.pc-sub { margin: 0 0 12px; font-size: 10.5px; letter-spacing: .22em; color: var(--muted); }
+.pc-sub {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 12px;
+  font-size: 10.5px; letter-spacing: .22em; color: var(--muted);
+}
+.pc-sub .ic { width: 15px; height: 15px; color: var(--pc-accent); opacity: .85; }
 
 .pc-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .pc-cell {
@@ -1902,20 +2239,171 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
 .pcm-score i { font-style: normal; font-size: 9px; letter-spacing: .1em; color: var(--dim); margin-left: 3px; }
 .pcm-when { font-size: 10.5px; color: var(--dim); white-space: nowrap; }
 
+/* — Layouts —
+   Showcase gives the picture the room; compact drops to one column and trims
+   the chrome, which is the one that survives a phone. */
+.pc-shell[data-layout="showcase"] .pc-banner { padding: 34px 32px 24px; }
+.pc-shell[data-layout="showcase"] .pc-hero { grid-template-columns: 152px minmax(0, 1fr); }
+.pc-shell[data-layout="showcase"] .pc-avatar { width: 152px; height: 152px; }
+.pc-shell[data-layout="showcase"] .pc-avatar .av-initial { font-size: 60px; }
+.pc-shell[data-layout="showcase"] .pc-hero .pc-id h3 { font-size: 30px; }
+.pc-shell[data-layout="showcase"] .pc-headline { grid-column: 1 / -1; margin-top: 4px; }
+.pc-shell[data-layout="showcase"] .pc-big { flex: 1; }
+
+.pc-shell[data-layout="compact"] .pc-banner { padding: 20px 22px 16px; }
+.pc-shell[data-layout="compact"] .pc-hero { grid-template-columns: 72px minmax(0, 1fr); gap: 16px; }
+.pc-shell[data-layout="compact"] .pc-avatar { width: 72px; height: 72px; }
+.pc-shell[data-layout="compact"] .pc-avatar .av-initial { font-size: 30px; }
+.pc-shell[data-layout="compact"] .pc-hero .pc-id h3 { font-size: 20px; }
+.pc-shell[data-layout="compact"] .pc-headline { grid-column: 1 / -1; }
+.pc-shell[data-layout="compact"] .pc-big { flex: 1; min-width: 0; padding: 9px 10px; }
+.pc-shell[data-layout="compact"] .pc-big b { font-size: 19px; }
+.pc-shell[data-layout="compact"] .pc-cols { grid-template-columns: minmax(0, 1fr); }
+.pc-shell[data-layout="compact"] .pc-col + .pc-col { border-left: none; border-top: 1px solid var(--line); }
+
 /* Loading and "no such account" wear the card without pretending to fill it. */
 .pc-stub { padding: 40px 30px; text-align: center; }
 .pc-body .pc-stub h3 { margin: 0 0 6px; font-size: 20px; letter-spacing: .04em; }
 .empty.small { padding: 8px 0; text-align: left; }
 
 @media (max-width: 900px) {
-  .pc-hero { grid-template-columns: 72px minmax(0, 1fr); gap: 16px; padding: 20px; }
-  .pc-avatar { width: 72px; height: 72px; }
-  .pc-avatar .av-initial { font-size: 30px; }
+  .pc-hero,
+  .pc-shell[data-layout="showcase"] .pc-hero { grid-template-columns: 72px minmax(0, 1fr); gap: 16px; }
+  .pc-banner,
+  .pc-shell[data-layout="showcase"] .pc-banner { padding: 20px; }
+  .pc-avatar,
+  .pc-shell[data-layout="showcase"] .pc-avatar { width: 72px; height: 72px; }
+  .pc-avatar .av-initial,
+  .pc-shell[data-layout="showcase"] .pc-avatar .av-initial { font-size: 30px; }
+  .pc-hero .pc-id h3,
+  .pc-shell[data-layout="showcase"] .pc-hero .pc-id h3 { font-size: 20px; }
   .pc-headline { grid-column: 1 / -1; }
   .pc-big { flex: 1; min-width: 0; }
   .pc-cols { grid-template-columns: minmax(0, 1fr); }
-  .pc-col + .pc-col { border-left: 0; border-top: 1px solid var(--line); }
-  .pc-col { padding: 18px 20px 22px; }
+  .pc-col + .pc-col { border-left: none; border-top: 1px solid var(--line); }
+}
+
+/* ═══ Card editor ══════════════════════════════════════════════════════════
+   Controls on the left, the real card on the right. The preview is the same
+   renderer the card itself uses, scaled down — an editor previewing something
+   built by different code is an editor that drifts.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+.card-editor {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  gap: 22px; align-items: start;
+}
+.ce-controls { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.ce-block {
+  padding: 15px 16px; border-radius: var(--r);
+  background: var(--panel); border: 1px solid var(--line);
+}
+.ce-block h4 {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 9px;
+  font-size: 10.5px; letter-spacing: .22em; color: var(--muted);
+}
+.ce-block h4 .ic { width: 15px; height: 15px; color: var(--accent); }
+.ce-note { margin: 0 0 10px; font-size: 11.5px; line-height: 1.5; color: var(--dim); }
+.ce-note:last-child { margin: 8px 0 0; }
+
+.ce-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ce-chips.inline { flex: 1; justify-content: flex-end; }
+.ce-chip {
+  padding: 6px 11px; font: inherit; font-size: 11px; letter-spacing: .06em; cursor: pointer;
+  color: var(--muted); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: var(--r-pill);
+  transition: color .14s, border-color .14s, background .14s, transform .12s cubic-bezier(.2,.8,.3,1);
+}
+.ce-chip:hover { color: var(--text); border-color: var(--line-2); transform: translateY(-1px); }
+.ce-chip.on {
+  color: #12161d; font-weight: 700; border-color: transparent;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+
+.ce-row {
+  display: flex; align-items: center; gap: 12px; margin-top: 10px;
+  font-size: 9.5px; letter-spacing: .18em; color: var(--muted);
+}
+
+.ce-colour { display: flex; align-items: center; gap: 12px; margin-top: 11px; }
+/* Dimmed rather than hidden or disabled while the card is on auto. The swatches
+   are what explain what "pick my own" would even do, and reaching for one is
+   itself the decision — it switches the card over rather than doing nothing. */
+.ce-colour.off { opacity: .55; }
+.ce-colour.off:hover, .ce-colour:focus-within { opacity: 1; }
+.ce-colour input[type="color"] {
+  width: 46px; height: 34px; padding: 0; flex: none; cursor: pointer;
+  background: none; border: 1px solid var(--line-2); border-radius: var(--r-sm);
+}
+.ce-colour input[type="color"]::-webkit-color-swatch-wrapper { padding: 3px; }
+.ce-colour input[type="color"]::-webkit-color-swatch { border: none; border-radius: 5px; }
+.ce-swatches { display: flex; flex-wrap: wrap; gap: 5px; }
+.ce-sw {
+  width: 22px; height: 22px; padding: 0; cursor: pointer;
+  background: var(--sw); border: 1px solid rgba(255,255,255,.16); border-radius: var(--r-xs);
+  transition: transform .12s cubic-bezier(.2,.8,.3,1), box-shadow .14s;
+}
+.ce-sw:hover { transform: translateY(-2px) scale(1.06); }
+.ce-sw.on { box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px var(--sw); }
+
+.ce-text {
+  display: flex; flex-direction: column; gap: 5px; margin-top: 10px;
+  font-size: 9.5px; letter-spacing: .16em; color: var(--muted);
+}
+.ce-text small { letter-spacing: 0; color: var(--dim); font-variant-numeric: tabular-nums; }
+.ce-text input, .ce-text textarea {
+  padding: 10px 12px; font: inherit; font-size: 13px; letter-spacing: 0; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  outline: none; resize: vertical;
+}
+.ce-text input:focus, .ce-text textarea:focus { border-color: var(--accent); }
+
+.ce-preview { position: sticky; top: 0; min-width: 0; }
+.ce-preview h4 { margin: 0 0 10px; font-size: 10.5px; letter-spacing: .22em; color: var(--muted); }
+/* The card is built at full width and transformed down to fit — see
+   fitCardPreview() — so the preview is the real thing at a smaller size rather
+   than a re-flowed approximation of it. */
+.ce-stage {
+  position: relative; overflow: hidden;
+  border-radius: var(--r); border: 1px solid var(--line); background: var(--bg-2);
+}
+.ce-stage .pc-shell { transform-origin: top left; will-change: transform; }
+.ce-actions { display: flex; gap: 8px; margin-top: 12px; }
+
+@media (max-width: 1000px) {
+  .card-editor { grid-template-columns: minmax(0, 1fr); }
+  .ce-preview { position: static; }
+}
+
+/* ═══ Privacy ══════════════════════════════════════════════════════════════ */
+
+.privacy-form { display: flex; flex-direction: column; gap: 8px; }
+.pv-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap;
+  padding: 13px 16px; border-radius: var(--r);
+  background: var(--panel); border: 1px solid var(--line);
+}
+.pv-id { min-width: 220px; flex: 1; }
+.pv-id b { display: block; font-size: 13.5px; font-weight: 600; }
+.pv-id small { display: block; margin-top: 3px; font-size: 11.5px; line-height: 1.45; color: var(--dim); }
+/* A segmented control rather than a dropdown: three answers you can read at a
+   glance beats three answers behind a click. */
+.pv-opts {
+  display: flex; gap: 2px; flex: none; padding: 3px;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r-pill);
+}
+.pv-opt {
+  padding: 7px 14px; font: inherit; font-size: 11px; letter-spacing: .04em; cursor: pointer;
+  color: var(--muted); background: transparent; border: none; border-radius: var(--r-pill);
+  transition: color .14s, background .14s;
+}
+.pv-opt:hover { color: var(--text); background: rgba(255,255,255,.05); }
+.pv-opt.on { color: #12161d; font-weight: 700; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+
+@media (max-width: 700px) {
+  .pv-row { flex-direction: column; align-items: stretch; }
+  .pv-opts { justify-content: space-between; }
+  .pv-opt { flex: 1; text-align: center; }
 }
 
 .pill.gold { color: var(--clan-gold); border-color: rgba(245,197,66,.5); background: rgba(245,197,66,.1); }
@@ -2083,6 +2571,9 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
   margin-left: 6px; border-radius: var(--r-pill); font: 700 9px/1 var(--hud-font); letter-spacing: 0;
   color: #10141b; background: var(--accent);
 }
+/* The rail entry is a flex row, so the count has to refuse to be compressed by
+   the label next to it — a "12" squeezed into eight pixels reads as a smudge. */
+.tab .tab-badge { flex: none; margin-left: 0; }
 .rail-item .ri-badge { position: absolute; top: 9px; right: 10px; margin: 0; }
 
 /* ═══ Patch notes ══════════════════════════════════════════════════════ */

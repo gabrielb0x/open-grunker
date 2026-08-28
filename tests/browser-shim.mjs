@@ -323,6 +323,8 @@ class FakeAudioParam {
   linearRampToValueAtTime() { return this; }
   exponentialRampToValueAtTime() { return this; }
   cancelScheduledValues() { return this; }
+  setTargetAtTime() { return this; }
+  setValueCurveAtTime() { return this; }
 }
 
 const audioNode = (extra = {}) => ({
@@ -332,8 +334,9 @@ const audioNode = (extra = {}) => ({
   detune: new FakeAudioParam(0), playbackRate: new FakeAudioParam(1),
   threshold: new FakeAudioParam(-24), knee: new FakeAudioParam(30),
   ratio: new FakeAudioParam(12), attack: new FakeAudioParam(0.003),
-  release: new FakeAudioParam(0.25),
-  type: 'sine', buffer: null, ...extra,
+  release: new FakeAudioParam(0.25), delayTime: new FakeAudioParam(0),
+  type: 'sine', buffer: null, curve: null, oversample: 'none', onended: null,
+  ...extra,
 });
 
 class FakeAudioContext {
@@ -345,6 +348,9 @@ class FakeAudioContext {
   createBufferSource() { return audioNode(); }
   createConvolver() { return audioNode(); }
   createDynamicsCompressor() { return audioNode(); }
+  createWaveShaper() { return audioNode(); }
+  createDelay() { return audioNode(); }
+  createChannelMerger() { return audioNode(); }
   createBuffer(ch, len) {
     const data = Array.from({ length: ch }, () => new Float32Array(len));
     return { length: len, numberOfChannels: ch, getChannelData: (i) => data[i] };

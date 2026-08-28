@@ -226,6 +226,45 @@ export class Effects {
     return whole + (Math.random() < scaled - whole ? 1 : 0);
   }
 
+  /**
+   * A random direction inside a cone around `(nx, ny, nz)`, written into
+   * `this.tmpA`.
+   *
+   * What comes off a surface leaves *along the surface's normal*, spread by
+   * how rough the collision was. Spraying into a sphere and hoping — which is
+   * the cheap version — puts half of every impact inside the wall it just hit,
+   * where it is either invisible or, worse, visible through it.
+   *
+   * @param {number} spread 0 = straight out, 1 = a full hemisphere
+   */
+  _cone(nx, ny, nz, spread = 0.6) {
+    // An orthonormal pair across the normal. The seed axis is whichever of X
+    // or Y the normal is least parallel to, so the cross product never
+    // degenerates on a wall or on a floor.
+    const ax = Math.abs(nx) < 0.9 ? 1 : 0;
+    const ay = Math.abs(nx) < 0.9 ? 0 : 1;
+    let ux = ay * nz - 0 * ny;
+    let uy = 0 * nx - ax * nz;
+    let uz = ax * ny - ay * nx;
+    const ul = Math.hypot(ux, uy, uz) || 1;
+    ux /= ul; uy /= ul; uz /= ul;
+    const vx = ny * uz - nz * uy;
+    const vy = nz * ux - nx * uz;
+    const vz = nx * uy - ny * ux;
+
+    const a = Math.random() * Math.PI * 2;
+    // sqrt keeps the distribution even across the cap instead of bunched at
+    // the axis, which is what makes a spray read as a spray.
+    const r = Math.sqrt(Math.random()) * spread;
+    const k = Math.sqrt(Math.max(0, 1 - r * r));
+    this.tmpA.set(
+      nx * k + (ux * Math.cos(a) + vx * Math.sin(a)) * r,
+      ny * k + (uy * Math.cos(a) + vy * Math.sin(a)) * r,
+      nz * k + (uz * Math.cos(a) + vz * Math.sin(a)) * r,
+    );
+    return this.tmpA;
+  }
+
   /* ── Tracers ───────────────────────────────────────────────────────────── */
 
   _initTracers() {
@@ -645,9 +684,18 @@ export class Effects {
   /* ── High-level effects ────────────────────────────────────────────────── */
 
   /**
-   * Sparks, dust and a hole where a bullet meets geometry. What comes off is
-   * chosen by the surface it hit: concrete puffs grey, metal throws sparks,
-   * wood splinters, sand barely reacts.
+   * What happens where a bullet meets geometry.
+   *
+   * Five things, and the surface decides how much of each: the flash of the
+   * strike itself, sparks off anything hard, debris of the material's own
+   * colour, a puff of dust that hangs and spreads, and the hole left behind.
+   *
+   * Everything that leaves the surface leaves *along its normal* through
+   * `_cone`, at a spread that says how rough the hit was — sparks come off
+   * tight and fast, dust comes off wide and slow. Debris and dust are the
+   * surface's own colour; the flash and the sparks are the round's, so a hit
+   * on snow and a hit on steel differ in what comes off rather than only in
+   * how much.
    */
   impact(x, y, z, nx = 0, ny = 1, nz = 0, surface = 'concrete') {
     const fx = SURFACE_FX[surface] ?? SURFACE_FX.concrete;
@@ -655,49 +703,101 @@ export class Effects {
     // nothing there — the town simply carries on, out of reach.
     if (fx.silent) return;
     const dust = new THREE.Color(fx.dust);
+    // Debris is the surface a shade darker: a chip out of a wall is the inside
+    // of the wall, and the inside has not been in the sun.
+    const chip = dust.clone().multiplyScalar(0.62);
     const spark = new THREE.Color(0xffd07a);
+    const hot = new THREE.Color(0xfff3d0);
 
-    const nDust = this._count(6);
-    for (let i = 0; i < nDust; i++) {
-      const sp = 1.6 + Math.random() * 3.8;
-      this.smoke.spawn(
-        x + nx * 0.05, y + ny * 0.05, z + nz * 0.05,
-        (nx + (Math.random() - 0.5) * 1.5) * sp,
-        (ny + (Math.random() - 0.5) * 1.5) * sp + 1.1,
-        (nz + (Math.random() - 0.5) * 1.5) * sp,
-        dust, 0.09 + Math.random() * 0.13, 0.3 + Math.random() * 0.4,
-        { gravity: 9, drag: 2.4, grow: 1.6, alpha: 0.75 },
-      );
+    // Stand the origin a hair off the surface so nothing spawns inside it.
+    const ox = x + nx * 0.04, oy = y + ny * 0.04, oz = z + nz * 0.04;
+
+    // 1 — the strike. One very short, very bright point: the eye reads this as
+    //     the moment of contact and everything after it as consequence.
+    if (settings.particles) {
+      this.sparks.spawn(ox, oy, oz, 0, 0, 0, hot,
+        0.13 + Math.random() * 0.06 + fx.sparks * 0.1, 0.05,
+        { gravity: 0, alpha: 0.9 });
     }
+
+    // 2 — sparks, tight around the normal and fast, on anything hard enough.
     if (fx.sparks > 0.02) {
-      const nSpark = this._count(7 * fx.sparks);
+      const nSpark = this._count(9 * fx.sparks);
       for (let i = 0; i < nSpark; i++) {
-        const sp = 4 + Math.random() * 9;
-        this.sparks.spawn(
-          x + nx * 0.05, y + ny * 0.05, z + nz * 0.05,
-          (nx + (Math.random() - 0.5) * 1.9) * sp,
-          (ny + (Math.random() - 0.5) * 1.9) * sp + 1.6,
-          (nz + (Math.random() - 0.5) * 1.9) * sp,
-          spark, 0.03 + Math.random() * 0.035, 0.18 + Math.random() * 0.3,
-          { gravity: 26, drag: 1.2 },
-        );
+        const d = this._cone(nx, ny, nz, 0.55);
+        const sp = 5 + Math.random() * 11;
+        this.sparks.spawn(ox, oy, oz,
+          d.x * sp, d.y * sp + 1.4, d.z * sp,
+          // A few burn white before they cool; the rest are already orange.
+          i % 4 === 0 ? hot : spark,
+          0.025 + Math.random() * 0.035, 0.16 + Math.random() * 0.34,
+          { gravity: 26, drag: 1.1 });
+      }
+      // A second, slower shower that bounces along the ground. Two speeds is
+      // what separates "sparks" from "one puff of orange".
+      const nSlow = this._count(3 * fx.sparks);
+      for (let i = 0; i < nSlow; i++) {
+        const d = this._cone(nx, ny, nz, 0.85);
+        const sp = 1.8 + Math.random() * 4;
+        this.sparks.spawn(ox, oy, oz, d.x * sp, d.y * sp + 0.8, d.z * sp,
+          spark, 0.02 + Math.random() * 0.02, 0.5 + Math.random() * 0.5,
+          { gravity: 20, drag: 0.6 });
       }
     }
+
+    // 3 — debris. Heavier than the dust, tumbling, and it settles rather than
+    //     fading in mid-air: the ground bounce in the cloud does the rest.
+    const nChip = this._count(4);
+    for (let i = 0; i < nChip; i++) {
+      const d = this._cone(nx, ny, nz, 0.7);
+      const sp = 2.5 + Math.random() * 6;
+      this.smoke.spawn(ox, oy, oz, d.x * sp, d.y * sp + 1.6, d.z * sp,
+        chip, 0.035 + Math.random() * 0.05, 0.5 + Math.random() * 0.5,
+        { gravity: 26, drag: 0.35, spin: (Math.random() - 0.5) * 14, alpha: 0.95 });
+    }
+
+    // 4 — dust. Wide, slow, growing as it goes, and the part that lingers.
+    const nDust = this._count(6);
+    for (let i = 0; i < nDust; i++) {
+      const d = this._cone(nx, ny, nz, 0.95);
+      const sp = 1.4 + Math.random() * 3.4;
+      this.smoke.spawn(ox, oy, oz, d.x * sp, d.y * sp + 1.1, d.z * sp,
+        dust, 0.09 + Math.random() * 0.13, 0.3 + Math.random() * 0.4,
+        { gravity: 9, drag: 2.4, grow: 1.9, alpha: 0.72, spin: (Math.random() - 0.5) * 3 });
+    }
+    // …and one lazy puff that hangs where the round went in.
+    if (this._count(1.2) > 0) {
+      this.smoke.spawn(ox, oy, oz, nx * 0.5, ny * 0.5 + 0.35, nz * 0.5,
+        dust, 0.16 + Math.random() * 0.12, 0.75 + Math.random() * 0.5,
+        { gravity: -0.4, drag: 3.4, grow: 3.2, alpha: 0.3, spin: (Math.random() - 0.5) * 1.4 });
+    }
+
     this.decal('hole', x, y, z, nx, ny, nz, 0.16 + Math.random() * 0.08, 18);
   }
 
-  /** Blood puff when a shot connects with a player. */
-  blood(x, y, z, big = false) {
+  /**
+   * Blood where a shot connects with a player.
+   *
+   * `dir` is the direction the round was travelling, when the caller knows it.
+   * Given one, the spray leaves the far side of the hit the way it actually
+   * would; without one it puffs outwards, which is what this did for every hit
+   * before and is still the right answer for a hit whose geometry we never saw.
+   */
+  blood(x, y, z, big = false, dir = null) {
     const c = new THREE.Color(0xa8121f);
     const mist = new THREE.Color(0x6d0a12);
     const n = this._count(big ? 15 : 8);
     for (let i = 0; i < n; i++) {
       const sp = 1.8 + Math.random() * (big ? 8 : 4.5);
+      // Along the round where we have it, spherical where we do not.
+      const d = dir
+        ? this._cone(dir.x, dir.y, dir.z, 0.75)
+        : this.tmpA.set(Math.random() - 0.5, Math.random() * 0.8 + 0.3, Math.random() - 0.5).normalize();
       this.smoke.spawn(
         x, y, z,
-        (Math.random() - 0.5) * sp, Math.random() * sp * 0.8 + 1.4, (Math.random() - 0.5) * sp,
+        d.x * sp, d.y * sp + 1.4, d.z * sp,
         i % 4 === 0 ? mist : c, 0.05 + Math.random() * 0.09, 0.3 + Math.random() * 0.4,
-        { gravity: 20, drag: 1.4 },
+        { gravity: 20, drag: 1.4, spin: (Math.random() - 0.5) * 6 },
       );
     }
     if (big) {
@@ -714,27 +814,58 @@ export class Effects {
     }
   }
 
-  /** Dust kicked up on a hard landing or the start of a slide. */
+  /**
+   * Dust kicked up on a hard landing or the start of a slide.
+   *
+   * A ring rather than a cloud: the dust a boot displaces leaves from *under*
+   * it and outwards, so the particles start on a small circle and move away
+   * from its centre. That one change is the difference between reading as
+   * something that landed and reading as a puff of smoke at ankle height.
+   */
   dust(x, y, z, amount = 6, color = 0xbfb4a0) {
     const c = new THREE.Color(color);
     const n = this._count(amount);
     for (let i = 0; i < n; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const sp = 1.2 + Math.random() * 3;
-      this.smoke.spawn(x, y + 0.05, z, Math.cos(a) * sp, Math.random() * 1.5, Math.sin(a) * sp,
-        c, 0.16 + Math.random() * 0.2, 0.35 + Math.random() * 0.45,
-        { gravity: 3.5, drag: 2.6, grow: 1.8, alpha: 0.55, spin: (Math.random() - 0.5) * 2 });
+      // Spread around the ring rather than randomly on it, so a small count
+      // still reads as a circle instead of as three particles in a corner.
+      const a = ((i + Math.random() * 0.7) / Math.max(1, n)) * Math.PI * 2;
+      const r = 0.12 + Math.random() * 0.22;
+      const sp = 1.4 + Math.random() * 3.2;
+      this.smoke.spawn(
+        x + Math.cos(a) * r, y + 0.04 + Math.random() * 0.06, z + Math.sin(a) * r,
+        Math.cos(a) * sp, 0.6 + Math.random() * 1.4, Math.sin(a) * sp,
+        c, 0.16 + Math.random() * 0.2, 0.4 + Math.random() * 0.5,
+        { gravity: 2.6, drag: 2.8, grow: 2.4, alpha: 0.5, spin: (Math.random() - 0.5) * 2.4 });
     }
   }
 
-  /** A rocket in flight: a glowing head with a smoke trail. */
+  /**
+   * A rocket in flight: a flame at the nozzle and a trail that outlives it.
+   *
+   * Three lifetimes on purpose. The flame is gone in a twentieth of a second,
+   * so it reads as attached to the rocket rather than as a line behind it. The
+   * hot smoke lingers a fraction and keeps its colour. The cold smoke hangs for
+   * a second and a half and spreads to five times its size, which is what
+   * leaves a trail across the sky after the rocket has gone.
+   */
   rocketTrail(x, y, z) {
     if (!settings.particles) return;
+    // The flame, at the nozzle.
+    this.sparks.spawn(x, y, z, 0, 0, 0, new THREE.Color(0xfff0c4), 0.3, 0.05, { gravity: 0 });
+    this.sparks.spawn(x, y, z,
+      (Math.random() - 0.5) * 2.4, (Math.random() - 0.5) * 2.4, (Math.random() - 0.5) * 2.4,
+      new THREE.Color(0xffa640), 0.16 + Math.random() * 0.1, 0.12,
+      { gravity: 0, drag: 3 });
+    // Hot exhaust, still glowing.
     this.smoke.spawn(x, y, z,
-      (Math.random() - 0.5) * 1.1, (Math.random() - 0.5) * 1.1 + 0.4, (Math.random() - 0.5) * 1.1,
-      new THREE.Color(0x9d9a94), 0.2 + Math.random() * 0.14, 0.55,
-      { gravity: -0.8, drag: 2, grow: 2.2, alpha: 0.6, spin: (Math.random() - 0.5) * 2 });
-    this.sparks.spawn(x, y, z, 0, 0, 0, new THREE.Color(0xffa640), 0.24, 0.09, { gravity: 0 });
+      (Math.random() - 0.5) * 1.4, (Math.random() - 0.5) * 1.4 + 0.3, (Math.random() - 0.5) * 1.4,
+      new THREE.Color(0x6a5a4c), 0.15 + Math.random() * 0.1, 0.35,
+      { gravity: -0.4, drag: 2.4, grow: 2, alpha: 0.7, spin: (Math.random() - 0.5) * 3 });
+    // …and the cold trail it leaves behind.
+    this.smoke.spawn(x, y, z,
+      (Math.random() - 0.5) * 0.7, (Math.random() - 0.5) * 0.7 + 0.5, (Math.random() - 0.5) * 0.7,
+      new THREE.Color(0xa8a49c), 0.22 + Math.random() * 0.16, 1.5,
+      { gravity: -0.5, drag: 1.6, grow: 4.5, alpha: 0.42, spin: (Math.random() - 0.5) * 1.6 });
   }
 
   update(dt, camera = null) {

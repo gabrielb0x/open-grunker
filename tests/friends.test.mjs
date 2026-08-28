@@ -233,6 +233,187 @@ export default async function run() {
     info(`${seen.body.online} of ${seen.body.friends.length} online`);
     check('and the panel is told how many of them are on',
       typeof seen.body.online === 'number');
+
+    /* ── The card, and who it is for ───────────────────────────────────────
+     *
+     * Every check here is about a *refusal*: what a viewer is not shown, and
+     * what a route will not do. A privacy switch the client honours and the
+     * server does not is decoration, so all of it runs over HTTP and none of
+     * it trusts a flag in the payload.
+     *
+     * The cast is the one the suites above left behind: Ana and Cyd are
+     * friends, Ana and Bex are not (they were, and it was ended), and nobody
+     * has anybody else in common.
+     * ────────────────────────────────────────────────────────────────────── */
+
+    suite('Profiles — the card');
+
+    const social = (token) => call(base, 'GET', '/api/v1/profile/social', { token });
+    const saveCard = (token, card) =>
+      call(base, 'PUT', '/api/v1/profile/card', { token, body: { card } });
+    const savePrivacy = (token, privacy) =>
+      call(base, 'PUT', '/api/v1/profile/privacy', { token, body: { privacy } });
+    const profileOf = (name, token) =>
+      call(base, 'GET', `/api/v1/players/${name}`, { token });
+    const idOf = async (token) =>
+      (await call(base, 'GET', '/api/v1/auth/me', { token })).body.user.id;
+    const accept = async (token, otherToken) =>
+      call(base, 'POST', `/api/v1/friends/requests/${await idOf(otherToken)}/accept`, { token });
+
+    const mine = await social(ana);
+    check('an account that has never styled its card still has a whole one',
+      mine.status === 200
+      && mine.body.card.pattern === K.CARD_DEFAULTS.pattern
+      && mine.body.card.featured.length === K.CARD_DEFAULTS.featured.length
+      && mine.body.privacy.whoCanAdd === K.PRIVACY_DEFAULTS.whoCanAdd,
+      `${mine.body.card?.pattern} · ${mine.body.privacy?.whoCanAdd}`);
+    check('and is told everything it may pick from',
+      mine.body.catalogue.patterns.length === K.CARD_PATTERNS.length
+      && mine.body.catalogue.stats.length === K.CARD_STATS.length
+      && mine.body.catalogue.privacy.fields.length === K.PRIVACY_FIELDS.length);
+
+    const saved = await saveCard(ana, {
+      accentMode: 'custom', accent: '#4D9BFF', pattern: 'hex', layout: 'showcase',
+      frame: 'glow', intensity: 'loud', glow: false,
+      title: 'Quickscoper', bio: 'Season one.', featured: ['headshots', 'accuracy'],
+    });
+    check('a card is stored as it was sent, once it has been checked',
+      saved.status === 200 && saved.body.card.accent === '#4d9bff'
+      && saved.body.card.pattern === 'hex' && saved.body.card.layout === 'showcase'
+      && saved.body.card.glow === false && saved.body.card.featured.length === 2,
+      JSON.stringify(saved.body.card?.featured));
+
+    const junk = await saveCard(ana, {
+      pattern: 'DROP TABLE', layout: 42, frame: null, accent: 'red',
+      intensity: 'deafening', featured: ['kills', 'nope', 'wins', 'score', 'kd'],
+      title: `  ${'z'.repeat(500)}`,
+    });
+    check('a card the server does not recognise is corrected, never stored',
+      junk.status === 200 && junk.body.card.pattern === K.CARD_DEFAULTS.pattern
+      && junk.body.card.layout === K.CARD_DEFAULTS.layout
+      && junk.body.card.accent === K.CARD_DEFAULTS.accent
+      && junk.body.card.featured.length === K.CARD_FEATURED_MAX
+      && !junk.body.card.featured.includes('nope')
+      && junk.body.card.title.length === K.CARD_TITLE_MAX,
+      `${junk.body.card?.pattern} · ${junk.body.card?.accent}`);
+
+    await saveCard(ana, { accentMode: 'custom', accent: '#4d9bff', pattern: 'hex' });
+    const asStranger = await profileOf('Ana', bo);
+    check('the card travels with the profile, so a stranger sees it too',
+      asStranger.body.user.card.accent === '#4d9bff'
+      && asStranger.body.user.card.pattern === 'hex');
+
+    check('and none of these routes are reachable signed out',
+      (await call(base, 'GET', '/api/v1/profile/social')).status === 401
+      && (await call(base, 'PUT', '/api/v1/profile/card', { body: { card: {} } })).status === 401);
+
+    suite('Profiles — who may see what');
+
+    check('a stranger is told what they are to this account',
+      asStranger.body.relation === 'none' && asStranger.body.user.stats !== null);
+    check('your own card shows you everything on it',
+      (await profileOf('Ana', ana)).body.relation === 'self');
+    check('a friend is named as one',
+      (await profileOf('Ana', cy)).body.relation === 'friend');
+    check('and a guest reading it is nobody in particular',
+      (await profileOf('Ana', null)).body.relation === 'none');
+
+    await savePrivacy(ana, { showStats: 'friends', showMatches: 'nobody', showJoined: 'nobody' });
+
+    const hiddenFromBex = await profileOf('Ana', bo);
+    check('a section closed to strangers does not reach one',
+      hiddenFromBex.body.user.stats === null
+      && hiddenFromBex.body.recent.length === 0
+      && hiddenFromBex.body.user.createdAt === null,
+      `hidden: ${hiddenFromBex.body.hidden.join(', ')}`);
+    check('and the card is told which sections those were, so it can say so',
+      hiddenFromBex.body.hidden.includes('showStats')
+      && hiddenFromBex.body.hidden.includes('showMatches'));
+
+    const shownToCyd = await profileOf('Ana', cy);
+    check('"friends only" really does mean friends see it',
+      shownToCyd.body.user.stats !== null,
+      `hidden from a friend: ${shownToCyd.body.hidden.join(', ')}`);
+    check('"no one" means no one — a friend included',
+      shownToCyd.body.recent.length === 0 && shownToCyd.body.hidden.includes('showMatches'));
+
+    const own = await profileOf('Ana', ana);
+    check('your own card is never hidden from you',
+      own.body.user.stats !== null && own.body.hidden.length === 0);
+
+    // Put it back, so the rest of the suite reads an ordinary account.
+    await savePrivacy(ana, K.PRIVACY_DEFAULTS);
+
+    suite('Profiles — who may ask');
+
+    const fay = await register('Fay');
+    const gus = await register('Gus');
+
+    check('by default anybody may ask',
+      (await profileOf('Fay', gus)).body.can.add === true);
+
+    await savePrivacy(fay, { whoCanAdd: 'nobody' });
+    const shut = await ask(gus, 'Fay');
+    check('an account that has closed itself is not askable',
+      shut.status === 403 && shut.body.error === 'not_accepting', shut.body.message);
+    check('and the card does not offer a button the route would refuse',
+      (await profileOf('Fay', gus)).body.can.add === false);
+    check('the refusal does not give away which setting it was',
+      !/nobody|mutual|friends of friends/i.test(shut.body.message ?? ''), shut.body.message);
+
+    await savePrivacy(fay, { whoCanAdd: 'mutuals' });
+    const noMutual = await ask(gus, 'Fay');
+    check('"friends of friends" refuses somebody with nobody in common',
+      noMutual.status === 403 && noMutual.body.error === 'not_accepting');
+    check('and the card agrees with the route',
+      (await profileOf('Fay', gus)).body.can.add === false);
+
+    // Ana takes both of them, which makes Gus a friend of a friend of Fay.
+    await ask(fay, 'Ana');
+    await accept(ana, fay);
+    await ask(gus, 'Ana');
+    await accept(ana, gus);
+
+    check('…and allows one who now has somebody in common',
+      (await profileOf('Fay', gus)).body.can.add === true);
+    const viaMutual = await ask(gus, 'Fay');
+    check('so the request goes through', viaMutual.status === 200, viaMutual.body.message);
+    check('an ask already in flight is reported rather than offered again',
+      (await profileOf('Fay', gus)).body.pending.outgoing === true
+      && (await profileOf('Gus', fay)).body.pending.incoming === true
+      && (await profileOf('Fay', gus)).body.can.add === false);
+
+    // A closed account can still answer somebody who asked it first.
+    await savePrivacy(fay, { whoCanAdd: 'nobody' });
+    const stillAnswerable = await accept(fay, gus);
+    check('closing the door does not trap a request already inside it',
+      stillAnswerable.status === 200, stillAnswerable.body.message);
+
+    suite('Profiles — presence and the leaderboard');
+
+    const offToStrangers = await profileOf('Ana', bo);
+    check('presence is closed to strangers by default',
+      offToStrangers.body.presence === null && offToStrangers.body.can.seePresence === false);
+    check('and open to friends',
+      (await profileOf('Ana', cy)).body.presence !== null);
+
+    await savePrivacy(ana, { showPresence: 'nobody' });
+    check('an account that hides entirely hides from its friends too',
+      (await profileOf('Ana', cy)).body.presence === null);
+
+    const before = await call(base, 'GET', '/api/v1/leaderboard?limit=100');
+    const listedBefore = before.body.entries.some((e) => e.username === 'Ana');
+    await savePrivacy(ana, { showPresence: 'nobody', listed: false });
+    const after = await call(base, 'GET', '/api/v1/leaderboard?limit=100');
+    check('taking yourself off the board actually takes you off it',
+      listedBefore && !after.body.entries.some((e) => e.username === 'Ana'),
+      `${before.body.entries.length} → ${after.body.entries.length} entries`);
+
+    await savePrivacy(ana, K.PRIVACY_DEFAULTS);
+    check('and putting yourself back puts you back',
+      (await call(base, 'GET', '/api/v1/leaderboard?limit=100'))
+        .body.entries.some((e) => e.username === 'Ana'));
+
   } finally {
     server.child.kill('SIGTERM');
     await sleep(120);

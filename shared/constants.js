@@ -1133,6 +1133,271 @@ export const AVATAR_TYPES = ['image/webp', 'image/png', 'image/jpeg'];
 /** Biggest file the picker will even try to read, before downscaling. */
 export const AVATAR_SOURCE_MAX_BYTES = 8 * 1024 * 1024;
 
+/* ── Profile cards ────────────────────────────────────────────────────────────
+ *
+ * The card is what a nickname means: click one anywhere in the game — a
+ * scoreboard row, the killfeed, a leaderboard entry — and this is what opens.
+ * Everything below is the part of it the account owns rather than the part the
+ * match writes, so it is stored as one small JSON blob on the user row and
+ * travels with every public profile.
+ *
+ * The catalogues are shared rather than living in the client because the server
+ * is what refuses an unknown one: a card is drawn inside other people's
+ * screens, so "any string the browser felt like sending" is a styling hole with
+ * an audience.
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+/** Backdrop patterns a card may wear, drawn in CSS from the accent colour. */
+export const CARD_PATTERNS = [
+  { id: 'none', name: 'Clean' },
+  { id: 'grid', name: 'Grid' },
+  { id: 'scan', name: 'Scanlines' },
+  { id: 'hex', name: 'Hexes' },
+  { id: 'rays', name: 'Rays' },
+  { id: 'topo', name: 'Topography' },
+  { id: 'circuit', name: 'Circuit' },
+  { id: 'noise', name: 'Static' },
+  { id: 'diag', name: 'Hazard' },
+  { id: 'dots', name: 'Halftone' },
+  { id: 'camo', name: 'Camo' },
+  { id: 'bokeh', name: 'Bokeh' },
+];
+export const CARD_PATTERN_IDS = CARD_PATTERNS.map((p) => p.id);
+
+/** How hard the accent is pushed into the card's own background. */
+export const CARD_INTENSITIES = ['subtle', 'medium', 'loud'];
+
+/** Where the accent comes from: the profile picture, or a colour they picked. */
+export const CARD_ACCENT_MODES = ['auto', 'custom'];
+
+/**
+ * Frames the avatar can wear. Purely decorative, and deliberately not something
+ * that has to be unlocked — a card nobody can style is a card nobody opens.
+ */
+export const CARD_FRAMES = [
+  { id: 'ring', name: 'Ring' },
+  { id: 'none', name: 'None' },
+  { id: 'glow', name: 'Halo' },
+  { id: 'hex', name: 'Hex cut' },
+  { id: 'square', name: 'Squared' },
+  { id: 'dashed', name: 'Dashed' },
+];
+export const CARD_FRAME_IDS = CARD_FRAMES.map((f) => f.id);
+
+/** Card layouts — how much of the card the hero band takes. */
+export const CARD_LAYOUTS = [
+  { id: 'classic', name: 'Classic', note: 'Hero band, career grid, recent matches' },
+  { id: 'showcase', name: 'Showcase', note: 'A taller hero with the picture large' },
+  { id: 'compact', name: 'Compact', note: 'One column, less chrome' },
+];
+export const CARD_LAYOUT_IDS = CARD_LAYOUTS.map((l) => l.id);
+
+/**
+ * Statistics a player may pin to the hero band.
+ *
+ * Everything here is already on the card; pinning only decides which three are
+ * the big ones. Keyed by the names `stats` already uses on the wire.
+ */
+export const CARD_STATS = [
+  { id: 'kd', name: 'K/D' },
+  { id: 'kills', name: 'Kills' },
+  { id: 'wins', name: 'Wins' },
+  { id: 'score', name: 'Score' },
+  { id: 'headshots', name: 'Headshots' },
+  { id: 'accuracy', name: 'Accuracy' },
+  { id: 'damage', name: 'Damage' },
+  { id: 'matches', name: 'Matches' },
+  { id: 'bestStreak', name: 'Best streak' },
+  { id: 'assists', name: 'Assists' },
+  { id: 'deaths', name: 'Deaths' },
+  { id: 'playtime', name: 'Playtime' },
+  { id: 'level', name: 'Level' },
+  { id: 'streak', name: 'Day streak' },
+];
+export const CARD_STAT_IDS = CARD_STATS.map((s) => s.id);
+
+/** How many of them fit in the band. */
+export const CARD_FEATURED_MAX = 3;
+
+/** Room a player has to say something about themselves. */
+export const CARD_TITLE_MAX = 32;
+export const CARD_BIO_MAX = 160;
+
+/** A card as it is stored when nobody has touched it. */
+export const CARD_DEFAULTS = {
+  accentMode: 'auto',
+  accent: '#f5a623',
+  pattern: 'grid',
+  intensity: 'medium',
+  frame: 'ring',
+  layout: 'classic',
+  glow: true,
+  title: '',
+  bio: '',
+  featured: ['kd', 'kills', 'wins'],
+};
+
+const CARD_HEX_RE = /^#[0-9a-f]{6}$/i;
+
+/**
+ * One free-text line, as it is allowed to be stored.
+ *
+ * Control characters, newlines and the invisible direction marks are collapsed
+ * to spaces rather than rejected: a title is one line by construction, and this
+ * string is drawn on other people's screens, so its shape is not something to
+ * take on trust. Length is the last step, so a padded string cannot smuggle
+ * characters past the cap.
+ */
+export const cleanCardText = (raw, max) => String(raw ?? '')
+  .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim()
+  .slice(0, max);
+
+/**
+ * Sanitises a card blob into something safe to store and to draw.
+ *
+ * Never throws and never rejects: anything unrecognised falls back to the
+ * default, so a card written by a newer client — or by somebody poking the
+ * route by hand — degrades to a plain one rather than breaking every scoreboard
+ * that draws its owner's name.
+ */
+export function normaliseCard(raw) {
+  const src = (raw && typeof raw === 'object') ? raw : {};
+  const pick = (v, list, fallback) => (list.includes(v) ? v : fallback);
+  const featured = Array.isArray(src.featured)
+    ? [...new Set(src.featured.filter((id) => CARD_STAT_IDS.includes(id)))].slice(0, CARD_FEATURED_MAX)
+    : [];
+  return {
+    accentMode: pick(src.accentMode, CARD_ACCENT_MODES, CARD_DEFAULTS.accentMode),
+    accent: CARD_HEX_RE.test(src.accent ?? '') ? String(src.accent).toLowerCase() : CARD_DEFAULTS.accent,
+    pattern: pick(src.pattern, CARD_PATTERN_IDS, CARD_DEFAULTS.pattern),
+    intensity: pick(src.intensity, CARD_INTENSITIES, CARD_DEFAULTS.intensity),
+    frame: pick(src.frame, CARD_FRAME_IDS, CARD_DEFAULTS.frame),
+    layout: pick(src.layout, CARD_LAYOUT_IDS, CARD_DEFAULTS.layout),
+    glow: src.glow !== false,
+    title: cleanCardText(src.title, CARD_TITLE_MAX),
+    bio: cleanCardText(src.bio, CARD_BIO_MAX),
+    featured: featured.length ? featured : [...CARD_DEFAULTS.featured],
+  };
+}
+
+/* ── Social privacy ───────────────────────────────────────────────────────────
+ *
+ * Every one of these answers "who is this for", and the answer is enforced on
+ * the server: the card route leaves out what a viewer may not see rather than
+ * sending it with a flag the client is trusted to honour.
+ *
+ * `friends` means "people already on my list", which is why none of these can
+ * lock an account out of being added in the first place — that is `whoCanAdd`,
+ * and it has its own three answers.
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+/** The audience scale used by every visibility switch below. */
+export const PRIVACY_AUDIENCES = ['everyone', 'friends', 'nobody'];
+
+/** Who may send a friend request. */
+export const PRIVACY_ADD_MODES = ['everyone', 'mutuals', 'nobody'];
+
+export const PRIVACY_DEFAULTS = {
+  /** everyone · mutuals (someone a friend is already friends with) · nobody */
+  whoCanAdd: 'everyone',
+  /** Whether "online" and "in a match" show on the card at all. */
+  showPresence: 'friends',
+  /** Whether the card offers a button that drops the viewer into your match. */
+  allowJoin: 'friends',
+  showStats: 'everyone',
+  showMatches: 'everyone',
+  showStreak: 'everyone',
+  showClan: 'everyone',
+  showJoined: 'everyone',
+  /** Off takes the account off the public leaderboard. Stats still count. */
+  listed: true,
+};
+
+/** Each switch, with the sentence the settings panel puts under it. */
+export const PRIVACY_FIELDS = [
+  {
+    id: 'whoCanAdd',
+    name: 'Who can add me',
+    note: 'Who is allowed to send you a friend request.',
+    options: PRIVACY_ADD_MODES,
+    labels: { everyone: 'Anyone', mutuals: 'Friends of friends', nobody: 'No one' },
+  },
+  {
+    id: 'showPresence',
+    name: 'Show when I am online',
+    note: 'Whether your card says you are in the menu or in a match.',
+    options: PRIVACY_AUDIENCES,
+  },
+  {
+    id: 'allowJoin',
+    name: 'Let people join my match',
+    note: 'Puts a JOIN button on your card while you are playing.',
+    options: PRIVACY_AUDIENCES,
+  },
+  {
+    id: 'showStats',
+    name: 'Show my career stats',
+    note: 'Kills, K/D, accuracy, damage, playtime.',
+    options: PRIVACY_AUDIENCES,
+  },
+  {
+    id: 'showMatches',
+    name: 'Show my recent matches',
+    note: 'The last few games on your card.',
+    options: PRIVACY_AUDIENCES,
+  },
+  {
+    id: 'showStreak',
+    name: 'Show my day streak',
+    note: 'How many days in a row you have played.',
+    options: PRIVACY_AUDIENCES,
+  },
+  {
+    id: 'showClan',
+    name: 'Show my clan',
+    note: 'The tag beside your name stays either way — this is the card.',
+    options: PRIVACY_AUDIENCES,
+  },
+  {
+    id: 'showJoined',
+    name: 'Show when I joined',
+    note: 'The date this account was created.',
+    options: PRIVACY_AUDIENCES,
+  },
+];
+
+/** What each audience value reads as in the panel. */
+export const PRIVACY_AUDIENCE_LABELS = {
+  everyone: 'Everyone', friends: 'Friends only', nobody: 'No one',
+};
+
+/** Sanitises a privacy blob. Same contract as normaliseCard: never throws. */
+export function normalisePrivacy(raw) {
+  const src = (raw && typeof raw === 'object') ? raw : {};
+  const out = { ...PRIVACY_DEFAULTS };
+  for (const field of PRIVACY_FIELDS) {
+    if (field.options.includes(src[field.id])) out[field.id] = src[field.id];
+  }
+  out.listed = src.listed !== false;
+  return out;
+}
+
+/**
+ * Whether a viewer may see something its owner set to `audience`.
+ *
+ * `relation` is what the server worked out about the two accounts — 'self',
+ * 'friend' or 'none' — so this is the single rule and every route asks it
+ * rather than re-deriving one. Your own card always shows you everything.
+ */
+export function canSee(audience, relation) {
+  if (relation === 'self') return true;
+  if (audience === 'nobody') return false;
+  if (audience === 'friends') return relation === 'friend';
+  return true;
+}
+
 /* ── Wire protocol opcodes ────────────────────────────────────────────────── */
 
 /** Client → server */

@@ -59,7 +59,18 @@ CREATE TABLE IF NOT EXISTS users (
   totp_enabled_at INTEGER,
   -- The last accepted time step, so one code cannot be spent twice inside the
   -- thirty seconds it is valid for.
-  totp_last_step INTEGER NOT NULL DEFAULT 0
+  totp_last_step INTEGER NOT NULL DEFAULT 0,
+  -- How this account has styled its profile card, and who it lets see what on
+  -- it. Both are whole JSON documents rather than a column per switch: each is
+  -- read whole, written whole, and never filtered on. shared/constants.js is
+  -- what turns either back into a trustworthy object, so a null here and a
+  -- blob written by an older build both read as a complete set of defaults.
+  card           TEXT,
+  privacy        TEXT,
+  -- The one privacy answer pulled back out into a column. The leaderboard is
+  -- its only reader and cannot afford to parse a blob per row; savePrivacy is
+  -- its only writer, which is what keeps it from drifting from the blob.
+  listed         INTEGER NOT NULL DEFAULT 1
 );
 
 -- Career milestones an account has been paid for. One row per milestone per

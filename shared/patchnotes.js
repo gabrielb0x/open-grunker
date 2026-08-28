@@ -17,7 +17,7 @@
  * wrote it: what they can now do, or what stopped going wrong.
  */
 
-export const GAME_VERSION = '1.9.0';
+export const GAME_VERSION = '1.9.5';
 
 export const PATCH_KINDS = {
   new: { label: 'NEW', color: '#4ddb7a' },
@@ -26,6 +26,22 @@ export const PATCH_KINDS = {
 };
 
 export const PATCH_NOTES = [
+  {
+    version: '1.9.5',
+    date: '2026-08-28',
+    title: 'A menu you can find things in, a card that is yours, and a game that sounds like one',
+    changes: [
+      { kind: 'new', text: 'The menu is a rail now, not a strip. Everything past the play buttons opens as one panel with a column down the left, grouped by what you came to do: PLAY, COMMUNITY, YOU, SETUP and ABOUT. Every entry has an icon as well as a word, and the page you land on says what it is and what it is for at the top of it. The twelve destinations used to be twelve words on one strip that wrapped, which meant nothing sat near anything related to it and the row a name was on moved every time the window did.' },
+      { kind: 'new', text: 'There is a search box over the rail. It matches what a page is for as well as what it is called, so "crosshair" finds SETTINGS and "tag" finds CLANS, and Enter goes straight to the first thing left standing.' },
+      { kind: 'change', text: 'Your profile card is painted in your own colour, taken from your profile picture. Not an average of it — the colour the picture is actually about, so a red logo on a white field comes back red rather than off-white. No picture, and the colour comes from your nickname instead, so every card has one and yours is always the same one.' },
+      { kind: 'new', text: 'You can customise that card to death. ACCOUNT ▸ CARD: your own colour or the one from your picture, twelve backdrops at three strengths, six frames for the photo, three layouts, a tagline, a short about, and which three of fourteen statistics get the big band beside your name. The preview is the real card at a smaller size rather than an impression of it, and nothing is saved until you say so — trying eight backdrops costs you nothing.' },
+      { kind: 'new', text: 'The card is something you act from. Add them as a friend, cancel an ask you have already sent, accept or turn down one of theirs, or drop straight into the match they are in — all from the card, wherever you clicked the name.' },
+      { kind: 'new', text: 'You decide who sees what. ACCOUNT ▸ PRIVACY: who may send you a friend request (anyone, friends of friends, or nobody), whether your card says you are online, whether people can join your match from it, and whether strangers see your career stats, your recent matches, your day streak, your clan or the date you signed up. Every one of them is enforced by the server — what you have not shared never leaves it — and you can take yourself off the public leaderboard without your stats stopping counting.' },
+      { kind: 'change', text: 'Every sound in the game has been rebuilt. No two gunshots are alike any more, so emptying a magazine is thirty different shots rather than one played thirty times. Distance does more than turn the volume down: a fight across the map reaches you late, dark, wide and mostly as echo, while one in the next room is all crack and mechanism — so you can hear roughly where people are fighting without looking for them. Impacts, reloads, footsteps, the interface and the nuke were all redone on the same terms.' },
+      { kind: 'change', text: 'What a bullet throws off now leaves the surface it hit, along the way that surface is facing, instead of spraying in every direction from a point. There is a flash where the round lands, chips of the material that tumble and settle, two speeds of spark on anything hard, and a puff of dust that hangs afterwards. Blood leaves the far side of whoever you hit, the dust a hard landing kicks up is a ring around your boots, and a rocket leaves a trail that outlives it.' },
+      { kind: 'fix', text: 'A menu page taller than the window scrolls instead of being cut off at the bottom. The longest ones — settings, key bindings, the patch notes you are reading — simply stopped where the panel did.' },
+    ],
+  },
   {
     version: '1.9.0',
     date: '2026-08-27',

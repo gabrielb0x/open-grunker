@@ -118,6 +118,26 @@ node scripts/db-cli.js reset --yes              # wipe everything
 
 ## How to play
 
+### Finding your way around the menu
+
+Everything past the play buttons opens as one panel with a **rail down the left**:
+one column, grouped by what you came to do — **PLAY** (class, skins, challenges),
+**COMMUNITY** (friends, clans, leaderboard, servers), **YOU** (your account),
+**SETUP** (controls, settings) and **ABOUT** (how to play, patch notes). Each
+entry is an icon and a word, so a destination has a silhouette as well as a name,
+and the page you land on says what it is and what it is for in its own header.
+
+There is a **filter box** over the rail for the twelfth visit, when you know the
+word and do not want to go looking for it. It matches what a page is *for* as
+well as what it is called, so "crosshair" finds SETTINGS and "tag" finds CLANS;
+`Enter` goes straight to the first thing left standing.
+
+This replaced a single wrapping strip of twelve words. A strip that wraps has no
+shape: nothing sat near anything related to it, the row a name was on moved with
+the window, and the only way to find anything was to read all of it.
+
+### Controls
+
 Every one of these is rebindable under **CONTROLS** in the menu — keyboard keys,
 mouse buttons, the scroll wheel and controller buttons all work, with three slots
 per action: primary, alternate, and the pad. These are the defaults:
@@ -560,10 +580,39 @@ clan roster. It opens the same card everywhere. Guests and bots have no profile
 behind them, so neither gets a link that could only ever fail.
 
 The card reads **across**, not down: a hero band with the picture, the name, the
-clan tag and the level bar on the left and the three figures anybody actually
-looks for — K/D, kills, wins — on the right, then the career in one column and
-the last six matches in the other. Below 900px wide it folds back into a single
-column.
+clan tag and the level bar on the left and three pinned figures on the right,
+then the career in one column and the last six matches in the other. Below 900px
+wide it folds back into a single column.
+
+**The card is painted in its owner's colour.** By default that colour is pulled
+out of their profile picture — the picture is shrunk to a thumbnail, its pixels
+are dropped into hue/saturation/lightness buckets, and the bucket that scores
+highest on *coverage × colourfulness* wins. Averaging the pixels instead gives
+you brown every time, because the mean of a colour wheel is grey. An account
+with no picture falls back to a colour derived from the nickname, so every card
+has one and the same account always has the same one.
+
+From the card you can **add them as a friend**, **cancel** an ask already in
+flight, **accept** or **decline** one of theirs, **drop into their match**, or —
+on your own — open the editor. Every one of those buttons is drawn from what the
+*server* said is possible for this viewer rather than from what the browser can
+guess: a button the route would refuse is worse than no button, because it
+teaches people that the card lies.
+
+#### Customising it
+
+**ACCOUNT ▸ CARD.** Colour (from your picture, or one you pick), one of twelve
+backdrops at three strengths, a frame for the picture, one of three layouts, a
+tagline and a short about, and which three statistics get the big band beside
+your name. The preview beside the controls is the *real* card renderer at a
+smaller size, not an approximation of it, and nothing is sent until you press
+SAVE — so trying eight backdrops costs eight repaints and no requests.
+
+Every catalogue is in `shared/constants.js` and the save route runs
+`normaliseCard()` before it writes, so a value the server does not recognise
+becomes the default rather than a 400 that loses the rest of the edit. A card is
+drawn inside other people's screens; "any string the browser felt like sending"
+is a styling hole with an audience.
 
 This is also why the scoreboard key **pins the board open and hands the mouse
 back** rather than showing it only while held — the same gesture that makes the
@@ -1168,6 +1217,42 @@ Every ceiling (`FRIENDS_MAX`, `FRIEND_REQUESTS_MAX`,
 `FRIEND_REQUESTS_INBOX_MAX`, `FRIEND_REQUEST_COOLDOWN_SEC`, `FRIEND_MIN_LEVEL`)
 answers one way of turning the button into a megaphone.
 
+### Your card, and who it is for
+
+**ACCOUNT ▸ PRIVACY.** Eight switches, each with three answers — *everyone*,
+*friends only*, *no one* — plus one for the leaderboard:
+
+| Switch | What it decides |
+| --- | --- |
+| Who can add me | Anyone · friends of friends · no one |
+| Show when I am online | Whether your card says you are in the menu or in a match |
+| Let people join my match | Whether your card offers a JOIN button while you play |
+| Show my career stats | Kills, K/D, accuracy, damage, playtime |
+| Show my recent matches | The last few games on your card |
+| Show my day streak | How many days in a row you have played |
+| Show my clan | The tag beside your name stays either way — this is the card |
+| Show when I joined | The date the account was created |
+| Show me on the leaderboard | Off takes your name off the public board; your stats still count |
+
+Every one of them is enforced on the **server**. A section a viewer may not see
+is left out of the response entirely rather than sent with a flag the client is
+trusted to honour, so there is nothing in the payload for a modified client to
+un-hide. What *is* sent is a short `hidden` list naming the sections that were
+withheld, because "they have not shared their stats" and "they have no stats"
+are different things and a card that cannot tell them apart reads as broken.
+
+Two details worth knowing:
+
+- **"Friends only" means people already on your list** — not people who have
+  asked. Somebody with a request in flight gets the stranger's answer.
+- **Closing the door does not trap a request already inside it.** An account set
+  to *no one* can still accept an ask that was filed before the switch moved, and
+  can still be asked by somebody it asked first.
+
+A refusal is deliberately the same sentence for *no one* and for *friends of
+friends*: which of the two it is, is a fact about an account that asked not to be
+read.
+
 ### Your address is not on your stream
 
 The account panel is what is open while somebody picks a class or reads their
@@ -1323,6 +1408,45 @@ the body their camera is on — because it is the only number on a spectator's H
 that is not already in somebody's roster entry.
 
 ---
+
+### The sound
+
+**Every sound in the game is synthesised at runtime.** No audio files ship with
+the project, nothing is preloaded, and the whole sound design is about thirty
+kilobytes of `client/js/audio.js`. Four things do most of the work:
+
+**Nothing is ever played twice the same way.** Every voice takes a small random
+walk through pitch, level, filter and timing. A rifle emptying a magazine is
+thirty *different* gunshots, which is the single largest difference between this
+and a loop of one sample.
+
+**Distance is a chain, not a volume knob.** A gunshot is five layers — the
+transient click of the primer, a pitched punch, broadband body, the supersonic
+crack, and the tail the map sends back. Near you it is crack and mechanism.
+Eighty units away the crack is gone, the air has eaten the top end, the report
+arrives a quarter of a second late at the real speed of sound, the direct sound
+and its reflections have separated into a wide stereo image, and what is left is
+mostly tail. That relationship is most of what makes a firefight legible by ear:
+you can hear roughly where a fight is without looking at it.
+
+**The room answers back.** Two convolution sends run in parallel, both built at
+boot rather than loaded: a short one carrying discrete early reflections, which
+is what tells the ear a space is enclosed, and a long diffuse one whose top end
+dies faster than its bottom the way a real tail does. Every sound asks for a
+different amount of each — a pistol indoors is mostly early reflections, a rocket
+outdoors is almost entirely tail.
+
+**The bus is mixed, not summed.** A gentle glue compressor, a `tanh` soft clipper
+so the last few decibels bend instead of squaring off, and a fast brickwall.
+Anything loud briefly ducks both reverb sends, so the next transient lands
+somewhere clean instead of inside the wash of the last one. A hard cap of 72
+concurrent voices keeps a ten-player firefight from turning the graph into
+crackle.
+
+Under all of it: three noise buffers rather than one. White for a supersonic
+crack, pink for the body of an impact or a footstep, brown for the weight under
+an explosion. Picking the right colour is worth more than any amount of filtering
+the wrong one.
 
 ## Modding
 
@@ -1565,7 +1689,7 @@ Authentication is a bearer token, also set as an `HttpOnly` cookie:
 | `GET` | `/meta` | Modes, maps, classes, skins, protocol version |
 | `GET` | `/servers` | Room list with codes, population and match state |
 | `GET` | `/leaderboard?sort=&limit=&offset=` | `sort`: `kills`, `score`, `level`, `xp`, `wins`, `kd`, `headshots`, `damage`, `gr` |
-| `GET` | `/players/:name` | Public profile and lifetime stats |
+| `GET` | `/players/:name` | The card: profile, styling, stats and recent matches, minus anything its owner has not shared with this viewer. Also `relation` (`self` · `friend` · `none`), `hidden` (the sections withheld), `can` (`add` · `join` · `seePresence`), `pending` and `presence`. Reads signed out too |
 | `GET` | `/players/:name/matches?limit=` | Recent match history |
 | `GET` | `/stats/global` | Account, match and online counts |
 | `GET` | `/clans?q=&limit=&offset=` | Every clan, ranked by its members' combined match score |
@@ -1593,6 +1717,9 @@ Authentication is a bearer token, also set as an `HttpOnly` cookie:
 | `POST` | `/auth/email` | *(auth)* `{ email, password }` — corrects the address and re-sends |
 | `POST` | `/avatar` | *(auth)* the image **as the raw body**, not a form — see below |
 | `DELETE` | `/avatar` | *(auth)* back to the initials |
+| `GET` | `/profile/social` | *(auth)* your card, your privacy answers, and every value either may take |
+| `PUT` | `/profile/card` | *(auth)* `{ card }` — normalised before it is stored; answers with what is now true |
+| `PUT` | `/profile/privacy` | *(auth)* `{ privacy }` — same contract |
 | `GET` | `/reports/mine` | *(auth)* every report you filed, and what became of each |
 | `GET` | `/challenges` | *(auth)* today's three, this week's three, and all twenty-one career milestones with your progress on each |
 | `GET` | `/mastery` | *(auth)* per-weapon kills and tier |
@@ -1636,7 +1763,11 @@ round trips to draw that is a panel that flickers.
 
 A friend who is playing comes back with `playing: true` and the `room` code the
 server browser joins by; a full room answers `full: true` and `room: null`,
-because a room nobody can enter is not an invitation. These answer
+because a room nobody can enter is not an invitation, and a friend who has closed
+their matches answers `closed: true` instead — "full" and "they do not take
+visitors" are different sentences and a row that says the wrong one reads as the
+server being wrong about a friend. A friend who has switched presence off does
+not appear online at all, to anybody, their friends included. These answer
 `already_friends` (409), `already_asked` (409), `list_full` (409), `too_many`
 (409), `level_too_low` (403) and `rate_limited` (429).
 

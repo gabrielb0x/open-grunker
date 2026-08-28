@@ -284,6 +284,28 @@ export const api = {
   dropFriendRequest: (id) => request('DELETE', `/friends/requests/${encodeURIComponent(id)}`),
   removeFriend: (id) => request('DELETE', `/friends/${encodeURIComponent(id)}`),
 
+  /* ── The profile card, and who it is for ───────────────────────────────
+     The card is styling and the privacy answers are not, so they save
+     separately — a player fiddling with a colour must never be able to
+     accidentally publish something they had closed. ─────────────────────── */
+
+  /** This account's card, its privacy answers and everything pickable. */
+  social() { return request('GET', '/profile/social'); },
+
+  /** Saves the styling. Resolves to the card as the server actually stored it. */
+  async saveCard(card) {
+    const r = await request('PUT', '/profile/card', { card });
+    if (account) account.card = r.card;
+    return r.card;
+  },
+
+  /** Saves the answers. Same contract: what comes back is what is now true. */
+  async savePrivacy(privacy) {
+    const r = await request('PUT', '/profile/privacy', { privacy });
+    if (account) account.privacy = r.privacy;
+    return r.privacy;
+  },
+
   /* ── Clans ─────────────────────────────────────────────────────────────── */
 
   /**

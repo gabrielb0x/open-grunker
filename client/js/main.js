@@ -615,7 +615,14 @@ export class Game {
       if (msg.kill) sfx.kill();
       this.hud.damageNumber({ x: msg.x, y: msg.y, z: msg.z }, msg.damage, this.gfx.camera,
         msg.kill ? 'kill' : msg.head ? 'head' : '');
-      this.effects.blood(msg.x, msg.y, msg.z, msg.head || msg.kill);
+      // A `hit` only ever reaches the player who caused it, so the round came
+      // from this camera: the spray leaves the far side of them rather than
+      // puffing out in every direction from the point of contact.
+      const from = this.gfx.camera.position;
+      const away = { x: msg.x - from.x, y: msg.y - from.y, z: msg.z - from.z };
+      const reach = Math.hypot(away.x, away.y, away.z) || 1;
+      this.effects.blood(msg.x, msg.y, msg.z, msg.head || msg.kill,
+        { x: away.x / reach, y: away.y / reach, z: away.z / reach });
       this.entities.flashHit(msg.target);
       this.input.gamepad.rumble(msg.kill ? 0.75 : msg.head ? 0.45 : 0.3, msg.kill ? 150 : 70);
     });

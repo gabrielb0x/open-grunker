@@ -15,7 +15,7 @@ import config, { ROOT } from '../config.js';
 import log from '../util/log.js';
 import {
   levelFromXp, xpForLevel, REPORT_STATUSES, CLAN_ROLES, streakReward, FIRST_WIN_BONUS,
-  SIGNUP_REWARD, levelUpReward,
+  SIGNUP_REWARD, levelUpReward, normaliseCard, normalisePrivacy,
 } from '../../shared/constants.js';
 
 const logger = log.child('db');
@@ -28,6 +28,8 @@ db.exec(SCHEMA_SQL);
 
 const now = () => Math.floor(Date.now() / 1000);
 const int = (v) => (typeof v === 'bigint' ? Number(v) : v);
+/** A stored JSON blob, or null when there is nothing readable in the column. */
+const parseJson = (raw) => { try { return raw ? JSON.parse(raw) : null; } catch { return null; } };
 
 /**
  * A fresh entity id.
@@ -112,6 +114,20 @@ function migrate() {
   // Two-factor authentication. `totp_secret` is null until a first code has
   // been checked, so it doubles as the "is it actually on" flag — an account
   // that opened the setup card and walked away is not half-protected.
+  // The profile card and the social switches that decide who may see it.
+  // Two JSON blobs rather than a column per setting: both are read whole every
+  // time they are read at all, both are written whole, and neither is ever
+  // something a query filters on. `normaliseCard`/`normalisePrivacy` in
+  // shared/constants.js are what turn either one back into a trustworthy shape,
+  // so a blob written by an older build costs nothing to grow into a newer one.
+  if (!u.has('card')) db.exec('ALTER TABLE users ADD COLUMN card TEXT');
+  if (!u.has('privacy')) db.exec('ALTER TABLE users ADD COLUMN privacy TEXT');
+  // …and one flag pulled back out of it. The leaderboard is the only reader of
+  // a privacy answer that cannot afford to parse a blob per row, so that one
+  // answer is cached in a column the query can filter on. savePrivacy is the
+  // only writer, which is what keeps the two from drifting.
+  if (!u.has('listed')) db.exec('ALTER TABLE users ADD COLUMN listed INTEGER NOT NULL DEFAULT 1');
+
   if (!u.has('totp_secret')) db.exec('ALTER TABLE users ADD COLUMN totp_secret TEXT');
   if (!u.has('totp_enabled_at')) db.exec('ALTER TABLE users ADD COLUMN totp_enabled_at INTEGER');
   if (!u.has('totp_last_step')) db.exec('ALTER TABLE users ADD COLUMN totp_last_step INTEGER NOT NULL DEFAULT 0');
@@ -384,6 +400,8 @@ const S = {
   touchLogin: db.prepare('UPDATE users SET last_login = ?, last_ip = ? WHERE id = ?'),
   setPassword: db.prepare('UPDATE users SET password_hash = ? WHERE id = ?'),
   setRole: db.prepare('UPDATE users SET role = ? WHERE id = ?'),
+  setCard: db.prepare('UPDATE users SET card = ? WHERE id = ?'),
+  setPrivacy: db.prepare('UPDATE users SET privacy = ?, listed = ? WHERE id = ?'),
   setBan: db.prepare('UPDATE users SET banned_until = ?, ban_reason = ? WHERE id = ?'),
   addProgress: db.prepare('UPDATE users SET xp = xp + ?, gr = gr + ? WHERE id = ?'),
   setStreak: db.prepare(
@@ -556,6 +574,18 @@ const S = {
   insertFriend: db.prepare(
     'INSERT OR IGNORE INTO friends (user_a, user_b, created_at) VALUES (?,?,?)'),
   friendPair: db.prepare('SELECT * FROM friends WHERE user_a = ? AND user_b = ?'),
+  // Does anybody appear on both lists? Each half unfolds the sorted pair back
+  // into "the other person", which is the only way to read this table as one
+  // account's friends; the join then asks whether the two sets touch at all.
+  // LIMIT 1 because the question is yes/no — the size of the overlap is
+  // nobody's business, least of all the person being added.
+  mutualFriend: db.prepare(`SELECT 1 AS ok FROM
+      (SELECT CASE WHEN user_a = ? THEN user_b ELSE user_a END AS id
+         FROM friends WHERE user_a = ? OR user_b = ?) fa
+      JOIN
+      (SELECT CASE WHEN user_a = ? THEN user_b ELSE user_a END AS id
+         FROM friends WHERE user_a = ? OR user_b = ?) fb ON fa.id = fb.id
+      LIMIT 1`),
   deleteFriend: db.prepare('DELETE FROM friends WHERE user_a = ? AND user_b = ?'),
   countFriends: db.prepare(
     'SELECT COUNT(*) AS n FROM friends WHERE user_a = ? OR user_b = ?'),
@@ -724,6 +754,33 @@ export const users = {
   setAvatar(id, file) {
     S.setAvatar.run(file ?? null, file ? now() : null, id);
     return S.userById.get(id);
+  },
+
+  /* ── Profile card & social privacy ───────────────────────────────────
+   *
+   * Both live on the user row as JSON and both are read through a normaliser,
+   * so a row that has never been written, a row written by an older build and
+   * a row somebody corrupted by hand all read as a complete, valid object.
+   * Nothing downstream has to remember to check.
+   * ──────────────────────────────────────────────────────────────────────── */
+
+  /** How this account has styled its card. Always a whole card. */
+  card: (u) => normaliseCard(parseJson(typeof u === 'string' ? S.userById.get(u)?.card : u?.card)),
+
+  /** Who this account lets see what. Always a whole set of answers. */
+  privacy: (u) => normalisePrivacy(parseJson(typeof u === 'string' ? S.userById.get(u)?.privacy : u?.privacy)),
+
+  /** Stores a card, normalised first so the database never holds a bad one. */
+  saveCard(id, card) {
+    const clean = normaliseCard(card);
+    S.setCard.run(JSON.stringify(clean), id);
+    return clean;
+  },
+
+  savePrivacy(id, privacy) {
+    const clean = normalisePrivacy(privacy);
+    S.setPrivacy.run(JSON.stringify(clean), clean.listed ? 1 : 0, id);
+    return clean;
   },
 
   ban: (id, untilTs, reason) => S.setBan.run(untilTs, reason ?? null, id),
@@ -927,7 +984,7 @@ export const stats = {
              s.kills, s.deaths, s.assists, s.headshots, s.wins, s.losses, s.matches,
              s.damage_dealt, s.best_streak, s.playtime_sec, s.shots_fired, s.shots_hit, s.score
       FROM users u JOIN stats s ON s.user_id = u.id
-      WHERE u.banned_until = 0
+      WHERE u.banned_until = 0 AND u.listed = 1
       ORDER BY ${col} DESC, s.kills DESC
       LIMIT ? OFFSET ?`).all(Math.min(limit, 200), offset);
     return rows.map((r, i) => ({ rank: offset + i + 1, ...r }));
@@ -1516,6 +1573,17 @@ export const friends = {
     return !!S.friendPair.get(x, y);
   },
   count: (userId) => int(S.countFriends.get(userId, userId).n),
+
+  /**
+   * Whether these two already have somebody in common.
+   *
+   * This is the whole of the "friends of friends may add me" setting: it is a
+   * yes/no, asked once, and it never tells the asker *who* the mutual is.
+   */
+  share(a, b) {
+    if (!a || !b || a === b) return false;
+    return !!S.mutualFriend.get(a, a, a, b, b, b);
+  },
   countOutgoing: (userId) => int(S.countOutgoingRequests.get(userId).n),
   countIncoming: (userId) => int(S.countIncomingRequests.get(userId).n),
   requested: (from, to) => !!S.friendRequest.get(from, to),

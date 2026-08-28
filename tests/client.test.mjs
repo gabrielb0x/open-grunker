@@ -42,6 +42,10 @@ const { Menu } = await import('/js/menu.js');
 const { Game } = await import('/js/main.js');
 const { GAME_VERSION, PATCH_NOTES, latestPatch } = await import('/shared/patchnotes.js');
 const { api } = await import('/js/api.js');
+const audio = await import('/js/audio.js');
+
+/** A listener at the origin, facing +Z, for the positional-audio checks. */
+const listener = { pos: { x: 0, y: 1.6, z: 0 }, right: { x: 1, z: 0 } };
 
 /**
  * A renderer stand-in. Everything the client asks of a WebGLRenderer that does
@@ -767,7 +771,12 @@ export default async function run() {
     const shown = document.querySelectorAll('.acct-view.active').map((v) => v.dataset.acctView);
     menu.openAccountView('overview');
     info(`${tabs.length} tabs → ${tabs.join(', ')}`);
-    return tabs.length === 6 && orphans.length === 0 && tabs.includes('progression')
+    // The count is not the invariant — "nothing here is a dead end" is. Named
+    // rather than counted so adding a page cannot quietly break the test, and
+    // removing one of these cannot quietly pass it.
+    const wanted = ['overview', 'progression', 'matches', 'reports', 'identity',
+      'card', 'social', 'security'];
+    return orphans.length === 0 && wanted.every((t) => tabs.includes(t))
       && shown.length === 1 && shown[0] === 'reports'
       && document.querySelectorAll('.acct-view.active')[0].dataset.acctView === 'overview';
   })());
@@ -1139,6 +1148,49 @@ export default async function run() {
     info(`5.4u → ${small.light.toFixed(1)} light / ${small.life.toFixed(2)}s`
       + ` · 7.6u → ${big.light.toFixed(1)} light / ${big.life.toFixed(2)}s`);
     return big.radius > small.radius && big.light > small.light && big.life > small.life;
+  })());
+
+  check('nothing an impact throws off ends up inside the wall it hit', (() => {
+    // Every particle leaves along the surface normal through `_cone`. Spraying
+    // into a sphere instead puts half of each impact behind the geometry,
+    // where it is invisible at best and visible through the wall at worst.
+    effects.clear();
+    const [nx, ny, nz] = [0, 0, -1];             // a wall facing the camera
+    for (let i = 0; i < 12; i++) effects.impact(4, 1.5, 9, nx, ny, nz, 'metal');
+    let checked = 0;
+    let inside = 0;
+    for (const cloud of [effects.sparks, effects.smoke]) {
+      for (let i = 0; i < cloud.high; i++) {
+        if (cloud.life[i] <= 0) continue;
+        const j = i * 3;
+        // Gravity is added on the way out, so only the axis the wall faces
+        // along says anything about which side of it a particle left on.
+        const along = cloud.vel[j] * nx + cloud.vel[j + 1] * ny + cloud.vel[j + 2] * nz;
+        checked++;
+        // The strike flash has no velocity at all — it sits on the surface.
+        if (along < -1e-6) inside++;
+      }
+    }
+    info(`${checked} particles, ${inside} heading into the wall`);
+    return checked > 40 && inside === 0;
+  })());
+
+  check('the ring of dust a landing kicks up really is a ring', (() => {
+    effects.clear();
+    effects.dust(0, 0, 0, 12);
+    let outward = 0;
+    let total = 0;
+    for (let i = 0; i < effects.smoke.high; i++) {
+      if (effects.smoke.life[i] <= 0) continue;
+      const j = i * 3;
+      const px = effects.smoke.pos[j];
+      const pz = effects.smoke.pos[j + 2];
+      // Moving away from where the boot landed, not through it.
+      if (px * effects.smoke.vel[j] + pz * effects.smoke.vel[j + 2] > 0) outward++;
+      total++;
+    }
+    info(`${outward}/${total} moving outward`);
+    return total >= 6 && outward === total;
   })());
 
   check('clearing releases every pooled effect', (() => {
@@ -1751,5 +1803,364 @@ export default async function run() {
       if (spreadFor(w, { ads: true, burst: 3 }) >= spreadFor(w, { ads: false, burst: 3 })) ok = false;
     }
     return ok;
+  })());
+
+  /* ── The panel rail ──────────────────────────────────────────────────── */
+
+  suite('Client — the menu rail');
+
+  check('every rail entry has an icon, a label, a title and a subtitle', (() => {
+    const tabs = document.querySelectorAll('.tab');
+    const bad = tabs.filter((t) => !t.dataset.icon || !t.dataset.label
+      || !t.dataset.title || !t.dataset.sub || !t.innerHTML.includes('<svg'));
+    info(`${tabs.length} entries · ${tabs.map((t) => t.dataset.label).join(', ')}`);
+    return tabs.length >= 12 && bad.length === 0;
+  })());
+
+  check('every rail entry sits in a named group', (() => {
+    const groups = document.querySelectorAll('.pn-group');
+    const loose = document.querySelectorAll('.tab').filter((t) => !t.parentElement?.classList.contains('pn-group'));
+    info(groups.map((g) => g.dataset.group).join(' · '));
+    return groups.length >= 4 && groups.every((g) => g.dataset.group) && loose.length === 0;
+  })());
+
+  check('opening a page names it in the header', (() => {
+    menu.openTab('clans');
+    const named = document.getElementById('panelTitle').textContent === 'Clans'
+      && document.getElementById('panelSub').textContent.length > 8;
+    menu.openTab('classes');
+    return named && document.getElementById('panelTitle').textContent === 'Loadout';
+  })());
+
+  check('the filter box narrows the rail and puts it back', (() => {
+    const box = document.getElementById('tabSearch');
+    const visible = () => document.querySelectorAll('.tab').filter((t) => !t.classList.contains('hidden'));
+    const all = visible().length;
+    box.value = 'clan';
+    box.fire('input');
+    const narrowed = visible();
+    box.value = 'zzzz';
+    box.fire('input');
+    const none = visible().length === 0 && !document.getElementById('tabSearchNone').classList.contains('hidden');
+    box.value = '';
+    box.fire('input');
+    info(`${all} → ${narrowed.length} on "clan" → 0 on "zzzz" → ${visible().length}`);
+    return narrowed.length === 1 && narrowed[0].dataset.tab === 'clans'
+      && none && visible().length === all;
+  })());
+
+  check('the filter matches a subtitle, not only a name', (() => {
+    // "sensitivity" is nowhere in the word SETTINGS — it is in what the page
+    // is for, which is the half people actually remember.
+    const box = document.getElementById('tabSearch');
+    box.value = 'crosshair';
+    box.fire('input');
+    const hit = document.querySelectorAll('.tab').filter((t) => !t.classList.contains('hidden'));
+    box.value = '';
+    box.fire('input');
+    return hit.length === 1 && hit[0].dataset.tab === 'settings';
+  })());
+
+  /* ── The player card ─────────────────────────────────────────────────── */
+
+  suite('Client — the player card');
+
+  /** One profile payload, shaped exactly the way /players/:name answers. */
+  const profile = (over = {}) => ({
+    user: {
+      id: 'u9', username: 'Grunk', level: 24, xp: 1200, levelXp: 1000, nextLevelXp: 2000,
+      verified: true, avatar: null, clan: 'DEV', clanVerified: true, role: 'player',
+      createdAt: 1700000000, streak: { days: 5 },
+      card: K.normaliseCard({
+        pattern: 'rays', accentMode: 'custom', accent: '#4d9bff', layout: 'showcase',
+        frame: 'glow', title: 'Quickscoper. Allegedly.', bio: 'Here since season one.',
+        featured: ['kd', 'headshots', 'wins'],
+      }),
+      stats: {
+        kills: 900, deaths: 400, kd: 2.25, wins: 60, headshots: 210, accuracy: 31.2,
+        damage: 91000, matches: 120, bestStreak: 14, playtime: 40000, score: 51000, assists: 40,
+      },
+      ...over.user,
+    },
+    relation: 'none',
+    hidden: [],
+    recent: [{ won: true, map: 'Subzero', mode: 'tdm', kills: 20, deaths: 8, score: 900, started_at: 1 }],
+    can: { add: true, join: false, seePresence: true },
+    pending: { outgoing: false, incoming: false },
+    presence: null,
+    ...over,
+  });
+
+  /** Answers the next fetch with one payload, so the card can be opened. */
+  const serve = (payload) => { globalThis.fetch = async () => ({ ok: true, json: async () => ({ ok: true, ...payload }) }); };
+
+  const cardBody = () => document.getElementById('playerCardBody');
+  const shell = () => cardBody().querySelector('.pc-shell');
+
+  serve(profile());
+  await menu.openPlayerCard('Grunk');
+
+  check('the card wears its owner\'s colour, pattern, frame and layout', (() => {
+    const el = shell();
+    info(el?.getAttribute('style') ?? '(no shell)');
+    return !!el && el.getAttribute('data-pattern') === 'rays'
+      && el.getAttribute('data-layout') === 'showcase'
+      && el.getAttribute('data-frame') === 'glow'
+      && (el.getAttribute('style') ?? '').includes('#4d9bff');
+  })());
+
+  check('a card on auto takes its colour from the name when there is no picture', await (async () => {
+    serve(profile({ user: { card: K.normaliseCard({ accentMode: 'auto' }) } }));
+    await menu.openPlayerCard('Grunk');
+    const style = shell()?.getAttribute('style') ?? '';
+    // Not the stored default, and not empty: derived from the name.
+    info(style);
+    return /--pc-accent:#[0-9a-f]{6}/.test(style) && !style.includes('#f5a623');
+  })());
+
+  check('the pinned stats are the ones its owner pinned', await (async () => {
+    serve(profile());
+    await menu.openPlayerCard('Grunk');
+    const html = cardBody().innerHTML;
+    // Only the band: every one of these names also appears in the career grid
+    // underneath, which is exactly the point — pinning promotes a figure, it
+    // does not remove it from the card.
+    const band = html.slice(html.indexOf('pc-headline'), html.indexOf('pc-actions'));
+    return cardBody().querySelectorAll('.pc-big').length === 3
+      && band.includes('K/D') && band.includes('HEADSHOTS') && band.includes('WINS')
+      && !band.includes('ASSISTS') && !band.includes('PLAYTIME');
+  })());
+
+  check('a stranger who may be added is offered ADD FRIEND', (() => {
+    const html = cardBody().innerHTML;
+    return html.includes('data-card-act="add"') && html.includes('ADD FRIEND')
+      && !html.includes('data-card-act="unfriend"');
+  })());
+
+  check('somebody already asked is offered CANCEL, never a second request', await (async () => {
+    serve(profile({ can: { add: false, join: false, seePresence: true }, pending: { outgoing: true, incoming: false } }));
+    await menu.openPlayerCard('Grunk');
+    const html = cardBody().innerHTML;
+    return html.includes('data-card-act="cancel"') && !html.includes('data-card-act="add"');
+  })());
+
+  check('somebody who asked us is offered ACCEPT and DECLINE', await (async () => {
+    serve(profile({ can: { add: false, join: false, seePresence: true }, pending: { outgoing: false, incoming: true } }));
+    await menu.openPlayerCard('Grunk');
+    const html = cardBody().innerHTML;
+    return html.includes('data-card-act="accept"') && html.includes('data-card-act="decline"');
+  })());
+
+  check('a friend in a joinable room gets JOIN, and the way to remove them', await (async () => {
+    serve(profile({
+      relation: 'friend',
+      can: { add: false, join: true, seePresence: true },
+      presence: { online: true, playing: true, room: 'FRA:7K2Q', map: 'Subzero', mode: 'Team Deathmatch', full: false },
+    }));
+    await menu.openPlayerCard('Grunk');
+    const join = cardBody().querySelectorAll('button[data-card-act=join]');
+    const html = cardBody().innerHTML;
+    return join.length === 1 && join[0].dataset.arg === 'FRA:7K2Q'
+      && html.includes('IN A MATCH') && html.includes('data-card-act="unfriend"');
+  })());
+
+  check('JOIN from the card drops straight into their match', (() => {
+    played.length = 0;
+    menu.cardAction('join', 'FRA:7K2Q');
+    return played.length === 1 && played[0].room === 'FRA:7K2Q';
+  })());
+
+  check('a hidden section says so rather than reading as an empty career', await (async () => {
+    serve(profile({
+      hidden: ['showStats', 'showMatches'],
+      recent: [],
+      user: { stats: null },
+    }));
+    await menu.openPlayerCard('Grunk');
+    const html = cardBody().innerHTML;
+    info(cardBody().querySelectorAll('.pc-cell').length + ' stat cells drawn');
+    return cardBody().querySelectorAll('.pc-cell').length === 0
+      && html.includes('keeps their career stats private')
+      && html.includes('keeps their match history private');
+  })());
+
+  check('your own card offers the editor rather than a friend request', await (async () => {
+    serve(profile({ relation: 'self', can: { add: false, join: false, seePresence: true } }));
+    await menu.openPlayerCard('Grunk');
+    const html = cardBody().innerHTML;
+    return html.includes('data-card-act="edit"') && html.includes('data-card-act="privacy"')
+      && !html.includes('data-card-act="add"');
+  })());
+
+  /* ── The card editor and the privacy switches ────────────────────────── */
+
+  suite('Client — customising the card');
+
+  check('the editor is built from the shared catalogue, not a hard-coded list', (() => {
+    menu.buildCardEditor();
+    const host = document.getElementById('cardEditor');
+    const chips = host.querySelectorAll('.ce-chip');
+    const values = chips.map((c) => c.dataset.value);
+    info(`${chips.length} chips · ${host.querySelectorAll('.ce-block').length} blocks`);
+    return K.CARD_PATTERNS.every((p) => values.includes(p.id))
+      && K.CARD_FRAMES.every((f) => values.includes(f.id))
+      && K.CARD_LAYOUTS.every((l) => values.includes(l.id))
+      && K.CARD_STATS.every((st) => values.includes(st.id));
+  })());
+
+  check('picking a fourth pinned stat drops the oldest rather than refusing', (() => {
+    menu.cardDraft = { ...K.CARD_DEFAULTS, featured: ['kd', 'kills', 'wins'] };
+    menu.setCardField('featured', 'damage');
+    const after = menu.cardDraft.featured;
+    info(after.join(', '));
+    return after.length === K.CARD_FEATURED_MAX && after.includes('damage') && !after.includes('kd');
+  })());
+
+  check('the band can never be emptied', (() => {
+    menu.cardDraft = { ...K.CARD_DEFAULTS, featured: ['kd'] };
+    menu.setCardField('featured', 'kd');
+    return menu.cardDraft.featured.length === 1;
+  })());
+
+  check('picking a colour switches the card off auto', (() => {
+    menu.cardDraft = { ...K.CARD_DEFAULTS, accentMode: 'auto' };
+    menu.setCardField('accent', '#b07cff');
+    // Both halves: a colour stored while the card still follows the picture is
+    // a colour that never shows up anywhere.
+    return menu.cardDraft.accent === '#b07cff' && menu.cardDraft.accentMode === 'custom';
+  })());
+
+  check('the server has the last word on what a card may say', (() => {
+    // Whatever the editor sends, this is the shape that can be stored — the
+    // route runs exactly this function before it writes.
+    const cleaned = K.normaliseCard({
+      pattern: 'not-a-pattern', layout: 'nope', frame: 12, accent: 'javascript:x',
+      featured: ['kd', 'made-up', 'wins', 'kills', 'score'],
+      title: `  spaced   out  ${'x'.repeat(200)}`,
+      glow: false,
+    });
+    info(`${cleaned.pattern} · ${cleaned.accent} · ${cleaned.featured.length} pinned · title ${cleaned.title.length}`);
+    return cleaned.pattern === K.CARD_DEFAULTS.pattern && cleaned.layout === K.CARD_DEFAULTS.layout
+      && cleaned.frame === K.CARD_DEFAULTS.frame && cleaned.accent === K.CARD_DEFAULTS.accent
+      && cleaned.featured.length === K.CARD_FEATURED_MAX
+      && !cleaned.featured.includes('made-up')
+      && cleaned.title.length === K.CARD_TITLE_MAX && cleaned.glow === false;
+  })());
+
+  check('a tagline cannot carry newlines or invisible characters', (() => {
+    const cleaned = K.normaliseCard({ title: 'one two\nthree​four‮' });
+    info(JSON.stringify(cleaned.title));
+    return cleaned.title === 'one two three four' ;
+  })());
+
+  check('every privacy switch is drawn with all of its answers', (() => {
+    menu.buildPrivacyForm();
+    const host = document.getElementById('privacyForm');
+    const rows = host.querySelectorAll('.pv-row');
+    const values = host.querySelectorAll('.pv-opt').map((b) => `${b.dataset.priv}:${b.dataset.value}`);
+    info(`${rows.length} rows · ${values.length} answers`);
+    return rows.length === K.PRIVACY_FIELDS.length + 1
+      && K.PRIVACY_FIELDS.every((f) => f.options.every((o) => values.includes(`${f.id}:${o}`)))
+      && values.includes('listed:true') && values.includes('listed:false');
+  })());
+
+  check('exactly one answer per switch is marked', (() => {
+    const host = document.getElementById('privacyForm');
+    const rows = host.querySelectorAll('.pv-row').length;
+    const marked = host.querySelectorAll('.pv-opt.on');
+    // One per row, and each on a different switch: two marks on one row would
+    // otherwise pass a plain count.
+    const switches = new Set(marked.map((b) => b.dataset.priv));
+    info(`${marked.length} marked across ${rows} rows`);
+    return marked.length === rows && switches.size === rows;
+  })());
+
+  /* ── The sound engine ────────────────────────────────────────────────── */
+
+  suite('Client — audio');
+
+  // Order matters here. The voice budget is a real ceiling and the shim never
+  // advances the clock, so nothing is ever released during a run: every check
+  // that *measures* voices has to come before the one that spends them all.
+  check('the graph builds on the first gesture and is built only once', (() => {
+    const first = audio.initAudio();
+    const second = audio.initAudio();
+    return !!first && first === second;
+  })());
+
+  check('distance decides the mix, not just the level', (() => {
+    // The same weapon, near and far. Far has to cost fewer voices: the crack
+    // and the mechanism are gone, which is the whole distance model.
+    const spec = getClass('triggerman').primary.sound;
+    const before = audio.voiceCount();
+    audio.sfx.shot(spec, null, null);
+    const near = audio.voiceCount() - before;
+    const mid = audio.voiceCount();
+    audio.sfx.shot(spec, { x: 300, y: 0, z: 300 }, listener);
+    const far = audio.voiceCount() - mid;
+    info(`${near} voices near · ${far} far`);
+    return near > 0 && far < near;
+  })());
+
+  check('a surface marked silent makes no sound at all', (() => {
+    // There is one, and the whole point of it is that it is not heard.
+    const silent = Object.keys(K.SURFACE_FX).find((s) => K.SURFACE_FX[s].silent);
+    if (!silent) { info('no silent surface in this build'); return true; }
+    const before = audio.voiceCount();
+    audio.sfx.impact({ x: 1, y: 1, z: 1 }, listener, silent);
+    audio.sfx.footstep(false, silent);
+    return audio.voiceCount() === before;
+  })());
+
+  check('every sound the game asks for exists and survives being played', (() => {
+    // The catalogue is called from six files; a recipe that throws takes the
+    // frame it was played on with it.
+    const calls = [
+      () => audio.sfx.shot(getClass('triggerman').primary.sound, null, null),
+      () => audio.sfx.shot(getClass('marksman').primary.sound, { x: 40, y: 2, z: 30 }, listener),
+      () => audio.sfx.whizz(0.3, 0.8),
+      () => audio.sfx.hitmarker(true, false),
+      () => audio.sfx.hitmarker(false, true),
+      () => audio.sfx.kill(),
+      () => audio.sfx.hurt(45),
+      () => audio.sfx.fleshHit(),
+      () => audio.sfx.die(),
+      () => audio.sfx.explosion({ x: 3, y: 1, z: 2, r: 7 }, listener),
+      () => audio.sfx.impact({ x: 2, y: 1, z: 1 }, listener, 'metal'),
+      () => audio.sfx.impact({ x: 2, y: 1, z: 1 }, listener, 'snow'),
+      () => audio.sfx.shell(),
+      () => audio.sfx.reload('out'), () => audio.sfx.reload('in'), () => audio.sfx.reload('charge'),
+      () => audio.sfx.cycle(), () => audio.sfx.dryFire(), () => audio.sfx.switchWeapon(),
+      () => audio.sfx.footstep(true, 'metal'), () => audio.sfx.jump(),
+      () => audio.sfx.land(true, 'snow'), () => audio.sfx.slide(), () => audio.sfx.spawn(),
+      () => audio.sfx.ui('click'), () => audio.sfx.ui('hover'),
+      () => audio.sfx.ui('ok'), () => audio.sfx.ui('error'),
+      () => audio.sfx.levelUp(), () => audio.sfx.unlock(), () => audio.sfx.matchEnd(),
+      () => audio.sfx.points(true), () => audio.sfx.sting(1.2),
+      () => audio.sfx.tick(true), () => audio.sfx.siren(false), () => audio.sfx.nuke(),
+    ];
+    for (const call of calls) {
+      try { call(); } catch (e) { info(String(e)); return false; }
+    }
+    info(`${calls.length} recipes played`);
+    return true;
+  })());
+
+  check('a firefight cannot outrun the voice budget', (() => {
+    const spec = getClass('spraynpray').primary.sound;
+    for (let i = 0; i < 400; i++) audio.sfx.shot(spec, null, null);
+    const used = audio.voiceCount();
+    info(`${used} voices live after 400 shots in one frame`);
+    return used <= audio.MAX_VOICES;
+  })());
+
+  check('turning the effects down to nothing stops making them', (() => {
+    const was = settings.sfxVolume;
+    settings.sfxVolume = 0;
+    const before = audio.voiceCount();
+    for (let i = 0; i < 10; i++) audio.sfx.ui('click');
+    const quiet = audio.voiceCount() === before;
+    settings.sfxVolume = was;
+    return quiet;
   })());
 }

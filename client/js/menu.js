@@ -17,6 +17,8 @@ import { getMap, ALL_MAP_IDS } from '/shared/maps.js';
 import { GAME_VERSION, PATCH_NOTES, PATCH_KINDS, latestPatch } from '/shared/patchnotes.js';
 import * as keys from './keybinds.js';
 import { sfx } from './audio.js';
+import { icon } from './icons.js';
+import { avatarAccent, nameAccent } from './avatarcolor.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, html) => {
@@ -76,6 +78,18 @@ export class Menu {
     this.friendTimer = null;
     /** Which profile the player card is currently showing. */
     this.cardName = null;
+    /**
+     * The card being edited, and the privacy answers behind it.
+     *
+     * The draft is deliberately not the saved card: everything in the editor
+     * writes here and only SAVE sends it, so trying eight patterns costs eight
+     * repaints and no requests — and RESET has something to go back to.
+     */
+    this.cardDraft = { ...K.CARD_DEFAULTS, featured: [...K.CARD_DEFAULTS.featured] };
+    this.privacy = { ...K.PRIVACY_DEFAULTS };
+    /** Real rows for the editor's preview, so it does not read as an empty card. */
+    this.cardPreviewMatches = [];
+    this.socialLoaded = false;
 
     this.root = $('menu');
     /** Live server rows keyed by mode, so the play buttons can target one. */
@@ -92,6 +106,8 @@ export class Menu {
     this._bindClans();
     this._bindFriends();
     this._bindPlayerCard();
+    this._bindCardEditor();
+    this._bindPrivacy();
     this.buildClasses($('classGrid'));
     this.buildClasses($('classGridModal'), true);
     this.buildSettings();
@@ -224,34 +240,116 @@ export class Menu {
 
   /* ── Tabs ──────────────────────────────────────────────────────────────── */
 
+  /**
+   * The rail down the left of the panel.
+   *
+   * Each button carries its own icon name, title and subtitle in the markup, so
+   * adding a destination is one line of HTML and never a change here. The icon
+   * is injected rather than written inline twelve times: it is the same helper
+   * every other icon in the client goes through, and a hand-pasted SVG per
+   * button is twelve chances to paste the wrong one.
+   */
   _bindTabs() {
     for (const tab of document.querySelectorAll('.tab')) {
+      // The badge is the only thing already inside the button, and it has to
+      // survive the rebuild: it is the count of requests waiting for an answer.
+      const badge = tab.querySelector('.tab-badge');
+      tab.innerHTML = `${icon(tab.dataset.icon ?? 'chevron')}<span class="t-label">${
+        escapeHtml(tab.dataset.label ?? tab.dataset.title ?? '')}</span>`;
+      if (badge) tab.appendChild(badge);
+
       tab.addEventListener('click', () => {
         sfx.ui();
-        for (const t of document.querySelectorAll('.tab')) t.classList.toggle('active', t === tab);
-        for (const p of document.querySelectorAll('.tab-panel')) {
-          p.classList.toggle('active', p.dataset.panel === tab.dataset.tab);
-        }
-        if (tab.dataset.tab === 'leaderboard') this.refreshLeaderboard();
-        if (tab.dataset.tab === 'clans') this.refreshClans();
-        // Presence is the whole point of the friends list, so it is the one
-        // panel that keeps looking while it is open — and stops the moment it
-        // is not, rather than polling a tab nobody is on.
-        this.watchFriends(tab.dataset.tab === 'friends');
-        if (tab.dataset.tab === 'servers') this.refreshServers();
-        if (tab.dataset.tab === 'shop') this.buildShop();
-        if (tab.dataset.tab === 'profile') this.refreshAccount();
-        if (tab.dataset.tab === 'controls') this.buildBinds();
-        if (tab.dataset.tab === 'challenges') this.buildProgress();
+        this.selectTab(tab);
       });
+      // A rail is a list of things you move along, so it should sound like one.
+      tab.addEventListener('pointerenter', () => { if (!tab.classList.contains('active')) sfx.ui('hover'); });
     }
+    this._bindTabSearch();
+    // Whatever starts marked active owns the header on the first open.
+    this.paintPanelHead(document.querySelector('.tab.active'));
+  }
+
+  /** Switches to one rail entry and runs whatever that page needs on arrival. */
+  selectTab(tab) {
+    if (!tab) return;
+    const name = tab.dataset.tab;
+    for (const t of document.querySelectorAll('.tab')) t.classList.toggle('active', t === tab);
+    for (const p of document.querySelectorAll('.tab-panel')) {
+      p.classList.toggle('active', p.dataset.panel === name);
+    }
+    this.paintPanelHead(tab);
+    // A new page starts at its own top rather than wherever the last one was
+    // scrolled to, which is the one thing a shared scroller always gets wrong.
+    const scroller = $('menuPanel')?.querySelector('.panel-scroll');
+    if (scroller) scroller.scrollTop = 0;
+
+    if (name === 'leaderboard') this.refreshLeaderboard();
+    if (name === 'clans') this.refreshClans();
+    // Presence is the whole point of the friends list, so it is the one panel
+    // that keeps looking while it is open — and stops the moment it is not,
+    // rather than polling a tab nobody is on.
+    this.watchFriends(name === 'friends');
+    if (name === 'servers') this.refreshServers();
+    if (name === 'shop') this.buildShop();
+    if (name === 'profile') this.refreshAccount();
+    if (name === 'controls') this.buildBinds();
+    if (name === 'challenges') this.buildProgress();
+  }
+
+  /** The panel's own header: what you are looking at, and why you would. */
+  paintPanelHead(tab) {
+    if (!tab) return;
+    const title = $('panelTitle');
+    const sub = $('panelSub');
+    if (title) title.textContent = tab.dataset.title ?? tab.dataset.label ?? '';
+    if (sub) sub.textContent = tab.dataset.sub ?? '';
+  }
+
+  /**
+   * The filter box over the rail.
+   *
+   * Matches the label, the subtitle and the group heading, so "sound" finds
+   * SETTINGS and "tag" finds CLANS. A group whose every entry is filtered out
+   * hides its heading too — a heading over nothing reads as a bug.
+   */
+  _bindTabSearch() {
+    const box = $('tabSearch');
+    if (!box) return;
+    const apply = () => {
+      const q = box.value.trim().toLowerCase();
+      let shown = 0;
+      for (const group of document.querySelectorAll('.pn-group')) {
+        let hits = 0;
+        for (const tab of group.querySelectorAll('.tab')) {
+          const hay = `${tab.dataset.tab} ${tab.dataset.label ?? ''} ${tab.dataset.title ?? ''} ${
+            tab.dataset.sub ?? ''} ${group.dataset.group ?? ''}`.toLowerCase();
+          const hit = !q || hay.includes(q);
+          tab.classList.toggle('hidden', !hit);
+          if (hit) hits++;
+        }
+        group.classList.toggle('hidden', !hits);
+        shown += hits;
+      }
+      $('tabSearchNone')?.classList.toggle('hidden', !!shown);
+    };
+    box.addEventListener('input', apply);
+    // Enter goes to the first thing left standing — the whole point of typing
+    // three letters rather than reaching for the mouse.
+    box.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && box.value) { e.stopPropagation(); box.value = ''; apply(); return; }
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const first = document.querySelector('.pn-group:not(.hidden) .tab:not(.hidden)');
+      if (first) { sfx.ui('ok'); this.selectTab(first); }
+    });
   }
 
   openTab(name) {
     const tab = document.querySelector(`.tab[data-tab="${name}"]`);
     if (!tab) return;
     this.openPanel();
-    tab.click();
+    this.selectTab(tab);
   }
 
   /* ── Play ──────────────────────────────────────────────────────────────── */
@@ -1204,6 +1302,15 @@ export class Menu {
     const card = $('playerCard');
     $('playerCardClose')?.addEventListener('click', () => this.closePlayerCard());
     card?.addEventListener('mousedown', (e) => { if (e.target === card) this.closePlayerCard(); });
+    // One listener on the card rather than one per button: the card is rebuilt
+    // from scratch after every action it offers.
+    card?.addEventListener('click', (e) => {
+      const btn = e.target.closest?.('button[data-card-act]');
+      if (!btn || !card.contains(btn)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.cardAction(btn.dataset.cardAct, btn.dataset.arg ?? '', btn);
+    });
   }
 
   get playerCardOpen() { return $('playerCard')?.classList.contains('hidden') === false; }
@@ -1214,7 +1321,20 @@ export class Menu {
     sfx.ui();
   }
 
-  /** Fetches and draws one player's public profile. */
+  /**
+   * Fetches and draws one player's public profile.
+   *
+   * The colour is settled before the card is written rather than after: a card
+   * that paints itself amber and then flips to its owner's colour a beat later
+   * reads as a glitch, and the accent is a custom property that everything on
+   * the card is derived from, so it has to be right on the first frame.
+   *
+   * Which colour that is comes from the card itself. On `auto` — what every
+   * account starts on — it is pulled out of the profile picture, so a card
+   * nobody has ever edited still belongs to somebody. The picture is read once
+   * per URL and cached, and an account with no picture falls back to the same
+   * name-derived colour its initials are already drawn in.
+   */
   async openPlayerCard(name) {
     const card = $('playerCard');
     const body = $('playerCardBody');
@@ -1237,8 +1357,84 @@ export class Menu {
       return;
     }
     if (this.cardName !== name) return;
-    body.innerHTML = playerCardHtml(data);
+
+    this.cardData = data;
+    const accent = await cardAccent(data.user);
+    if (this.cardName !== name) return;                 // the read is awaited
+
+    body.innerHTML = playerCardHtml(data, accent);
     paintAvatar(body.querySelector('.pc-avatar'), data.user.avatar, data.user.username);
+    // The modal's own border is outside the shell the accent is declared on,
+    // so it is given the colour directly rather than inheriting it upwards.
+    card.querySelector('.pc-card')?.style.setProperty('--pc-accent', accent);
+  }
+
+  /**
+   * Every button on the card lands here.
+   *
+   * The card redraws itself after anything that changes the relationship, so
+   * ADD FRIEND becomes REQUEST SENT without the player having to close it and
+   * open it again — which is the whole difference between a card you act from
+   * and a card you read.
+   */
+  async cardAction(action, arg, btn = null) {
+    const name = this.cardName;
+    if (btn) btn.disabled = true;
+    try {
+      switch (action) {
+        case 'edit':
+          this.closePlayerCard();
+          this.openTab('profile');
+          this.openAccountView('card');
+          return;
+        case 'privacy':
+          this.closePlayerCard();
+          this.openTab('profile');
+          this.openAccountView('social');
+          return;
+        case 'signin':
+          this.closePlayerCard();
+          this.openAuth('login');
+          return;
+        case 'join':
+          sfx.ui('ok');
+          this.closePlayerCard();
+          this.selectedRoom = arg;
+          this.onPlay({ name: this.currentName(), classId: this.selectedClass, room: arg });
+          return;
+        case 'add':
+          this.friendState = await api.addFriend(arg);
+          this.notify(`Asked ${arg} to be friends.`, 'good');
+          break;
+        case 'accept':
+          this.friendState = await api.acceptFriend(arg);
+          this.notify('Added.', 'good');
+          break;
+        case 'decline':
+        case 'cancel':
+          this.friendState = await api.dropFriendRequest(arg);
+          break;
+        case 'unfriend': {
+          const r = await api.removeFriend(arg);
+          this.friendState = r;
+          this.notify(`${r.removed} is no longer on your list.`);
+          break;
+        }
+        default:
+          return;
+      }
+      sfx.ui('ok');
+      this.renderFriends();
+      // Re-read rather than patch: accepting a request can change what the
+      // server is willing to show on this card at all, and guessing which half
+      // moved is how a card ends up disagreeing with the panel behind it.
+      if (this.cardName === name) await this.openPlayerCard(name);
+    } catch (ex) {
+      sfx.ui('error');
+      this.notify(ex.message || 'That did not work.', 'error');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
 
   /* ── Shop ──────────────────────────────────────────────────────────────── */
@@ -2470,6 +2666,362 @@ export class Menu {
     if (name === 'reports') this.loadReports();
     if (name === 'matches' && api.account) this.loadMatches(api.account.username);
     if (name === 'progression') this.renderProgression(api.account);
+    if (name === 'card' || name === 'social') {
+      // One fetch for both, on the first visit. After that the panels redraw
+      // from what is already in hand — the card editor in particular is a
+      // hundred repaints per visit and none of them are worth a round trip.
+      if (this.socialLoaded) { this.buildCardEditor(); this.buildPrivacyForm(); }
+      else this.loadSocial();
+    }
+  }
+
+  /* ── The card editor ───────────────────────────────────────────────────
+   *
+   * Two halves that never talk to the server: the controls write into
+   * `this.cardDraft`, the draft repaints the preview, and only SAVE sends
+   * anything. That is what makes trying eight patterns free, and it is also
+   * what makes CANCEL possible — a live-saving editor has no way back to the
+   * card you had before you started fiddling.
+   * ──────────────────────────────────────────────────────────────────────*/
+
+  _bindCardEditor() {
+    // The preview is scaled to the width it has, so it has to be re-fitted
+    // whenever that width changes.
+    window.addEventListener('resize', () => {
+      if (document.querySelector('.acct-view.active')?.dataset.acctView === 'card') {
+        this.fitCardPreview();
+      }
+    });
+    $('btnCardSave')?.addEventListener('click', () => this.saveCard());
+    $('btnCardReset')?.addEventListener('click', () => {
+      sfx.ui();
+      this.cardDraft = { ...K.CARD_DEFAULTS, featured: [...K.CARD_DEFAULTS.featured] };
+      this.buildCardEditor();
+      this.cardNote('Back to the default card. Nothing is saved until you press SAVE.');
+    });
+
+    // The controls are rebuilt whenever the draft changes, so they cannot carry
+    // their own listeners: one delegated pair on the host handles all of them.
+    const host = $('cardEditor');
+    host?.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-card-set]');
+      if (!btn || !host.contains(btn)) return;
+      e.preventDefault();
+      this.setCardField(btn.dataset.cardSet, btn.dataset.value);
+    });
+    host?.addEventListener('input', (e) => {
+      const field = e.target.dataset?.cardField;
+      if (!field) return;
+      // Text and colour boxes only: they fire on every keystroke, so they
+      // update the draft and repaint the preview without rebuilding the
+      // controls underneath the cursor.
+      this.cardDraft = { ...this.cardDraft, [field]: e.target.value };
+      if (field === 'accent') this.cardDraft.accentMode = 'custom';
+      this.paintCardPreview();
+      const counter = host.querySelector(`[data-count="${field}"]`);
+      if (counter) counter.textContent = String(e.target.value.length);
+    });
+  }
+
+  /**
+   * Applies one choice.
+   *
+   * `featured` is the only field that toggles rather than sets: it is a set of
+   * up to three, and picking a fourth drops the oldest rather than refusing —
+   * a control that silently does nothing is a control people press twice.
+   */
+  setCardField(field, value) {
+    sfx.ui();
+    const draft = { ...this.cardDraft, featured: [...(this.cardDraft.featured ?? [])] };
+    if (field === 'featured') {
+      const at = draft.featured.indexOf(value);
+      if (at >= 0) {
+        // Never below one: an empty band is not a layout, it is a hole.
+        if (draft.featured.length > 1) draft.featured.splice(at, 1);
+      } else {
+        draft.featured.push(value);
+        if (draft.featured.length > K.CARD_FEATURED_MAX) draft.featured.shift();
+      }
+    } else if (field === 'glow') {
+      draft.glow = value === 'on';
+    } else if (field === 'accent') {
+      // Reaching for a colour is an unambiguous "I want this one", so it takes
+      // the card off auto rather than quietly storing a colour nothing uses.
+      draft.accent = value;
+      draft.accentMode = 'custom';
+    } else {
+      draft[field] = value;
+    }
+    this.cardDraft = draft;
+    this.buildCardEditor();
+  }
+
+  /** Draws every control from the shared catalogues, marked against the draft. */
+  buildCardEditor() {
+    const host = $('cardEditor');
+    if (!host) return;
+    const d = this.cardDraft ?? (this.cardDraft = { ...K.CARD_DEFAULTS });
+
+    const chips = (field, list, current) => list.map((item) => {
+      const id = item.id ?? item;
+      const name = item.name ?? String(item).replace(/^./, (c) => c.toUpperCase());
+      const on = Array.isArray(current) ? current.includes(id) : current === id;
+      return `<button class="ce-chip${on ? ' on' : ''}" data-card-set="${field}"
+        data-value="${escapeHtml(id)}" type="button">${escapeHtml(name)}</button>`;
+    }).join('');
+
+    // Swatches worth offering next to the picker: the game's own accents, then
+    // a spread around the wheel. The picker still takes anything.
+    const SWATCHES = ['#f5a623', '#ff7a2f', '#ff4d4d', '#e0457b', '#b07cff', '#6c7bff',
+      '#4d9bff', '#33c9d6', '#4ddb7a', '#a8c832', '#d9b45b', '#8fa1b7'];
+
+    host.innerHTML = `
+      <section class="ce-block">
+        <h4>${icon('palette')}COLOUR</h4>
+        <p class="ce-note">On <b>auto</b> your card takes the main colour out of your
+          profile picture, and follows it whenever you change the picture.</p>
+        <div class="ce-chips">${chips('accentMode', [
+    { id: 'auto', name: 'From my picture' }, { id: 'custom', name: 'Pick my own' },
+  ], d.accentMode)}</div>
+        <div class="ce-colour${d.accentMode === 'custom' ? '' : ' off'}">
+          <input type="color" data-card-field="accent" value="${escapeHtml(d.accent)}"
+                 aria-label="Card colour">
+          <div class="ce-swatches">${SWATCHES.map((hex) =>
+    `<button class="ce-sw${d.accent === hex && d.accentMode === 'custom' ? ' on' : ''}"
+        style="--sw:${hex}" data-card-set="accent" data-value="${hex}" type="button"
+        aria-label="${hex}"></button>`).join('')}</div>
+        </div>
+      </section>
+
+      <section class="ce-block">
+        <h4>${icon('spark')}BACKDROP</h4>
+        <div class="ce-chips">${chips('pattern', K.CARD_PATTERNS, d.pattern)}</div>
+        <label class="ce-row">HOW STRONG
+          <span class="ce-chips inline">${chips('intensity', K.CARD_INTENSITIES, d.intensity)}</span>
+        </label>
+        <label class="ce-row">GLOW
+          <span class="ce-chips inline">${chips('glow', [
+    { id: 'on', name: 'On' }, { id: 'off', name: 'Off' },
+  ], d.glow ? 'on' : 'off')}</span>
+        </label>
+      </section>
+
+      <section class="ce-block">
+        <h4>${icon('user')}PICTURE FRAME</h4>
+        <div class="ce-chips">${chips('frame', K.CARD_FRAMES, d.frame)}</div>
+      </section>
+
+      <section class="ce-block">
+        <h4>${icon('sliders')}LAYOUT</h4>
+        <div class="ce-chips">${chips('layout', K.CARD_LAYOUTS, d.layout)}</div>
+        <p class="ce-note">${escapeHtml(
+    K.CARD_LAYOUTS.find((l) => l.id === d.layout)?.note ?? '')}</p>
+      </section>
+
+      <section class="ce-block">
+        <h4>${icon('medal')}PINNED STATS</h4>
+        <p class="ce-note">Up to ${K.CARD_FEATURED_MAX}, in the big band beside your name.
+          Everything else stays on the card either way.</p>
+        <div class="ce-chips">${chips('featured', K.CARD_STATS, d.featured)}</div>
+      </section>
+
+      <section class="ce-block">
+        <h4>${icon('pencil')}WHAT IT SAYS</h4>
+        <label class="ce-text">TAGLINE <small><i data-count="title">${d.title.length}</i>/${K.CARD_TITLE_MAX}</small>
+          <input data-card-field="title" maxlength="${K.CARD_TITLE_MAX}" autocomplete="off"
+                 spellcheck="false" placeholder="Quickscoper. Allegedly."
+                 value="${escapeHtml(d.title)}"></label>
+        <label class="ce-text">ABOUT <small><i data-count="bio">${d.bio.length}</i>/${K.CARD_BIO_MAX}</small>
+          <textarea data-card-field="bio" rows="3" maxlength="${K.CARD_BIO_MAX}"
+                    placeholder="A line or two. Anyone who clicks your name reads this."
+                    >${escapeHtml(d.bio)}</textarea></label>
+        <p class="ce-note">Both are public and both are reportable — this is on your card
+          wherever your name is drawn.</p>
+      </section>`;
+
+    this.paintCardPreview();
+  }
+
+  /**
+   * Repaints the preview from the draft.
+   *
+   * Deliberately the real card renderer rather than a simplified stand-in: an
+   * editor whose preview is a different piece of code from the thing it is
+   * previewing is an editor that lies eventually.
+   */
+  async paintCardPreview() {
+    const stage = $('cardPreview');
+    if (!stage) return;
+    const account = api.account;
+    if (!account) { stage.innerHTML = '<p class="empty small">Sign in to style a card.</p>'; return; }
+
+    // The colour is read asynchronously, so a fast run of clicks can land out
+    // of order. The token is what makes the last edit the one that shows.
+    const token = (this._previewToken = (this._previewToken ?? 0) + 1);
+    const user = { ...account, card: K.normaliseCard(this.cardDraft) };
+    const accent = await cardAccent(user);
+    if (token !== this._previewToken) return;
+
+    stage.innerHTML = playerCardHtml({
+      user,
+      relation: 'self',
+      recent: this.cardPreviewMatches ?? [],
+      can: {}, pending: {},
+    }, accent);
+    paintAvatar(stage.querySelector('.pc-avatar'), user.avatar, user.username);
+    this.fitCardPreview();
+  }
+
+  /**
+   * Scales the preview down to the width it has.
+   *
+   * Built at the width a real card opens at and then transformed, rather than
+   * left to re-flow into a narrow column: a preview that lays itself out
+   * differently from the thing it is previewing is showing you a card nobody
+   * will ever see. The stage takes the scaled height so nothing below it is
+   * left sitting under an empty gap.
+   */
+  fitCardPreview() {
+    const stage = $('cardPreview');
+    const shell = stage?.querySelector('.pc-shell');
+    if (!stage || !shell) return;
+    const DESIGN = 1000;
+    shell.style.width = `${DESIGN}px`;
+    const scale = Math.min(1, (stage.clientWidth || DESIGN) / DESIGN);
+    shell.style.transform = `scale(${scale})`;
+    stage.style.height = `${Math.round((shell.offsetHeight || 0) * scale)}px`;
+  }
+
+  cardNote(text, kind = '') {
+    const el = $('cardMsg');
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = `form-msg${text ? '' : ' hidden'}${kind ? ` ${kind}` : ''}`;
+  }
+
+  async saveCard() {
+    const btn = $('btnCardSave');
+    if (btn) btn.disabled = true;
+    try {
+      const saved = await api.saveCard(this.cardDraft);
+      // What came back is what is now true — the server normalises, so a draft
+      // that asked for something it does not recognise is corrected here rather
+      // than left looking saved.
+      this.cardDraft = saved;
+      this.buildCardEditor();
+      sfx.ui('ok');
+      this.cardNote('Saved. This is what people see when they click your name.', 'good');
+    } catch (ex) {
+      sfx.ui('error');
+      this.cardNote(ex.message || 'Could not save that.', 'error');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  /* ── Privacy ───────────────────────────────────────────────────────────
+   *
+   * Saved on change rather than behind a button: each of these is one decision
+   * on its own, and a form that batches eight independent decisions behind a
+   * SAVE is a form people leave half-made.
+   * ──────────────────────────────────────────────────────────────────────*/
+
+  _bindPrivacy() {
+    const host = $('privacyForm');
+    host?.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-priv]');
+      if (!btn || !host.contains(btn)) return;
+      e.preventDefault();
+      this.setPrivacy(btn.dataset.priv, btn.dataset.value === 'true' ? true
+        : btn.dataset.value === 'false' ? false : btn.dataset.value);
+    });
+  }
+
+  buildPrivacyForm() {
+    const host = $('privacyForm');
+    if (!host) return;
+    const p = this.privacy ?? (this.privacy = { ...K.PRIVACY_DEFAULTS });
+
+    const row = (field) => {
+      const labels = field.labels ?? K.PRIVACY_AUDIENCE_LABELS;
+      const opts = field.options.map((opt) => `
+        <button class="pv-opt${p[field.id] === opt ? ' on' : ''}" data-priv="${field.id}"
+                data-value="${opt}" type="button">${escapeHtml(labels[opt] ?? opt)}</button>`).join('');
+      return `<div class="pv-row">
+        <div class="pv-id"><b>${escapeHtml(field.name)}</b><small>${escapeHtml(field.note)}</small></div>
+        <div class="pv-opts">${opts}</div>
+      </div>`;
+    };
+
+    host.innerHTML = `${K.PRIVACY_FIELDS.map(row).join('')}
+      <div class="pv-row">
+        <div class="pv-id"><b>Show me on the leaderboard</b>
+          <small>Off takes your name off the public board. Your stats still count.</small></div>
+        <div class="pv-opts">
+          <button class="pv-opt${p.listed ? ' on' : ''}" data-priv="listed" data-value="true" type="button">Listed</button>
+          <button class="pv-opt${p.listed ? '' : ' on'}" data-priv="listed" data-value="false" type="button">Hidden</button>
+        </div>
+      </div>`;
+  }
+
+  async setPrivacy(field, value) {
+    const next = { ...this.privacy, [field]: value };
+    // Painted first, then saved: the switch has to move under the finger that
+    // pressed it, and a failed save puts it back and says so.
+    this.privacy = next;
+    this.buildPrivacyForm();
+    sfx.ui();
+    try {
+      this.privacy = await api.savePrivacy(next);
+      this.buildPrivacyForm();
+      this.privacyNote('Saved.', 'good');
+    } catch (ex) {
+      sfx.ui('error');
+      this.privacy = api.account?.privacy ?? { ...K.PRIVACY_DEFAULTS };
+      this.buildPrivacyForm();
+      this.privacyNote(ex.message || 'Could not save that.', 'error');
+    }
+  }
+
+  privacyNote(text, kind = '') {
+    const el = $('privacyMsg');
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = `form-msg${text ? '' : ' hidden'}${kind ? ` ${kind}` : ''}`;
+    clearTimeout(this._privacyNoteTimer);
+    if (text && kind === 'good') {
+      this._privacyNoteTimer = setTimeout(() => this.privacyNote(''), 2200);
+    }
+  }
+
+  /**
+   * Pulls the card and the privacy answers together, once per visit.
+   *
+   * Both come from one route because the panel that draws them is one panel,
+   * and because the catalogue behind the editor is the server's list rather
+   * than the client's — so a server that adds a pattern gets it without a new
+   * build of the browser side.
+   */
+  async loadSocial() {
+    if (!api.isAuthed) return;
+    try {
+      const r = await api.social();
+      this.cardDraft = r.card ?? { ...K.CARD_DEFAULTS };
+      this.privacy = r.privacy ?? { ...K.PRIVACY_DEFAULTS };
+      this.socialLoaded = true;
+    } catch {
+      // A card editor that cannot reach the server still opens, on defaults;
+      // saving is what will tell them, and it says something useful when it does.
+      this.cardDraft ??= { ...K.CARD_DEFAULTS };
+      this.privacy ??= { ...K.PRIVACY_DEFAULTS };
+    }
+    // The preview reads better with real rows in it than with "no matches yet".
+    try {
+      const mine = await api.matches(api.account.username, 4);
+      this.cardPreviewMatches = mine.matches ?? [];
+    } catch { this.cardPreviewMatches = []; }
+    this.buildCardEditor();
+    this.buildPrivacyForm();
   }
 
   /* ── Progression ───────────────────────────────────────────────────────── */
@@ -2772,9 +3324,23 @@ export class Menu {
       $('friendsSignedIn')?.classList.add('hidden');
       this.friendState = null;
       this.setFriendBadge(0);
+      // The card and the privacy answers belong to an account, so signing out
+      // has to drop them: the next person to sign in on this browser must not
+      // find the last one's draft sitting in the editor.
+      this.socialLoaded = false;
+      this.cardDraft = { ...K.CARD_DEFAULTS, featured: [...K.CARD_DEFAULTS.featured] };
+      this.privacy = { ...K.PRIVACY_DEFAULTS };
+      this.cardPreviewMatches = [];
       this.refreshMyClan();
       this.refreshGlobal();
       return;
+    }
+
+    // `/auth/me` already carries this account's own answers, so the privacy
+    // panel is right the moment it is opened rather than after a fetch.
+    if (user.privacy) this.privacy = user.privacy;
+    if (user.card && !this.socialLoaded) {
+      this.cardDraft = { ...user.card, featured: [...(user.card.featured ?? [])] };
     }
 
     // A friend request waiting is the one thing on this panel somebody has to
@@ -3164,35 +3730,170 @@ const clanPic = (c) => (c.avatar
     escapeHtml(String(c.tag ?? '?')[0])}</i>`);
 
 /**
+ * The colour one player's card is painted in.
+ *
+ * Two sources, and the card itself picks between them. `custom` is a colour its
+ * owner chose and is used exactly as given. `auto` — the default, and what
+ * every account that has never opened the editor is on — reads the profile
+ * picture and takes the colour the picture is *about*: the card ends up
+ * matching the face on it without anybody having chosen anything.
+ *
+ * An account with no picture, or a picture the browser will not let us read,
+ * falls back to the same name-derived colour its initials are drawn in. So
+ * every card has a colour, and the same account always has the same one.
+ */
+async function cardAccent(user) {
+  const card = user.card ?? K.CARD_DEFAULTS;
+  if (card.accentMode === 'custom') return card.accent;
+  if (user.avatar) {
+    const found = await avatarAccent(user.avatar);
+    if (found) return found;
+  }
+  return nameAccent(user.username);
+}
+
+/**
+ * One value out of a profile, by the name the card catalogue calls it.
+ *
+ * Featured statistics are picked by their owner from a list that spans three
+ * different objects — career stats, the account row, the daily streak — so this
+ * is the one place that knows which is which. A stat whose section its owner
+ * has hidden resolves to a dash rather than a zero: "not shared" and "none" are
+ * different answers and a card that prints 0 for the first is telling a lie.
+ */
+function cardStat(id, user) {
+  const s = user.stats;
+  if (id === 'level') return String(user.level ?? 1);
+  if (id === 'streak') return user.streak ? `${user.streak.days ?? 0}d` : '—';
+  if (!s) return '—';
+  switch (id) {
+    case 'kd': return String(s.kd ?? 0);
+    case 'accuracy': return `${s.accuracy ?? 0}%`;
+    case 'playtime': return fmtDuration(s.playtime ?? 0);
+    case 'bestStreak': return String(s.bestStreak ?? 0);
+    default: return fmtNum(s[id] ?? 0);
+  }
+}
+
+/** The heading a featured stat wears. */
+const cardStatName = (id) =>
+  (K.CARD_STATS.find((st) => st.id === id)?.name ?? id).toUpperCase();
+
+/**
+ * The sentence a hidden section gets instead of an empty box.
+ *
+ * Only the two sections that own a whole column of the card are in here. The
+ * others — the clan tag, the streak, the join date — are pills in a row of
+ * pills, and a row that is one pill shorter needs no explanation; a column that
+ * is empty very much does.
+ *
+ * Named per section rather than one generic line, because "they have not shared
+ * this" is only useful if you can tell *what* they have not shared.
+ */
+const HIDDEN_NOTE = {
+  showStats: 'This player keeps their career stats private.',
+  showMatches: 'This player keeps their match history private.',
+};
+
+/**
+ * What the card offers this viewer, as buttons.
+ *
+ * Every one of them is drawn from what the *server* said is possible — `can`,
+ * `relation` and `pending` — rather than from what the client can work out. A
+ * button the route would refuse is worse than no button at all: it teaches
+ * people that the card lies.
+ */
+function cardActions({ user, relation, can = {}, pending = {}, presence = null }) {
+  if (relation === 'self') {
+    return `<button class="pc-act primary" data-card-act="edit" type="button">
+        ${icon('palette')}<span>CUSTOMISE THIS CARD</span></button>
+      <button class="pc-act" data-card-act="privacy" type="button">
+        ${icon('lock')}<span>WHO CAN SEE IT</span></button>`;
+  }
+
+  const out = [];
+
+  // Joining comes first when it is on the table: it is the one button on this
+  // card that is time-limited, and the reason most people opened it.
+  if (presence?.room && can.join) {
+    out.push(`<button class="pc-act primary" data-card-act="join" data-arg="${escapeHtml(presence.room)}" type="button">
+      ${icon('play')}<span>JOIN THEIR MATCH</span></button>`);
+  }
+
+  if (relation === 'friend') {
+    out.push(`<span class="pc-act flat" title="You are friends">${icon('userCheck')}<span>FRIENDS</span></span>`);
+    out.push(`<button class="pc-act danger" data-card-act="unfriend" data-arg="${escapeHtml(user.id)}" type="button">
+      ${icon('userX')}<span>REMOVE</span></button>`);
+  } else if (pending.incoming) {
+    out.push(`<button class="pc-act primary" data-card-act="accept" data-arg="${escapeHtml(user.id)}" type="button">
+      ${icon('userCheck')}<span>ACCEPT REQUEST</span></button>`);
+    out.push(`<button class="pc-act" data-card-act="decline" data-arg="${escapeHtml(user.id)}" type="button">
+      ${icon('close')}<span>DECLINE</span></button>`);
+  } else if (pending.outgoing) {
+    out.push(`<button class="pc-act" data-card-act="cancel" data-arg="${escapeHtml(user.id)}" type="button">
+      ${icon('userClock')}<span>REQUEST SENT — CANCEL</span></button>`);
+  } else if (can.add) {
+    out.push(`<button class="pc-act primary" data-card-act="add" data-arg="${escapeHtml(user.username)}" type="button">
+      ${icon('userPlus')}<span>ADD FRIEND</span></button>`);
+  } else if (api.isAuthed) {
+    // They said no, or the server did. Same sentence either way — which of the
+    // two it is, is a fact about their account they did not offer.
+    out.push(`<span class="pc-act flat muted" title="Their settings do not allow it">
+      ${icon('lock')}<span>NOT TAKING REQUESTS</span></span>`);
+  } else {
+    out.push(`<button class="pc-act" data-card-act="signin" type="button">
+      ${icon('userPlus')}<span>SIGN IN TO ADD</span></button>`);
+  }
+
+  return out.join('');
+}
+
+/** The presence line, when its owner lets this viewer read it. */
+function cardPresence(presence) {
+  if (!presence) return '';
+  if (presence.playing) {
+    const where = [presence.mode, presence.map].filter(Boolean).map(escapeHtml).join(' · ');
+    const tail = presence.room ? '' : presence.full ? ' — that room is full' : '';
+    return `<span class="pc-live playing">${icon('bolt')}<b>IN A MATCH</b>${
+      where ? `<i>${where}${tail}</i>` : ''}</span>`;
+  }
+  if (presence.online) return `<span class="pc-live online">${icon('user')}<b>IN THE MENU</b></span>`;
+  return `<span class="pc-live off">${icon('clock')}<b>OFFLINE</b><i>last seen ${
+    fmtAgo(presence.lastLogin)}</i></span>`;
+}
+
+/**
  * One public profile, as the card draws it.
  *
- * Deliberately the same information for everybody — no address, no session, no
- * moderation state. It is what a stranger on the scoreboard is allowed to know
- * about you, which is why this is the same card whether you click your own name
- * or somebody else's.
+ * The card is painted in its owner's colour and wears their pattern, their
+ * frame and their layout — everything the editor writes ends up as a data
+ * attribute or a custom property here, so the CSS does the styling and this
+ * function only ever decides *what* is on the card, never how it looks.
+ *
+ * What is on it is the server's decision, not this function's: a section the
+ * owner hid never arrived, and `hidden` is what turns an absence into a
+ * sentence rather than an empty box.
  */
-function playerCardHtml({ user, recent = [] }) {
+function playerCardHtml(data, accent) {
+  const { user, relation = 'none', hidden = [], recent = [] } = data;
+  const card = user.card ?? K.CARD_DEFAULTS;
   const s = user.stats ?? {};
   const span = Math.max(1, (user.nextLevelXp ?? 1) - (user.levelXp ?? 0));
   const into = Math.max(0, (user.xp ?? 0) - (user.levelXp ?? 0));
   const pct = Math.max(0, Math.min(100, (into / span) * 100)).toFixed(1);
+  const hid = new Set(hidden);
 
-  // Three figures carry the hero band. They are the ones a player looks for
-  // first, and putting them beside the name is what makes the card read
-  // across rather than down.
-  const headline = [
-    ['K/D', s.kd ?? 0],
-    ['KILLS', fmtNum(s.kills ?? 0)],
-    ['WINS', fmtNum(s.wins ?? 0)],
-  ];
+  const featured = (card.featured?.length ? card.featured : K.CARD_DEFAULTS.featured)
+    .map((id) => `<div class="pc-big"><b>${escapeHtml(cardStat(id, user))}</b><span>${
+      escapeHtml(cardStatName(id))}</span></div>`).join('');
 
-  const cells = [
+  const cells = hid.has('showStats') ? '' : [
     ['SCORE', fmtNum(s.score ?? 0)], ['DEATHS', fmtNum(s.deaths ?? 0)],
     ['ASSISTS', fmtNum(s.assists ?? 0)], ['HEADSHOTS', fmtNum(s.headshots ?? 0)],
     ['ACCURACY', `${s.accuracy ?? 0}%`], ['DAMAGE', fmtNum(s.damage ?? 0)],
     ['MATCHES', fmtNum(s.matches ?? 0)], ['BEST STREAK', s.bestStreak ?? 0],
     ['PLAYTIME', fmtDuration(s.playtime ?? 0)],
-  ];
+  ].map(([k, v]) => `<div class="pc-cell"><b>${v}</b><span>${k}</span></div>`).join('');
 
   const matches = recent.slice(0, 6).map((m) => `
     <div class="pcm-row ${m.won ? 'won' : 'lost'}">
@@ -3203,43 +3904,61 @@ function playerCardHtml({ user, recent = [] }) {
       <span class="pcm-when">${fmtAgo(m.started_at)}</span>
     </div>`).join('');
 
+  const pills = [
+    `<span class="pill">${escapeHtml(String(user.role ?? 'player').toUpperCase())}</span>`,
+    hid.has('showJoined') || !user.createdAt ? '' : `<span class="pill">JOINED ${fmtDate(user.createdAt)}</span>`,
+    user.clan ? `<span class="pill${user.clanVerified ? ' gold' : ''}">CLAN ${escapeHtml(user.clan)}${
+      user.clanVerified ? ' · VERIFIED' : ''}</span>` : '',
+    !hid.has('showStreak') && user.streak?.days
+      ? `<span class="pill">${user.streak.days}-DAY STREAK</span>` : '',
+  ].join('');
+
   return `
-    <div class="pc-hero">
-      <span class="pc-avatar av-frame">
-        <img class="av-img hidden" alt="" width="96" height="96"><span class="av-initial">?</span>
-      </span>
-      <div class="pc-id">
-        <h3>${clanTag(user.clan, user.clanVerified)}<span class="pc-name">${escapeHtml(user.username)}</span>${
+  <div class="pc-shell" style="--pc-accent:${escapeHtml(accent)}"
+       data-pattern="${escapeHtml(card.pattern)}" data-intensity="${escapeHtml(card.intensity)}"
+       data-layout="${escapeHtml(card.layout)}" data-frame="${escapeHtml(card.frame)}"
+       data-glow="${card.glow ? 'on' : 'off'}">
+    <div class="pc-banner">
+      <span class="pc-pattern" aria-hidden="true"></span>
+      <div class="pc-hero">
+        <span class="pc-avatar av-frame">
+          <img class="av-img hidden" alt="" width="112" height="112"><span class="av-initial">?</span>
+        </span>
+        <div class="pc-id">
+          <h3>${clanTag(user.clan, user.clanVerified)}<span class="pc-name">${escapeHtml(user.username)}</span>${
   user.verified ? '<img class="verified big" src="/check.png" alt="verified" width="18" height="18">' : ''}</h3>
-        <div class="ph-tags">
-          <span class="pill">${escapeHtml(String(user.role ?? 'player').toUpperCase())}</span>
-          <span class="pill">JOINED ${fmtDate(user.createdAt)}</span>
-          ${user.clan ? `<span class="pill${user.clanVerified ? ' gold' : ''}">CLAN ${escapeHtml(user.clan)}${
-  user.clanVerified ? ' · VERIFIED' : ''}</span>` : ''}
+          ${card.title ? `<p class="pc-flair">${escapeHtml(card.title)}</p>` : ''}
+          <div class="ph-tags">${pills}</div>
+          ${cardPresence(data.presence)}
+          <div class="pc-xp">
+            <span class="pc-lv"><b>${user.level}</b><small>LEVEL</small></span>
+            <span class="pc-bar"><i style="width:${pct}%"></i></span>
+            <span class="pc-xp-num">${fmtNum(into)} / ${fmtNum(span)} XP</span>
+          </div>
         </div>
-        <div class="pc-xp">
-          <span class="pc-lv"><b>${user.level}</b><small>LEVEL</small></span>
-          <span class="pc-bar"><i style="width:${pct}%"></i></span>
-          <span class="pc-xp-num">${fmtNum(into)} / ${fmtNum(span)} XP</span>
-        </div>
+        <div class="pc-headline">${featured}</div>
       </div>
-      <div class="pc-headline">${headline.map(([k, v]) =>
-    `<div class="pc-big"><b>${v}</b><span>${k}</span></div>`).join('')}</div>
+      ${card.bio ? `<p class="pc-bio">${escapeHtml(card.bio)}</p>` : ''}
+      <div class="pc-actions">${cardActions(data)}</div>
     </div>
 
     <div class="pc-cols">
       <section class="pc-col">
-        <h4 class="pc-sub">CAREER</h4>
-        <div class="pc-grid">${cells.map(([k, v]) =>
-    `<div class="pc-cell"><b>${v}</b><span>${k}</span></div>`).join('')}</div>
+        <h4 class="pc-sub">${icon('medal')}CAREER</h4>
+        ${cells
+    ? `<div class="pc-grid">${cells}</div>`
+    : `<p class="empty small">${HIDDEN_NOTE.showStats}</p>`}
       </section>
       <section class="pc-col">
-        <h4 class="pc-sub">RECENT MATCHES</h4>
-        ${matches
-    ? `<div class="pcm-list">${matches}</div>`
-    : '<p class="empty small">No matches on record yet.</p>'}
+        <h4 class="pc-sub">${icon('clock')}RECENT MATCHES</h4>
+        ${hid.has('showMatches')
+    ? `<p class="empty small">${HIDDEN_NOTE.showMatches}</p>`
+    : matches
+      ? `<div class="pcm-list">${matches}</div>`
+      : '<p class="empty small">No matches on record yet.</p>'}
       </section>
-    </div>`;
+    </div>
+  </div>`;
 }
 
 function escapeHtml(s) {

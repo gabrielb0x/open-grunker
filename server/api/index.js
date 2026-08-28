@@ -54,7 +54,16 @@ const publicUser = (u, s = null, l = null, { self = false } = {}) => ({
   verified: !!u.verified,
   // Null when this account has never uploaded one; the client draws initials.
   avatar: avatars.urlFor(u.avatar),
+  // How this account has styled its card. Public on purpose: a card only its
+  // owner can see the colours of is a card nobody bothers to style. Normalised
+  // on the way out as well as on the way in, so a row written before this
+  // existed answers with a whole default card rather than a null.
+  card: K.normaliseCard(safeJson(u.card, null)),
   ...(self ? {
+    // Own account only: which of your answers is set to what is itself an
+    // answer, and a stranger reading "this one shows nobody anything" learns
+    // something about an account that asked not to be read.
+    privacy: K.normalisePrivacy(safeJson(u.privacy, null)),
     email: u.email ?? null,
     emailVerified: !!u.email_verified,
     // Whether this account is behind a second factor. Own-account only: it is
@@ -99,6 +108,104 @@ const publicUser = (u, s = null, l = null, { self = false } = {}) => ({
     settings: safeJson(l.settings, {}),
     keybinds: safeJson(l.keybinds, {}),
   } : null,
+});
+
+/**
+ * What one account is to another: 'self', 'friend', or 'none'.
+ *
+ * Every privacy answer is written against these three words, so this is the one
+ * place the question is asked and `canSee` is the one place it is answered.
+ */
+function relationOf(db, viewer, owner) {
+  if (!viewer) return 'none';
+  if (viewer.id === owner.id) return 'self';
+  return db.friends.are(viewer.id, owner.id) ? 'friend' : 'none';
+}
+
+/**
+ * One profile, with everything its owner has not shown this viewer removed.
+ *
+ * Removed, not flagged: a field a viewer may not see never leaves the server,
+ * so there is nothing in the response for a modified client to un-hide. What
+ * *is* sent is a small `hidden` list — the names of the sections that were
+ * withheld — because "they have not shared their stats" and "they have no
+ * stats" are different things and a card that cannot tell them apart reads as
+ * broken.
+ */
+function visibleProfile(db, owner, viewer, { stats = null, recent = [] } = {}) {
+  const relation = relationOf(db, viewer, owner);
+  const privacy = db.users.privacy(owner);
+  const hidden = [];
+  const allow = (field) => {
+    const okToSee = K.canSee(privacy[field], relation);
+    if (!okToSee) hidden.push(field);
+    return okToSee;
+  };
+
+  const user = publicUser(owner, allow('showStats') ? stats : null);
+  if (!allow('showClan')) { user.clan = null; user.clanId = null; user.clanVerified = false; }
+  if (!allow('showStreak')) user.streak = null;
+  if (!allow('showJoined')) user.createdAt = null;
+
+  return {
+    user,
+    relation,
+    hidden,
+    recent: allow('showMatches') ? recent : [],
+    // Only ever what this viewer is allowed to act on, so the card draws the
+    // buttons the server would actually honour rather than guessing.
+    can: {
+      add: canBeAddedBy(db, owner, viewer, privacy),
+      join: K.canSee(privacy.allowJoin, relation),
+      seePresence: K.canSee(privacy.showPresence, relation),
+    },
+  };
+}
+
+/**
+ * Whether `viewer` is allowed to send `owner` a friend request right now.
+ *
+ * Answers the setting *and* the state: somebody who already has you, has asked
+ * you, or is you cannot be asked again, and the card wants one boolean rather
+ * than four.
+ */
+function canBeAddedBy(db, owner, viewer, privacy = db.users.privacy(owner)) {
+  if (!viewer || viewer.id === owner.id) return false;
+  if (!config.friends.enabled) return false;
+  if (db.friends.are(viewer.id, owner.id)) return false;
+  // An ask already in flight, in either direction, is not a second ask: one is
+  // waiting to be cancelled and the other is waiting to be accepted. Both have
+  // their own button, and neither of them is this one.
+  if (db.friends.requested(viewer.id, owner.id)) return false;
+  if (db.friends.requested(owner.id, viewer.id)) return false;
+  if (privacy.whoCanAdd === 'nobody') return false;
+  if (privacy.whoCanAdd === 'mutuals' && !db.friends.share(viewer.id, owner.id)) return false;
+  return true;
+}
+
+/**
+ * Everything a card editor may offer, straight from shared/constants.js.
+ *
+ * Sent rather than hard-coded in the client so a server that adds a pattern
+ * does not need a new build of the browser side, and so the list the editor
+ * shows is by construction the list the save route accepts.
+ */
+const cardCatalogue = () => ({
+  patterns: K.CARD_PATTERNS,
+  frames: K.CARD_FRAMES,
+  layouts: K.CARD_LAYOUTS,
+  intensities: K.CARD_INTENSITIES,
+  accentModes: K.CARD_ACCENT_MODES,
+  stats: K.CARD_STATS,
+  featuredMax: K.CARD_FEATURED_MAX,
+  titleMax: K.CARD_TITLE_MAX,
+  bioMax: K.CARD_BIO_MAX,
+  defaults: K.CARD_DEFAULTS,
+  privacy: {
+    fields: K.PRIVACY_FIELDS,
+    labels: K.PRIVACY_AUDIENCE_LABELS,
+    defaults: K.PRIVACY_DEFAULTS,
+  },
 });
 
 /** Mastery rows joined with the tier they translate to. */
@@ -1017,18 +1124,41 @@ export function createApi({ db, hub }) {
     playing: !!where?.playing,
     // Only ever a room somebody could actually walk into: a full one is not an
     // invitation, and neither is the menu backdrop a watcher is sitting in.
-    room: where?.playing && !where?.full ? where.room : null,
+    room: where?.playing && !where?.full && where?.joinable !== false ? where.room : null,
     map: where?.playing ? where.map : null,
     mode: where?.playing ? where.mode : null,
     full: !!where?.full,
+    // Why there is no room code, when there is no room code. "Full" and "they
+    // have closed their matches" are different sentences, and a row that says
+    // the wrong one reads as the server being wrong about a friend.
+    closed: where?.joinable === false,
   });
 
-  /** Everything the friends panel draws, in one request. */
+  /**
+   * Everything the friends panel draws, in one request.
+   *
+   * Presence is filtered per row rather than in one sweep: "show when I am
+   * online" is each friend's own answer, and somebody who set it to *no one*
+   * means their friends too. A row whose owner said no comes back looking
+   * exactly like a row whose owner is offline, which is the point.
+   */
   const friendsPayload = (user) => {
     const list = db.friends.list(user.id);
     const incoming = db.friends.incoming(user.id);
     const outgoing = db.friends.outgoing(user.id);
-    const where = hub.presence([...list, ...incoming, ...outgoing].map((f) => f.id));
+    const raw = hub.presence([...list, ...incoming, ...outgoing].map((f) => f.id));
+    const where = new Map();
+    for (const [id, at] of raw) {
+      // 'friend' for the list, and for a queue: somebody you have asked, or who
+      // has asked you, is not on your list yet — so they get the stranger's
+      // answer unless they opened it to everyone.
+      const them = db.users.byId(id);
+      if (!them) continue;
+      const privacy = db.users.privacy(them);
+      const relation = db.friends.are(user.id, id) ? 'friend' : 'none';
+      if (!K.canSee(privacy.showPresence, relation)) continue;
+      where.set(id, { ...at, joinable: K.canSee(privacy.allowJoin, relation) });
+    }
     return {
       friends: list.map((f) => friendCard(f, where.get(f.id)))
         // Whoever can be joined right now sorts first: that is the one row on
@@ -1096,6 +1226,20 @@ export function createApi({ db, hub }) {
     if (db.friends.requested(user.id, target.id)) {
       throw new ApiError(409, 'already_asked', `${target.username} has not answered your last request yet`);
     }
+    // Their setting, not ours. Deliberately the same sentence for "no one" and
+    // "friends of friends only": the alternative tells a stranger which of the
+    // two it is, which is a fact about an account they were told not to have.
+    // A standing request *from* them is honoured either way — somebody who
+    // asked you first has already opted in.
+    if (!db.friends.requested(target.id, user.id)) {
+      const theirs = db.users.privacy(target);
+      const openToUs = theirs.whoCanAdd === 'everyone'
+        || (theirs.whoCanAdd === 'mutuals' && db.friends.share(user.id, target.id));
+      if (!openToUs) {
+        throw new ApiError(403, 'not_accepting',
+          `${target.username} is not taking friend requests right now`);
+      }
+    }
     if (db.friends.countOutgoing(user.id) >= config.friends.maxRequests) {
       throw new ApiError(409, 'too_many', `you have ${config.friends.maxRequests} requests outstanding — `
         + 'wait for some of them to be answered');
@@ -1155,15 +1299,86 @@ export function createApi({ db, hub }) {
     ok(ctx.res, { removed: other.username, ...friendsPayload(user) });
   });
 
+  /* ── The card, and who it is for ───────────────────────────────────────
+   *
+   * Two routes because they are two decisions: how the card looks is a matter
+   * of taste, and who may see what on it is not. Both are stored whole, both
+   * are normalised by shared/constants.js before they are written, and neither
+   * can fail on a value it does not recognise — an unknown pattern becomes the
+   * default pattern rather than a 400 that loses the rest of the edit.
+   * ──────────────────────────────────────────────────────────────────────── */
+
+  /** This account's own card and privacy answers, plus what may be picked. */
+  r.get('/profile/social', (ctx) => {
+    const user = requireAuth(ctx);
+    ok(ctx.res, {
+      card: db.users.card(user),
+      privacy: db.users.privacy(user),
+      catalogue: cardCatalogue(),
+    });
+  });
+
+  r.put('/profile/card', async (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'profile', 60);
+    const body = await readJson(ctx.req);
+    const card = db.users.saveCard(user.id, body.card ?? body);
+    ok(ctx.res, { card });
+  });
+
+  r.put('/profile/privacy', async (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'profile', 60);
+    const body = await readJson(ctx.req);
+    const privacy = db.users.savePrivacy(user.id, body.privacy ?? body);
+    ok(ctx.res, { privacy });
+  });
+
   /* ── Players & leaderboard ─────────────────────────────────────────────── */
 
+  /**
+   * One public profile — the card, in one request.
+   *
+   * Signed in or not: a guest gets the card, just never the half of it whose
+   * owner limited it to friends. `relation` and `can` are what let the card
+   * draw ADD FRIEND, JOIN or neither without a second round trip.
+   */
   r.get('/players/:name', (ctx) => {
     const user = db.users.byName(ctx.params.name);
     if (!user) throw new ApiError(404, 'not_found', 'no such player');
-    ok(ctx.res, {
-      user: publicUser(user, db.stats.get(user.id)),
+    const viewer = ctx.auth?.user ?? null;
+    const payload = visibleProfile(db, user, viewer, {
+      stats: db.stats.get(user.id),
       recent: db.matches.recentFor(user.id, 8),
     });
+
+    // Where they are this second, when they let this viewer see it. Same shape
+    // and the same "a full room is not an invitation" rule as the friend list.
+    if (payload.can.seePresence) {
+      const where = hub.presence([user.id]).get(user.id);
+      payload.presence = {
+        online: !!where?.online,
+        playing: !!where?.playing,
+        room: where?.playing && !where?.full && payload.can.join ? where.room : null,
+        map: where?.playing ? where.map : null,
+        mode: where?.playing ? where.mode : null,
+        full: !!where?.full,
+        lastLogin: user.last_login ?? null,
+      };
+    } else {
+      payload.presence = null;
+    }
+
+    // Whether an ask is already in flight, so the button says CANCEL or
+    // ACCEPT rather than offering to send a second one.
+    payload.pending = viewer
+      ? {
+        outgoing: db.friends.requested(viewer.id, user.id),
+        incoming: db.friends.requested(user.id, viewer.id),
+      }
+      : { outgoing: false, incoming: false };
+
+    ok(ctx.res, payload);
   });
 
   r.get('/players/:name/matches', (ctx) => {

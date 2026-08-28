@@ -361,26 +361,92 @@
   </footer>
 
   <!-- ── Everything that used to be a tab strip now opens over the menu ──── -->
+  <!--
+    Twelve destinations used to be a single wrapping strip of twelve words, and
+    a strip that wraps has no shape: nothing was near anything related to it,
+    the row it sat on moved as the window resized, and the only way to find
+    anything was to read all of it.
+
+    It is a rail now — one column, grouped by what you came here to do, each
+    entry an icon and a label so a destination has a silhouette as well as a
+    name. The groups are the navigation: PLAY is the loadout, COMMUNITY is
+    other people, YOU is this account, and SETUP is the machine. The filter box
+    is for the twelfth visit, when you know the word and do not want to look.
+
+    Every button is still `.tab[data-tab]` and every section is still
+    `.tab-panel[data-panel]`, so `openTab()` and every `data-open` in the
+    chrome above keep working unchanged.
+    ─────────────────────────────────────────────────────────────────────── -->
   <div id="menuPanel" class="hidden">
     <div class="panel-card">
-      <button class="modal-x" id="panelClose" type="button">×</button>
+      <aside class="panel-nav">
+        <div class="pn-brand">
+          <b>OPEN<span>GRUNKER</span></b>
+          <small>SEASON 1</small>
+        </div>
 
-      <nav class="tabs">
-        <button class="tab active" data-tab="classes">CLASS</button>
-        <button class="tab" data-tab="servers">SERVERS</button>
-        <button class="tab" data-tab="challenges">CHALLENGES</button>
-        <button class="tab" data-tab="profile">ACCOUNT</button>
-        <button class="tab" data-tab="leaderboard">LEADERBOARD</button>
-        <button class="tab" data-tab="friends">FRIENDS
-          <span class="tab-badge hidden" id="friendTabBadge">0</span></button>
-        <button class="tab" data-tab="clans">CLANS
-          <span class="tab-badge hidden" id="clanTabBadge">0</span></button>
-        <button class="tab" data-tab="shop">SKINS</button>
-        <button class="tab" data-tab="controls">CONTROLS</button>
-        <button class="tab" data-tab="settings">SETTINGS</button>
-        <button class="tab" data-tab="help">HOW TO PLAY</button>
-        <button class="tab" data-tab="patch">PATCH NOTES</button>
-      </nav>
+        <label class="pn-search">
+          <input id="tabSearch" type="search" autocomplete="off" spellcheck="false"
+                 placeholder="Find a page…" aria-label="Filter the menu">
+        </label>
+
+        <nav class="pn-rail" id="panelRail">
+          <div class="pn-group" data-group="Play">
+            <h6>PLAY</h6>
+            <button class="tab active" data-tab="classes" data-icon="loadout" data-label="CLASS"
+                    data-title="Loadout" data-sub="Pick the class you spawn with"></button>
+            <button class="tab" data-tab="shop" data-icon="palette" data-label="SKINS"
+                    data-title="Weapon skins" data-sub="Finishes for the gun you are holding"></button>
+            <button class="tab" data-tab="challenges" data-icon="target" data-label="CHALLENGES"
+                    data-title="Challenges" data-sub="Dailies, weeklies and weapon mastery"></button>
+          </div>
+
+          <div class="pn-group" data-group="Community">
+            <h6>COMMUNITY</h6>
+            <button class="tab" data-tab="friends" data-icon="users" data-label="FRIENDS"
+                    data-title="Friends" data-sub="Who is on, and how to get into their match"><span class="tab-badge hidden" id="friendTabBadge">0</span></button>
+            <button class="tab" data-tab="clans" data-icon="shield" data-label="CLANS"
+                    data-title="Clans" data-sub="Found one, join one, wear the tag"><span class="tab-badge hidden" id="clanTabBadge">0</span></button>
+            <button class="tab" data-tab="leaderboard" data-icon="trophy" data-label="LEADERBOARD"
+                    data-title="Leaderboard" data-sub="Every account, ranked by what you pick"></button>
+            <button class="tab" data-tab="servers" data-icon="server" data-label="SERVERS"
+                    data-title="Server browser" data-sub="Every live room and what it is running"></button>
+          </div>
+
+          <div class="pn-group" data-group="You">
+            <h6>YOU</h6>
+            <button class="tab" data-tab="profile" data-icon="user" data-label="ACCOUNT"
+                    data-title="Account" data-sub="Progress, card, privacy and security"></button>
+          </div>
+
+          <div class="pn-group" data-group="Setup">
+            <h6>SETUP</h6>
+            <button class="tab" data-tab="controls" data-icon="keyboard" data-label="CONTROLS"
+                    data-title="Key bindings" data-sub="Keyboard, mouse and controller"></button>
+            <button class="tab" data-tab="settings" data-icon="sliders" data-label="SETTINGS"
+                    data-title="Settings" data-sub="Aim, video, audio, HUD and crosshair"></button>
+          </div>
+
+          <div class="pn-group" data-group="About">
+            <h6>ABOUT</h6>
+            <button class="tab" data-tab="help" data-icon="book" data-label="HOW TO PLAY"
+                    data-title="How to play" data-sub="Movement, combat, modes and scoring"></button>
+            <button class="tab" data-tab="patch" data-icon="notes" data-label="PATCH NOTES"
+                    data-title="Patch notes" data-sub="What changed, and when"></button>
+          </div>
+
+          <p class="pn-none hidden" id="tabSearchNone">Nothing here matches that.</p>
+        </nav>
+      </aside>
+
+      <div class="panel-main">
+        <header class="panel-top">
+          <div class="pt-id">
+            <h2 id="panelTitle">Loadout</h2>
+            <p id="panelSub">Pick the class you spawn with</p>
+          </div>
+          <button class="modal-x" id="panelClose" type="button" aria-label="Close">×</button>
+        </header>
 
       <div class="panel-scroll">
         <section class="tab-panel active" data-panel="classes">
@@ -471,6 +537,8 @@
               <button class="acct-tab" data-acct="reports" type="button">REPORTS
                 <span class="acct-badge hidden" id="acctReportBadge">0</span></button>
               <button class="acct-tab" data-acct="identity" type="button">PROFILE</button>
+              <button class="acct-tab" data-acct="card" type="button">CARD</button>
+              <button class="acct-tab" data-acct="social" type="button">PRIVACY</button>
               <button class="acct-tab" data-acct="security" type="button">SECURITY</button>
             </nav>
 
@@ -560,6 +628,46 @@
             </div>
 
             <!-- ── Profile: the picture and the nickname ────────────────── -->
+            <!-- ── The card ─────────────────────────────────────────────
+                 Everything here is styling, and every control writes straight
+                 into the preview beside it: this is the card other people open
+                 when they click your name, so the only honest way to edit it is
+                 to be looking at it. Nothing is saved until SAVE is pressed, so
+                 trying six patterns costs six repaints and no requests.
+                 ─────────────────────────────────────────────────────────── -->
+            <div class="acct-view" data-acct-view="card">
+              <div class="card-editor">
+                <div class="ce-controls" id="cardEditor"></div>
+                <aside class="ce-preview">
+                  <h4>PREVIEW</h4>
+                  <div id="cardPreview" class="ce-stage"></div>
+                  <div class="ce-actions">
+                    <button class="btn-primary" id="btnCardSave" type="button">SAVE CARD</button>
+                    <button class="btn-ghost" id="btnCardReset" type="button">RESET</button>
+                  </div>
+                  <div class="form-msg hidden" id="cardMsg"></div>
+                </aside>
+              </div>
+            </div>
+
+            <!-- ── Who your card is for ─────────────────────────────────────
+                 Each switch is enforced on the server, not here: what a viewer
+                 may not see is left out of the response entirely, so turning
+                 one off actually withholds something rather than asking the
+                 browser politely not to draw it.
+                 ─────────────────────────────────────────────────────────── -->
+            <div class="acct-view" data-acct-view="social">
+              <div class="panel-head">
+                <h3>SOCIAL &amp; PRIVACY</h3>
+                <span class="panel-note">Saved as you change them.</span>
+              </div>
+              <p class="panel-note">These decide who can reach you and how much of your
+                card a stranger sees. <b>Friends only</b> means people already on your
+                list — not people who have asked.</p>
+              <div id="privacyForm" class="privacy-form"></div>
+              <div class="form-msg hidden" id="privacyMsg"></div>
+            </div>
+
             <div class="acct-view" data-acct-view="identity">
               <div class="profile-cols single">
                 <div class="profile-col">
@@ -889,6 +997,7 @@
             </div>
           </div>
         </section>
+      </div>
       </div>
     </div>
   </div>
