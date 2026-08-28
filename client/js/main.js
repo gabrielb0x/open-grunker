@@ -40,6 +40,29 @@ const WHIZZ_RADIUS = 3.2;
 /** Frame rate the live match is drawn at behind the menu, and behind a panel. */
 const MENU_BACKDROP_HZ = 60;
 const MENU_COVERED_HZ = 30;
+/** Seconds between exhaust puffs on a rocket in flight. */
+const TRAIL_INTERVAL = 1 / 60;
+
+/**
+ * The one rocket, shared by every rocket in the air.
+ *
+ * Every warhead used to build — and on impact destroy — its own three
+ * geometries and three materials, so a magazine of them was a hundred buffer
+ * allocations and deletions inside a second, on the exact frames already
+ * paying for the blast. A rocket differs from another rocket only by where it
+ * is, and a Mesh is just a transform pointing at a buffer, so they can all
+ * point at the same one.
+ */
+const ROCKET_PARTS = {
+  bodyGeo: new THREE.CylinderGeometry(0.09, 0.11, 0.6, 8),
+  tipGeo: new THREE.ConeGeometry(0.11, 0.24, 8),
+  flameGeo: new THREE.ConeGeometry(0.1, 0.5, 7),
+  bodyMat: new THREE.MeshPhongMaterial({ color: 0x6b3f22, shininess: 20 }),
+  tipMat: new THREE.MeshPhongMaterial({ color: 0x53301a, shininess: 20 }),
+  flameMat: new THREE.MeshBasicMaterial({
+    color: 0xffb457, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending,
+  }),
+};
 
 /** The match code someone shared with us, e.g. ?game=FRA:7K2Q. */
 function matchFromUrl() {
@@ -2192,21 +2215,12 @@ export class Game {
 
   spawnRocketMesh(x, y, z) {
     const group = new THREE.Group();
-    const body = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.09, 0.11, 0.6, 8),
-      new THREE.MeshPhongMaterial({ color: 0x6b3f22, shininess: 20 }),
-    );
+    const body = new THREE.Mesh(ROCKET_PARTS.bodyGeo, ROCKET_PARTS.bodyMat);
     body.rotation.x = Math.PI / 2;
-    const tip = new THREE.Mesh(
-      new THREE.ConeGeometry(0.11, 0.24, 8),
-      new THREE.MeshPhongMaterial({ color: 0x53301a, shininess: 20 }),
-    );
+    const tip = new THREE.Mesh(ROCKET_PARTS.tipGeo, ROCKET_PARTS.tipMat);
     tip.rotation.x = -Math.PI / 2;
     tip.position.z = -0.4;
-    const flame = new THREE.Mesh(
-      new THREE.ConeGeometry(0.1, 0.5, 7),
-      new THREE.MeshBasicMaterial({ color: 0xffb457, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending }),
-    );
+    const flame = new THREE.Mesh(ROCKET_PARTS.flameGeo, ROCKET_PARTS.flameMat);
     flame.rotation.x = Math.PI / 2;
     flame.position.z = 0.55;
     group.add(body, tip, flame);
@@ -2232,7 +2246,8 @@ export class Game {
   disposeProjectile(p) {
     if (!p?.mesh) return;
     this.gfx.scene.remove(p.mesh);
-    p.mesh.traverse((o) => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+    // Nothing to free: every rocket draws the same three buffers. See
+    // `ROCKET_PARTS`.
   }
 
   /** Every rocket in the air at once — a map change, a disconnect, a new round. */
@@ -2249,7 +2264,16 @@ export class Game {
       p.life -= dt;
       p.mesh.position.set(p.x, p.y, p.z);
       p.mesh.lookAt(p.x + p.vx, p.y + p.vy, p.z + p.vz);
-      this.effects.rocketTrail(p.x, p.y, p.z);
+      // On the clock rather than on the frame. Emitting once per frame made a
+      // single rocket cost four times as many particles at 240 fps as at 60,
+      // and both pools hold eleven hundred between everything on screen — so a
+      // fast machine spent its whole particle budget on exhaust and recycled
+      // the trail out from under itself.
+      p.trail = (p.trail ?? TRAIL_INTERVAL) + dt;
+      if (p.trail >= TRAIL_INTERVAL) {
+        p.trail = 0;
+        this.effects.rocketTrail(p.x, p.y, p.z);
+      }
       if (p.life <= 0) {
         this.disposeProjectile(p);
         this.projectiles.splice(i, 1);

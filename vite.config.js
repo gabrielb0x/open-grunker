@@ -9,7 +9,13 @@
  * emits every chunk under a content-hashed name so nginx can cache them for a
  * year and a patch invalidates only what changed.
  *
- * Two builds, in this order:
+ * ── Commands ──────────────────────────────────────────────────────────────
+ *
+ *   npm run build        both builds, in the only order that works
+ *   npm run dev:client   Vite dev server on :7500, HMR, no build
+ *
+ * `npm run build` is `vite build && vite build --mode admin`, and the two
+ * halves can be run alone when only one of them changed:
  *
  *   vite build                 game        -> client/dist
  *   vite build --mode admin    admin panel -> client/dist/admin
@@ -17,8 +23,22 @@
  * They are separate runs rather than two inputs to one build because the panel
  * must not share a chunk directory with the game: everything under
  * `client/dist/assets/` is public, and nginx answers `/admin` with a flat 404.
- * The game build empties client/dist, so it has to go first and the panel's
- * must not empty anything.
+ * The game build empties client/dist and the panel's build empties nothing, so
+ * the order is not a style preference — running the panel first and the game
+ * second deletes the panel.
+ *
+ * `npm run dev:client` serves the sources straight out of `client/` and proxies
+ * `/api`, `/avatars` and `/ws` to a game server on :7420, so it needs
+ * `npm start` (or `npm run dev`) running beside it; everything stateful — the
+ * database, sessions, live matches — stays with that server. It never writes
+ * client/dist, so it cannot be what puts a change on the site.
+ *
+ * What the deployed server actually serves is `client/dist` if that directory
+ * exists and `client/` if it does not (server/config.js). Two consequences
+ * worth knowing before wondering why an edit did nothing: once anyone has run a
+ * build, `npm start` serves the bundle and editing `client/js/*.js` changes
+ * nothing until the next build; and to go back to reading the sources, either
+ * delete client/dist or start the server with `CLIENT_DIR=client`.
  */
 import { defineConfig } from 'vite';
 import { dirname, resolve } from 'node:path';

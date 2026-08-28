@@ -14,6 +14,23 @@ import { settings } from './settings.js';
 import { spriteTexture } from './textures.js';
 
 const MAX_PARTICLES = 1100;                 // per cloud
+/**
+ * The most of the screen one particle may cover, and the ceiling in pixels.
+ *
+ * Both clouds blend without depth-writing, so every particle the camera stands
+ * in is a full overdraw of everything behind it. Thirty of them at once — one
+ * rocket going off at your feet — is a frame the GPU can spend seconds on, and
+ * a frame long enough trips the driver's watchdog and takes the display down
+ * with it.
+ *
+ * The limit that matters is a share of the screen rather than a pixel count —
+ * that way one particle costs the same fraction of a frame at every resolution
+ * and pixel ratio, instead of a 4K display quietly buying itself four times the
+ * blend. The absolute ceiling only exists to catch a pathological buffer, and
+ * 2048 is where most drivers clamp `gl_PointSize` anyway.
+ */
+const MAX_POINT_FRACTION = 0.55;
+const MAX_POINT_PX = 2048;
 const MAX_TRACERS = 40;
 const MAX_BLASTS = 8;
 const MAX_FLASHES = 10;
@@ -29,12 +46,19 @@ varying float vAlpha;
 varying float vRot;
 varying vec3 vColor;
 uniform float uScale;
+uniform float uMaxSize;
 void main() {
-  vAlpha = alpha;
   vRot = rot;
   vColor = pcolor;
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
-  gl_PointSize = size * uScale / max(0.05, -mv.z);
+  float dist = -mv.z;
+  // A particle inside the lens shows nothing and costs everything: its quad is
+  // sized by 1/dist, so a smoke puff half a metre from the eye asks for a
+  // several-thousand-pixel sprite and an explosion at your feet asks for fifty
+  // of them at once. Fading it out over the last half unit removes the whole
+  // near field from the blend, and the pixel cap bounds whatever is left.
+  vAlpha = alpha * smoothstep(0.08, 0.5, dist);
+  gl_PointSize = min(size * uScale / max(0.05, dist), uMaxSize);
   gl_Position = projectionMatrix * mv;
 }`;
 
@@ -62,6 +86,9 @@ const DECAL_FS_HOOK = /* glsl */`
 varying float vDecalAlpha;
 `;
 
+/** Scratch for the per-draw drawing-buffer size query. */
+const _bufSize = new THREE.Vector2();
+
 /** One pooled particle cloud. */
 class ParticleCloud {
   constructor(scene, { blending, texture, max = MAX_PARTICLES }) {
@@ -85,12 +112,24 @@ class ParticleCloud {
       transparent: true,
       depthWrite: false,
       blending,
-      uniforms: { uMap: { value: texture }, uScale: { value: 320 } },
+      uniforms: {
+        uMap: { value: texture },
+        uScale: { value: 320 },
+        uMaxSize: { value: MAX_POINT_PX },
+      },
     });
 
     this.points = new THREE.Points(geo, this.material);
     this.points.frustumCulled = false;
     this.points.renderOrder = 3;
+    // Read off the buffer we are actually drawing into rather than off the
+    // window: the cap has to mean the same thing at every pixel ratio, and a
+    // resize must not be able to leave it stale.
+    this.points.onBeforeRender = (renderer) => {
+      renderer.getDrawingBufferSize(_bufSize);
+      this.material.uniforms.uMaxSize.value =
+        Math.min(_bufSize.y * MAX_POINT_FRACTION, MAX_POINT_PX);
+    };
     scene.add(this.points);
 
     this.vel = new Float32Array(max * 3);
@@ -852,20 +891,29 @@ export class Effects {
     if (!settings.particles) return;
     // The flame, at the nozzle.
     this.sparks.spawn(x, y, z, 0, 0, 0, new THREE.Color(0xfff0c4), 0.3, 0.05, { gravity: 0 });
-    this.sparks.spawn(x, y, z,
-      (Math.random() - 0.5) * 2.4, (Math.random() - 0.5) * 2.4, (Math.random() - 0.5) * 2.4,
-      new THREE.Color(0xffa640), 0.16 + Math.random() * 0.1, 0.12,
-      { gravity: 0, drag: 3 });
+    // The three behind it are decoration and go through the budget; the flame
+    // above is the rocket itself, and turning particles down should thin the
+    // trail rather than put the warhead out.
+    if (this._count(1)) {
+      this.sparks.spawn(x, y, z,
+        (Math.random() - 0.5) * 2.4, (Math.random() - 0.5) * 2.4, (Math.random() - 0.5) * 2.4,
+        new THREE.Color(0xffa640), 0.16 + Math.random() * 0.1, 0.12,
+        { gravity: 0, drag: 3 });
+    }
     // Hot exhaust, still glowing.
-    this.smoke.spawn(x, y, z,
-      (Math.random() - 0.5) * 1.4, (Math.random() - 0.5) * 1.4 + 0.3, (Math.random() - 0.5) * 1.4,
-      new THREE.Color(0x6a5a4c), 0.15 + Math.random() * 0.1, 0.35,
-      { gravity: -0.4, drag: 2.4, grow: 2, alpha: 0.7, spin: (Math.random() - 0.5) * 3 });
+    if (this._count(1)) {
+      this.smoke.spawn(x, y, z,
+        (Math.random() - 0.5) * 1.4, (Math.random() - 0.5) * 1.4 + 0.3, (Math.random() - 0.5) * 1.4,
+        new THREE.Color(0x6a5a4c), 0.15 + Math.random() * 0.1, 0.35,
+        { gravity: -0.4, drag: 2.4, grow: 2, alpha: 0.7, spin: (Math.random() - 0.5) * 3 });
+    }
     // …and the cold trail it leaves behind.
-    this.smoke.spawn(x, y, z,
-      (Math.random() - 0.5) * 0.7, (Math.random() - 0.5) * 0.7 + 0.5, (Math.random() - 0.5) * 0.7,
-      new THREE.Color(0xa8a49c), 0.22 + Math.random() * 0.16, 1.5,
-      { gravity: -0.5, drag: 1.6, grow: 4.5, alpha: 0.42, spin: (Math.random() - 0.5) * 1.6 });
+    if (this._count(1)) {
+      this.smoke.spawn(x, y, z,
+        (Math.random() - 0.5) * 0.7, (Math.random() - 0.5) * 0.7 + 0.5, (Math.random() - 0.5) * 0.7,
+        new THREE.Color(0xa8a49c), 0.22 + Math.random() * 0.16, 1.5,
+        { gravity: -0.5, drag: 1.6, grow: 4.5, alpha: 0.42, spin: (Math.random() - 0.5) * 1.6 });
+    }
   }
 
   update(dt, camera = null) {
