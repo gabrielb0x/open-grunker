@@ -11,6 +11,7 @@ import { skinSwatchCss } from './gunskin.js';
 import { api } from './api.js';
 import {
   settings, set as setSetting, SCHEMA, reset as resetSettings,
+  apply as applySettings,
   exportText as exportSettings, importText as importSettings,
 } from './settings.js';
 import { getMap, ALL_MAP_IDS } from '/shared/maps.js';
@@ -3402,8 +3403,7 @@ export class Menu {
       this.buildClasses($('classGridModal'), true);
     }
     if (user.loadout?.settings && Object.keys(user.loadout.settings).length) {
-      const { apply } = await import('./settings.js');
-      apply(user.loadout.settings);
+      applySettings(user.loadout.settings);
       this.buildSettings();
       this.onSettingsChange?.(null);
     }

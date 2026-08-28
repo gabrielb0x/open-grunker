@@ -152,4 +152,59 @@ export default function run() {
       return admin.state.y > y0 + 4;
     })());
   }
+
+  suite('God mode — the magazine never empties');
+
+  {
+    const room = makeRoom();
+    const admin = seat(room, 'Armourer', 'admin');
+    const mortal = seat(room, 'Mortal', 'player');
+
+    /** One trigger pull, with the rate limiter stepped past rather than around. */
+    const fire = (p) => {
+      p.weapon.lastShot = -99;
+      p.weapon.pumpUntil = 0;
+      room.onShoot(p, { y: p.state.yaw, p: p.state.pitch, n: p.shotSeq + 1 });
+    };
+
+    // Half a magazine down, and then the switch: the tool is no use starting
+    // where the last firefight left it.
+    admin.weapon.ammo = 3;
+    admin.weapons[1].ammo = 1;
+    room.onGodMode(admin, { v: 1 });
+
+    check('turning it on fills every magazine, not just the one in hand',
+      admin.weapons.filter((w) => !w.def.melee)
+        .every((w) => w.ammo === w.def.magSize),
+      admin.weapons.map((w) => `${w.def.id}:${w.ammo}`).join(' · '));
+
+    check('and the client is told, so the counter is right before the first shot',
+      last(room, K.S2C.AMMO)?.ammo === admin.weapon.def.magSize);
+
+    check('a whole magazine goes out without spending a round', (() => {
+      const mag = admin.weapon.def.magSize;
+      for (let i = 0; i < mag + 5; i++) fire(admin);
+      info(`${mag + 5} shots fired, ${admin.weapon.ammo}/${mag} left`);
+      return admin.weapon.ammo === mag && admin.score.shotsFired === mag + 5;
+    })());
+
+    check('nothing ever goes dry, so there is no reload to sit through',
+      !admin.weapon.reloading && !last(room, K.S2C.AMMO)?.dry);
+
+    check('everybody else still pays for theirs', (() => {
+      const before = mortal.weapon.ammo;
+      fire(mortal);
+      info(`${before} → ${mortal.weapon.ammo}`);
+      return mortal.weapon.ammo === before - 1;
+    })());
+
+    check('switching it off starts the magazine counting again', (() => {
+      admin.lastGodAt = 0;
+      room.onGodMode(admin, { v: 0 });
+      const before = admin.weapon.ammo;
+      fire(admin);
+      info(`${before} → ${admin.weapon.ammo}`);
+      return admin.god === false && admin.weapon.ammo === before - 1;
+    })());
+  }
 }

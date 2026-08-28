@@ -57,6 +57,14 @@ const bool = (k, d) => (env[k] === undefined ? d : /^(1|true|yes|on)$/i.test(env
 const str = (k, d) => (env[k] !== undefined && env[k] !== '' ? env[k] : d);
 const list = (k, d) => (env[k] ? env[k].split(',').map((s) => s.trim()).filter(Boolean) : d);
 
+/**
+ * Where the client comes from when CLIENT_DIR says nothing: the Vite build when
+ * there is one, the sources it was built from when there is not. A clone that
+ * has never run `npm run build` is still playable, and one that has serves the
+ * optimised bundle without anyone having to configure it.
+ */
+const defaultClientDir = existsSync(join(ROOT, 'client', 'dist')) ? 'client/dist' : 'client';
+
 export const config = {
   env: str('NODE_ENV', 'production'),
 
@@ -72,7 +80,7 @@ export const config = {
 
   // Storage
   dbPath: resolve(ROOT, str('DB_PATH', 'data/open-grunker.db')),
-  clientDir: resolve(ROOT, str('CLIENT_DIR', 'client')),
+  clientDir: resolve(ROOT, str('CLIENT_DIR', defaultClientDir)),
   sharedDir: resolve(ROOT, 'shared'),
   serveStatic: bool('SERVE_STATIC', true),
   // Profile pictures. One file per account, served from /avatars/<file>.

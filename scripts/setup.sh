@@ -20,6 +20,9 @@ echo "node $(node -v) ok"
 say "installing dependencies"
 npm install --no-audit --no-fund
 
+say "building the client"
+npm run build
+
 say "preparing configuration"
 [[ -f .env ]] || { cp .env.example .env; echo "created .env from .env.example"; }
 

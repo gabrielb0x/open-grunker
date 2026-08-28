@@ -188,6 +188,28 @@ export default async function run() {
     } catch (e) { info(String(e)); return false; }
   })());
 
+  // God mode stops the room counting rounds out of the magazine, so a number
+  // there would be a number that never moves. The blade and the reserve already
+  // read as the symbol; this is the third thing that is genuinely endless.
+  check('an admin in god mode reads ∞ where the magazine count goes', (() => {
+    const frame = (extra) => {
+      hud.update({
+        health: 100, ammo: 12, reserve: -1, weapon: loadoutFor('triggerman')[0], slot: 0,
+        reloading: false, reloadFrac: 0, spread: 0.02, scoped: false, matchTime: 91,
+        teamScore: { red: 0, blue: 0 }, teamMode: false, ping: 20, name: 'Tester',
+        level: 12, verified: false, speed: 0, accuracy: 50, ...extra,
+      }, 1 / 60);
+      return String(hud.el.ammoMag.textContent);
+    };
+    const mortal = frame({});
+    const god = frame({ godMode: true });
+    // A watcher's HUD is drawn from the same method with no flag on it, so
+    // spectating out of god mode has to put the number back.
+    const watching = frame({});
+    info(`${mortal} → ${god} → ${watching}`);
+    return mortal === '12' && god === '\u221e' && watching === '12';
+  })());
+
   check('the verified badge renders in the live board, killfeed and scoreboards', (() => {
     const rows = [
       { id: 1, name: 'Verified', score: 900, kills: 9, deaths: 2, verified: true, team: K.TEAM.RED, accuracy: 40 },

@@ -64,6 +64,11 @@ export class El {
     this.selected = false;
     this.width = 300;
     this.height = 150;
+    // The built client opens with Vite's modulepreload polyfill, which asks a
+    // throwaway <link> whether the browser needs it. A browser new enough to
+    // run this game says no, and the polyfill returns without touching the
+    // MutationObserver nothing here has.
+    if (this.tagName === 'LINK') this.relList = { supports: () => true };
   }
 
   get id() { return this.attributes.get('id') ?? ''; }

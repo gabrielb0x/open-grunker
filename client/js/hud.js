@@ -352,7 +352,7 @@ export class Hud {
   update(state, dt) {
     const { health, ammo, reserve, weapon, slot, reloading, reloadFrac, spread, scoped,
       matchTime, teamScore, teamMode, ping, name, level, verified, speed, accuracy,
-      hideCrosshair = false, hasBody = true } = state;
+      hideCrosshair = false, hasBody = true, godMode = false } = state;
 
     // Health, with a ghost bar that drains behind the real one after a hit.
     const pct = Math.max(0, Math.min(100, health));
@@ -377,11 +377,15 @@ export class Hud {
     this._style(this.el.lowHealth, 'hp.low', 'opacity',
       hasBody && pct <= 35 ? Math.min(0.85, (35 - pct) / 30).toFixed(2) : '0');
 
-    // Ammo — reserves are unlimited, so the second number is a symbol.
-    this._text(this.el.ammoMag, 'ammo.mag', weapon?.melee ? '∞' : ammo);
+    // Ammo — reserves are unlimited, so the second number is a symbol. So is the
+    // magazine for a blade, and for an admin in god mode, whose rounds the room
+    // stops counting. `godMode` comes off the payload rather than the flag the
+    // badge uses, because a watcher is reading somebody else's magazine.
+    const endlessMag = !!weapon?.melee || godMode;
+    this._text(this.el.ammoMag, 'ammo.mag', endlessMag ? '∞' : ammo);
     this._text(this.el.ammoReserve, 'ammo.res', weapon?.melee ? '' : (reserve < 0 ? '∞' : reserve));
-    this._toggle(this.el.ammoWrap, 'ammo.low', 'low', !weapon?.melee && ammo <= (weapon?.magSize ?? 30) * 0.25);
-    this._toggle(this.el.ammoWrap, 'ammo.empty', 'empty', !weapon?.melee && ammo === 0);
+    this._toggle(this.el.ammoWrap, 'ammo.low', 'low', !endlessMag && ammo <= (weapon?.magSize ?? 30) * 0.25);
+    this._toggle(this.el.ammoWrap, 'ammo.empty', 'empty', !endlessMag && ammo === 0);
     this._text(this.el.weaponName, 'weapon.name',
       WEAPON_LABEL[weapon?.id] ?? (weapon?.name ?? '').toUpperCase());
     // `on` rather than `hidden`: the row keeps its place in the panel whether it

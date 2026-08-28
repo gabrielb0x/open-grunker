@@ -1894,10 +1894,23 @@ export class Room {
     // Coming back down: drop whatever velocity the flight left behind so the
     // first thing gravity does is a fall, not a launch.
     if (!on) { player.state.vy = Math.min(0, player.state.vy); player.state.vx *= 0.3; player.state.vz *= 0.3; }
-    else player.health = K.MAX_HEALTH;
+    else {
+      player.health = K.MAX_HEALTH;
+      // Every magazine, not just the one in hand: nothing spends them from here
+      // on, so a secondary left half empty would stay half empty for the rest
+      // of the session. A reload already running is over — it has nothing left
+      // to put in.
+      for (const gun of player.weapons) {
+        if (gun.def.melee) continue;
+        gun.ammo = gun.def.magSize ?? 0;
+        gun.reloading = false;
+      }
+      const held = player.weapon;
+      if (held) this.sendTo(player, { o: K.S2C.AMMO, slot: player.slot, ammo: held.ammo, reserve: held.reserve });
+    }
     this.sendTo(player, { o: K.S2C.GOD, on, allowed: true });
     notice(on
-      ? 'God mode ON — you cannot be hurt, and SPACE / CTRL fly you up and down.'
+      ? 'God mode ON — you cannot be hurt, your magazine never empties, and SPACE / CTRL fly you up and down.'
       : 'God mode OFF.');
     try {
       this.hub?.db?.audit?.add(player.name, on ? 'god_on' : 'god_off', this.mapId ?? null,
@@ -2126,7 +2139,10 @@ export class Room {
     const burst = claimed !== null && Math.abs(claimed - settled) <= 3 ? claimed : Math.round(settled);
 
     w.lastShot = this.now;
-    w.ammo--;
+    // God mode does not spend the magazine. An admin standing in a room to try
+    // a weapon out is not playing a match, and a reload every thirty rounds is
+    // the one thing the tool cannot make itself immune to. See `onGodMode`.
+    if (!player.god) w.ammo--;
     w.burst = burst + 1;
     this.counters.shots++;
     if (d.boltTime) w.pumpUntil = this.now + d.boltTime;

@@ -1,7 +1,7 @@
 {
   "name": "open-grunker",
   "version": "1.9.5",
-  "description": "Open Grunker \u2014 an open-source, self-hostable 3D FPS arena shooter heavily inspired by krunker.io",
+  "description": "Open Grunker — an open-source, self-hostable 3D FPS arena shooter heavily inspired by krunker.io",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -11,6 +11,8 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server/index.js",
     "dev": "node --watch --disable-warning=ExperimentalWarning server/index.js",
+    "build": "vite build && vite build --mode admin",
+    "dev:client": "vite",
     "postinstall": "node scripts/sync-vendor.js",
     "db:init": "node --disable-warning=ExperimentalWarning scripts/db-cli.js init",
     "db:reset": "node --disable-warning=ExperimentalWarning scripts/db-cli.js reset",
@@ -23,7 +25,10 @@
     "test": "node --disable-warning=ExperimentalWarning tests/run.mjs"
   },
   "dependencies": {
-    "ws": "^8.18.0",
-    "three": "^0.185.1"
+    "three": "^0.185.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "vite": "^8.2.2"
   }
 }

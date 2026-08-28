@@ -8,13 +8,13 @@
  */
 import { createServer } from 'node:http';
 import { createReadStream, promises as fsp } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { networkInterfaces } from 'node:os';
 import { WebSocketServer } from 'ws';
 
 import * as K from '../shared/constants.js';
 import { getClass } from '../shared/weapons.js';
-import config from './config.js';
+import config, { ROOT } from './config.js';
 import log from './util/log.js';
 import * as db from './db/index.js';
 import { Hub } from './game/hub.js';
@@ -22,7 +22,7 @@ import { Telemetry } from './game/telemetry.js';
 import { createApi, COOKIE } from './api/index.js';
 import { createAdminApi, isLocalRequest } from './api/admin.js';
 import { guestName } from './util/auth.js';
-import { serveStatic } from './util/static.js';
+import { serveStatic, staleBuild } from './util/static.js';
 import * as avatars from './util/avatar.js';
 import { clientIp, cors, fail, parseCookies } from './util/http.js';
 import { take } from './util/ratelimit.js';
@@ -575,6 +575,10 @@ server.listen(config.port, config.host, () => {
   logger.info(`  api      ${API_PREFIX}`);
   logger.info(`  realtime ws://${config.host}:${config.port}/ws`);
   logger.info(`  client   ${config.serveStatic ? config.clientDir : '(disabled — served by nginx)'}`);
+  // The client dir is read even when nginx serves the game: the admin panel
+  // comes out of it either way, and so does whatever nginx has its root on.
+  const stale = staleBuild(config.clientDir, [join(ROOT, 'client'), config.sharedDir]);
+  if (stale) logger.warn(`  client   build predates ${relative(ROOT, stale)} — run \`npm run build\``);
   logger.info(`  db       ${s.path} — ${s.users} user(s), ${s.matches} match(es)`);
   logger.info(`  public   ${config.publicUrl}`);
   if (!config.adminEnabled || !config.adminPassword) {

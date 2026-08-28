@@ -721,6 +721,13 @@ export class Game {
     net.on('god', (msg) => {
       this.godMode = !!msg.on;
       this.hud.setGodMode(this.godMode);
+      // The room tops every magazine up on the way in and stops spending them.
+      // Doing the same here keeps the prediction and the HUD from disagreeing
+      // with it for the slots no AMMO packet covers.
+      if (this.godMode) {
+        for (let i = 0; i < this.weapons.length; i++) this.ammo[i] = this.weapons[i].magSize ?? 0;
+        this.reloading = false;
+      }
       if (msg.allowed === false) this.hud.toast('God mode is an administrator tool', 'error');
     });
 
@@ -1928,7 +1935,9 @@ export class Game {
 
     const burst = this.currentBurst(now);
     this.lastShotAt = now;
-    this.ammo[this.slot]--;
+    // The server does not spend the magazine in god mode either; predicting a
+    // round out of it would only be corrected by the next AMMO packet.
+    if (!this.godMode) this.ammo[this.slot]--;
     this.burst = burst + 1;
     if (w.boltTime) {
       this.pumpUntil = now + w.boltTime;
@@ -2610,6 +2619,7 @@ export class Game {
       slot: this.slot,
       reloading: this.reloading,
       reloadFrac: this.reloading ? clamp(1 - (this.reloadEnd - nowSec) / Math.max(0.05, w.reloadTime ?? 1), 0, 1) : 0,
+      godMode: this.godMode,
       spread,
       ads: this.input.ads,
       scoped: w.scope && this.input.ads && this.viewmodel.adsAmount > 0.85,

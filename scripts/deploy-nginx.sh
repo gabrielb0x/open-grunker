@@ -11,6 +11,10 @@ ENABLED="/etc/nginx/sites-enabled/$SITE"
 [[ $EUID -eq 0 ]] || { echo "run as root: sudo bash $0"; exit 1; }
 [[ -f "$SRC" ]]   || { echo "missing $SRC"; exit 1; }
 
+# The vhost's root is the build, not the sources it is built from.
+[[ -f "$ROOT/client/dist/index.html" ]] || {
+  echo "no client build at $ROOT/client/dist — run 'npm run build' first"; exit 1; }
+
 echo "==> installing $AVAIL"
 install -m 0644 "$SRC" "$AVAIL"
 
@@ -35,7 +39,7 @@ cat <<MSG
 
 nginx is configured for https://$SITE
 
-  client    $ROOT/client            (served directly by nginx)
+  client    $ROOT/client/dist       (the build, served directly by nginx)
   api       https://$SITE/api/v1/   -> 127.0.0.1:7420
   realtime  wss://$SITE/ws          -> 127.0.0.1:7420
 

@@ -28,9 +28,11 @@ register('./client-loader.mjs', import.meta.url);
 // `WebSocket` — so both run last, after every suite that talks to a real socket.
 // And `moderation` closes the shared database module when it is done, so every
 // suite that uses that module directly has to have had its turn by then.
+// `admin` and `build` each throw the shim's document away for a page of their
+// own, so they are the last two, in that order.
 const suites = ['movement', 'combat', 'lagcomp', 'simulation', 'keybinds', 'modes', 'rooms',
   'anticheat', 'godmode', 'progression', 'twofactor', 'moderation', 'accounts', 'clans', 'friends',
-  'client', 'gamepad', 'charts', 'admin'];
+  'client', 'gamepad', 'charts', 'admin', 'build'];
 const only = process.argv[2];
 
 for (const name of suites) {

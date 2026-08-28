@@ -18,9 +18,11 @@ of the screen — the chrome hugs the edges, so the arena stays visible while yo
 pick a class or a server. One click on **QUICK MATCH** takes a seat in that same
 match, with no reconnect and no loading screen.
 
-- **No build step.** The client is plain ES modules; the browser loads them directly.
+- **No build step to develop.** The client is plain ES modules a browser loads
+  directly; `npm run build` is a Vite pass over the same files that ships them as
+  hashed, tree-shaken chunks. Either one is playable — see [Building the client](#building-the-client).
 - **No binary assets.** Every weapon, character, map and sound effect is generated
-  from code — the whole client is under 3 MB, most of which is three.js.
+  from code — the built client is 1.2 MB, 325 KB over the wire, most of it three.js.
 - **No native dependencies.** Accounts live in SQLite through Node's built-in
   `node:sqlite`; the only runtime dependency is `ws`.
 - **Authoritative server** with client-side prediction, entity interpolation and
@@ -40,6 +42,7 @@ match, with no reconnect and no loading screen.
 ```bash
 cd /opt/open-grunker
 npm install
+npm run build      # optional — without it the sources are served as they are
 npm start
 ```
 
@@ -61,7 +64,9 @@ sudo bash scripts/setup.sh
 | --- | --- |
 | `npm start` | Run the server (API + game + static client) |
 | `npm run dev` | Same, restarting on file changes |
-| `npm test` | Run every suite (movement, combat, lag comp, simulation, keybinds, rooms, progression, two-factor, moderation, accounts, clans, client, charts, admin) |
+| `npm run build` | Build the optimised client into `client/dist/` |
+| `npm run dev:client` | Vite dev server on :7500 with HMR, API and socket proxied to :7420 |
+| `npm test` | Run every suite (movement, combat, lag comp, simulation, keybinds, rooms, progression, two-factor, moderation, accounts, clans, client, charts, admin, build) |
 | `npm run check` | Syntax-check the server entry point |
 | `npm run vendor` | Re-copy three.js from `node_modules` into `client/vendor/` |
 | `npm run db:init` | Create the database and schema (idempotent) |
@@ -75,6 +80,57 @@ sudo bash scripts/setup.sh
 The admin panel runs on its own port: <http://127.0.0.1:7421/admin> from this
 machine, or `http://<lan-ip>:7421/admin` from a phone on the same network. Set
 `ADMIN_PASSWORD` in `.env` to enable it.
+
+### Building the client
+
+The client is written as ES modules a browser loads unchanged, and that is still
+how it is served when there is no build — a fresh clone plays without one.
+`npm run build` is the shipping path on top of the same files:
+
+```bash
+npm run build          # -> client/dist: the game, then the panel under /admin/
+```
+
+Two Vite passes out of `vite.config.js`. They resolve the two specifiers only a
+browser understands — `three` from the import map, `/shared/…` from the site
+root — tree-shake three.js down to the parts the game actually calls, minify the
+rest and write every chunk under a name that is a hash of its own contents:
+
+| | unbundled | built | gzipped |
+| --- | ---: | ---: | ---: |
+| three.js | 2.09 MB | 537 KB | 131 KB |
+| game + shared code | 1.03 MB | 479 KB | 155 KB |
+| stylesheet | 155 KB | 109 KB | 21 KB |
+| page | 63 KB | 47 KB | 11 KB |
+| **total** | **3.34 MB** | **1.17 MB** | **318 KB** |
+
+three.js gets a chunk of its own: it moves with a dependency bump, the game
+moves with every patch, so a patch costs a returning player the game chunk alone
+rather than the whole download again. The hashes make that safe to cache for a
+year, which is what both nginx and the Node static server do with `/assets/`.
+The two files whose URLs client code writes out as plain strings — `/check.png`
+and `/assets/favicon.svg` — keep their names, and keep a short cache with them.
+
+The panel is a second, separate pass so that its chunks land under `/admin/`
+rather than in the public `/assets/` pile: nginx answers that prefix with a flat
+404 and the server refuses it from anything but loopback, and a chunk of the
+panel sitting in `/assets/` would be downloadable by anyone.
+
+Which of the two gets served is `CLIENT_DIR`. Left unset it is `client/dist`
+when a build exists and `client/` when none does; set it to `client` to pin the
+no-bundler loop, where an edit is live on reload with nothing to rebuild.
+
+Bundling freezes a copy of `shared/` into the client, and the whole design rests
+on that copy matching the server's — so a build has to be redone when `shared/`
+or `client/` changes. Forget, and the boot banner names the file you outran:
+
+```
+WARN [server]   client   build predates client/js/menu.js — run `npm run build`
+```
+
+For a tighter loop than rebuild-and-reload, `npm run dev:client` runs Vite's dev
+server on :7500 with hot module replacement, proxying the API, the avatars and
+the game socket to a server already running on :7420.
 
 ### Service management
 
@@ -401,6 +457,10 @@ While it is on:
   strafe, `Space` climbs and `Ctrl` descends. Collision stays on — this is
   flight, not noclip, because an admin walking through a wall cannot be shown
   what is behind it.
+* **The magazine never empties.** Every magazine is topped up on the way in and
+  the room stops counting rounds out of them, so there is no reload to sit
+  through — the counter reads `∞`, the way a blade's and the reserve already do.
+  The rate of fire is untouched: this removes the reload, not the weapon.
 
 It is deliberately narrow:
 
@@ -410,7 +470,7 @@ It is deliberately narrow:
 | **How long** | As long as the socket. It is never written to the database, so a reconnect, a rejoin or a server restart always comes back mortal. |
 | **Re-checked** | Every press. An account demoted mid-session loses it the next time it presses the button, not the next time it signs in. |
 | **Recorded** | Both directions are written to the admin log as `god_on` / `god_off` with the room, map and mode — so the operator can find it afterwards without having to be told about it. |
-| **Visible to you** | A **GOD MODE** badge sits under the crosshair the whole time it is on. Nobody is invincible by accident. |
+| **Visible to you** | A **GOD MODE** badge sits under the crosshair the whole time it is on, and the ammo counter reads `∞`. Nobody is invincible by accident. |
 
 The server is the only thing that decides. The client asks (`gd`), the room
 re-reads the rank, and the badge and the switch are drawn from the answer that
@@ -1289,7 +1349,9 @@ open-grunker/
 │   ├── js/            renderer, netcode, HUD, menus, keybinds, audio,
 │   │                  gunskin.js (weapon finishes), viewmodel.js (hands)
 │   ├── admin/         the admin panel (served on the admin port only)
-│   └── vendor/        three.js (copied by `npm run vendor`)
+│   ├── vendor/        three.js (copied by `npm run vendor`)
+│   └── dist/          the build (`npm run build`) — what production serves
+├── vite.config.js     both builds: the game, and the panel under /admin/
 ├── deploy/            nginx vhost, systemd unit
 ├── scripts/           setup, deployment, database CLI
 └── data/              SQLite database, avatars/ and clans/ (created on first run)
@@ -1454,7 +1516,9 @@ Everything a player looks at is code, not content. There are no `.obj` files, no
 texture atlases, no level editor and nothing to import: a map is a function that
 returns boxes, a weapon is a list of boxes, a skin is a palette and a pattern
 name. All three live in `shared/`, are loaded byte-identically by the client and
-the server, and take effect on the next page load.
+the server, and take effect on the next page load — the next page load *after a
+rebuild*, if a build is what is being served. `CLIENT_DIR=client` drops the
+rebuild while you are working; see [Building the client](#building-the-client).
 
 Run `npm test` after any change here. The suite checks things that are easy to
 break by hand and impossible to see: that every spawn point is clear and lands
@@ -1878,6 +1942,7 @@ Copy `.env.example` to `.env`; every value has a working default.
 | `PUBLIC_URL` | `https://grunker.g0x.dev` | Used for cookie `Secure` and logging |
 | `CORS_ORIGINS` | site + localhost | Comma-separated allow-list |
 | `DB_PATH` | `data/open-grunker.db` | WAL-mode SQLite file |
+| `CLIENT_DIR` | *(the build, else the sources)* | `client/dist` once `npm run build` has made one, `client` until then |
 | `SERVE_STATIC` | `true` | Set `false` when nginx serves the client |
 | `ROOMS` | four rooms | `"<map>:<mode>"`, comma-separated |
 | `REGION` | `FRA` | Prefix in shareable match codes, e.g. `FRA:7K2Q` |
@@ -1967,9 +2032,10 @@ After editing `.env`: `sudo systemctl restart open-grunker`.
 **1 — systemd** (`deploy/systemd/open-grunker.service`) runs the server as
 `www-data` with `ProtectSystem=strict` and write access limited to `data/`.
 
-**2 — nginx** (`deploy/nginx/grunker.g0x.dev.conf`) serves the client directly,
-proxies `/api/` and `/ws` to `127.0.0.1:7420`, gzips JavaScript (three.js drops
-from 650 KB to 132 KB) and keeps WebSocket connections alive for the length of a
+**2 — nginx** (`deploy/nginx/grunker.g0x.dev.conf`) serves the client directly
+out of `client/dist` — so a deploy runs `npm run build` first — proxies `/api/`
+and `/ws` to `127.0.0.1:7420`, gzips JavaScript, hands every hashed chunk a
+year-long `immutable` and keeps WebSocket connections alive for the length of a
 match. It answers `/admin` and `/api/v1/admin` with a flat 404: the panel is not
 part of the public site.
 
@@ -2176,6 +2242,8 @@ process, and five wrong passwords lock an address out for a minute.
 | Game loads but never connects | Check `/ws` proxying: `nginx -t`, and that `$connection_upgrade` is mapped in `nginx.conf` |
 | `SQLite is an experimental feature` warning | Run through `npm start` or `scripts/db-cli.js`; both pass `--disable-warning=ExperimentalWarning` |
 | Nothing renders, black screen | The browser needs WebGL — enable hardware acceleration |
+| An edit to `client/` or `shared/` changes nothing | The build is being served, not the sources: `npm run build`, or `CLIENT_DIR=client` for a loop with no build in it |
+| Players desync a moment after joining | Same cause: a client built before the last change to `shared/`. The boot banner names the file |
 | Bots but no other humans | Expected on a quiet server; bots step aside as real players arrive |
 | Admin panel says `local_only` | The request reached it through a proxy, or from outside this network — open it directly on `ADMIN_PORT` |
 | Admin panel 404s | `ADMIN_PASSWORD` is empty in `.env`, or `ADMIN_ENABLED=false` |
