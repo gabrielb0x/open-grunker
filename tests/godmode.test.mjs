@@ -153,6 +153,73 @@ export default function run() {
     })());
   }
 
+  suite('God mode — nothing is waited on');
+
+  {
+    const room = makeRoom();
+    const admin = seat(room, 'Spammer', 'admin');
+    const mortal = seat(room, 'Patient', 'player');
+    for (const p of [admin, mortal]) { p.setClass('rocketeer'); room.respawn(p); }
+    room.onGodMode(admin, { v: 1 });
+
+    /** As fast as a person clicks — fifteen presses spread over one second. */
+    const spam = (p, presses = 15) => {
+      const t0 = room.now;
+      let out = 0;
+      for (let i = 0; i < presses; i++) {
+        const before = p.score.shotsFired;
+        room.onShoot(p, { y: 0, p: 0, n: p.shotSeq + 1 });
+        if (p.score.shotsFired > before) out++;
+        room.now += 1 / presses;
+      }
+      room.now = t0;
+      room.projectiles.length = 0;
+      return out;
+    };
+
+    const godRockets = spam(admin);
+    check('spamming the trigger puts fifteen rockets in the air in one second',
+      godRockets === 15, `${godRockets} of 15 went out`);
+
+    const mortalRockets = spam(mortal);
+    check('a launcher outside god mode still fires once a second and a bit',
+      mortalRockets === 1, `${mortalRockets} of 15 went out`);
+
+    check('the bolt is not waited on either', (() => {
+      admin.setClass('hunter');            // AWM: 0.9s of bolt after every round
+      room.respawn(admin);
+      room.onShoot(admin, { y: 0, p: 0, n: admin.shotSeq + 1 });
+      const bolt = admin.weapon.pumpUntil - room.now;
+      const before = admin.score.shotsFired;
+      room.now += K.GOD_SHOT_INTERVAL;
+      room.onShoot(admin, { y: 0, p: 0, n: admin.shotSeq + 1 });
+      info(`${bolt.toFixed(2)}s of bolt, second round ${admin.score.shotsFired > before ? 'went out' : 'refused'}`);
+      return bolt > 0.5 && admin.score.shotsFired === before + 1;
+    })());
+
+    check('and neither is the knife', (() => {
+      admin.slot = 2;
+      const knife = admin.weapons[2];
+      knife.lastShot = -999;
+      room.onMelee(admin);
+      const first = knife.lastShot;
+      room.now += K.GOD_SHOT_INTERVAL;
+      room.onMelee(admin);
+      info(`${K.MELEE_COOLDOWN}s cooldown, swung again after ${(room.now - first).toFixed(2)}s`);
+      return knife.lastShot > first;
+    })());
+
+    // A floor, never a ceiling: the fastest weapon in the game already beats it
+    // and must not be slowed down to it.
+    check('a weapon quicker than the floor keeps its own rate', (() => {
+      admin.setClass('detective');         // akimbo, 1250 rpm
+      room.respawn(admin);
+      const interval = 60 / admin.weapon.def.fireRate;
+      info(`akimbo ${interval.toFixed(3)}s vs the ${K.GOD_SHOT_INTERVAL}s floor`);
+      return interval < K.GOD_SHOT_INTERVAL;
+    })());
+  }
+
   suite('God mode — the magazine never empties');
 
   {

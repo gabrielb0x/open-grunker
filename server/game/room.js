@@ -10,7 +10,7 @@ import { World, rayBox } from '../../shared/physics.js';
 import { getMap, MAP_IDS, ALL_MAP_IDS } from '../../shared/maps.js';
 import { step, lookDir, fallDamage, KEY } from '../../shared/movement.js';
 import { shotDirections, shotSeed } from '../../shared/shot.js';
-import { shotInterval, spreadFor, falloff, getClass, weaponById } from '../../shared/weapons.js';
+import { drawStamp, shotInterval, spreadFor, falloff, getClass, weaponById } from '../../shared/weapons.js';
 import { Player } from './player.js';
 import { BotBrain } from './bot.js';
 import log from '../util/log.js';
@@ -1739,7 +1739,9 @@ export class Room {
     player.slot = slot;
     const w = player.weapon;
     w.reloading = false;
-    w.lastShot = Math.max(w.lastShot, this.now - 0.15);
+    // `Math.max` so that swapping away and back is not a way to skip a cooldown
+    // the weapon had already started.
+    w.lastShot = Math.max(w.lastShot, drawStamp(w.def, this.now, 0.15));
     this.sendTo(player, { o: K.S2C.AMMO, slot, ammo: w.ammo, reserve: w.reserve });
   }
 
@@ -2109,10 +2111,13 @@ export class Room {
     // packet counts whether or not the round goes out. See `checkShotSeq`.
     this.checkShotSeq(player, msg);
 
-    if (w.reloading || this.now < w.pumpUntil) return;
-
     const interval = shotInterval(d);
-    if (this.now - w.lastShot < interval * 0.9) return;      // 10% jitter tolerance
+    // God mode collapses every wait between two rounds — the fire rate, the
+    // bolt, and whatever the swap left behind — to a floor no trigger outruns.
+    // Nothing else about the shot changes: same cone, same damage, same seed.
+    const gate = (player.god ? Math.min(interval, K.GOD_SHOT_INTERVAL) : interval) * 0.9;
+    if (w.reloading || (this.now < w.pumpUntil && !player.god)) return;
+    if (this.now - w.lastShot < gate) return;                // 10% jitter tolerance
 
     if (w.ammo <= 0) {
       this.sendTo(player, { o: K.S2C.AMMO, slot: player.slot, ammo: 0, reserve: w.reserve, dry: true });
@@ -2546,7 +2551,8 @@ export class Room {
   onMelee(player) {
     if (!player.alive || this.state !== 'live') return;
     const knife = player.weapons[2];
-    if (this.now - knife.lastShot < K.MELEE_COOLDOWN) return;
+    const cooldown = player.god ? Math.min(K.MELEE_COOLDOWN, K.GOD_SHOT_INTERVAL) : K.MELEE_COOLDOWN;
+    if (this.now - knife.lastShot < cooldown) return;
     knife.lastShot = this.now;
 
     const eye = player.eye();

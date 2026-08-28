@@ -249,6 +249,22 @@ export const MELEE_COOLDOWN = 0.52;
 export const MAX_SHOT_RANGE = 400;
 /** Ammo reserves are unlimited everywhere — reloads never cost anything. */
 export const INFINITE_AMMO = true;
+
+/**
+ * The floor god mode puts under every wait between two shots: the fire rate,
+ * the bolt, the draw left over from a swap and the knife's swing.
+ *
+ * No wait at all means one round per rendered frame, which is a weapon nobody
+ * asked for on a 240 Hz display, an input stream the packet-rate guard would
+ * flag as a speedhack, and a tracer broadcast to the room two hundred times a
+ * second. Twenty a second is quicker than anyone clicks and quicker than
+ * anything in the game fires, so the trigger is the only limit left.
+ *
+ * A floor and never a ceiling: a weapon already faster than this keeps its own
+ * rate rather than being slowed down to it.
+ */
+export const GOD_SHOT_INTERVAL = 0.05;
+
 export const KILLSTREAK_LABELS = [
   [3, 'TRIPLE'], [5, 'RAMPAGE'], [7, 'UNSTOPPABLE'],
   [10, 'GODLIKE'], [15, 'LEGENDARY'], [20, 'MYTHIC'],

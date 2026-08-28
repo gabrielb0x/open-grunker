@@ -460,7 +460,14 @@ While it is on:
 * **The magazine never empties.** Every magazine is topped up on the way in and
   the room stops counting rounds out of them, so there is no reload to sit
   through — the counter reads `∞`, the way a blade's and the reserve already do.
-  The rate of fire is untouched: this removes the reload, not the weapon.
+* **Nothing is waited on.** The fire rate, the bolt, the draw left over from a
+  swap and the knife's swing all collapse to `GOD_SHOT_INTERVAL` — twenty rounds
+  a second, so the trigger is the only limit left and a launcher empties as fast
+  as you can click it. It is a floor and never a ceiling: the akimbo uzis are
+  already quicker and keep their own rate. Twenty rather than *none* because no
+  wait at all is one round per rendered frame, which on a fast display is an
+  input stream the packet-rate guard reads as a speedhack and a tracer broadcast
+  to the room two hundred times a second.
 
 It is deliberately narrow:
 
@@ -906,6 +913,14 @@ is on every class, and it must never be the reason a fight was won at range.
 The sniper is the other weapon balanced on one number: **scoped it is perfect and
 unscoped it is a lottery.** Its hip-fire cone is genuinely wild, because a rifle
 that deletes anybody it touches has to be aimed to touch them.
+
+The launcher is the one weapon with a **draw time of its own**. Bringing any
+weapon up is recorded as a shot a moment ago, so what stands between the swap
+and the first round is that weapon's fire interval — nothing at all on a rifle,
+and a second and a third on a tube that fires 46 times a minute. `drawTime: 0.25`
+in its definition caps that at a quarter of a second, which is about how long
+the launcher takes to reach the shoulder. Its rate of fire is untouched: this
+removes the wait for the *first* rocket, not the wait between two of them.
 
 Headshots multiply damage by roughly 2.35×; leg shots reduce it. **Reserve ammo
 is unlimited for every weapon in the game** — only the magazine and the reload

@@ -94,6 +94,22 @@ export function falloff(w, dist) {
 export const shotInterval = (w) => 60 / w.fireRate;
 
 /**
+ * The `lastShot` stamp a weapon carries out of a swap.
+ *
+ * Bringing a weapon up has always been recorded as a shot a moment ago, which
+ * means what stands between the swap and the first round is the weapon's own
+ * fire interval. On a rifle that is nothing; on a launcher at 46 rounds a
+ * minute it was a second and a third of holding a live tube unable to pull the
+ * trigger. A weapon that sets `drawTime` caps the wait there instead, for the
+ * ones slow enough that it is a delay rather than a formality.
+ *
+ * `grace` is the slice of the wait each side forgives — a tenth of a second on
+ * the client, 0.15 on the room, exactly as before this was a knob.
+ */
+export const drawStamp = (w, now, grace) =>
+  now - Math.max(grace, shotInterval(w) - (w.drawTime ?? Infinity));
+
+/**
  * Effective spread for a player state (radians, cone half-angle).
  *
  * `burst` is how many rounds have gone down range without letting the cone
@@ -911,6 +927,11 @@ export const CLASSES = {
       // holding an empty pipe — long enough that a missed rocket was the whole
       // engagement. Halved: the class lives or dies on the shot after the miss.
       magSize: 1, reserve: 8, reloadTime: 1.15,
+      // Swapping to the launcher used to cost the whole 1.3-second fire
+      // interval before it would fire — a second of pointing a loaded tube at
+      // somebody and watching. The tube is up in about a quarter of a second;
+      // that is now all it takes. See `drawStamp`.
+      drawTime: 0.25,
       spread: 0.003, spreadMove: 0.005, spreadAir: 0.009, spreadAds: 0.0015,
       bloom: 0, bloomCap: 0,
       recoil: { up: 0.058, side: 0.006, climbShots: 2, firstShot: 1, swing: 1, jitter: 0.3, recover: 5, seed: 0x39 },

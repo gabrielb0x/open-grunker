@@ -13,7 +13,7 @@ import { getMap, ALL_MAP_IDS } from '/shared/maps.js';
 import { step, createState, eyeY, KEY } from '/shared/movement.js';
 import { shotDirections, shotSeed } from '/shared/shot.js';
 import {
-  loadoutFor, getClass, shotInterval, spreadFor, recoilKick, recoilRecovery, weaponById,
+  loadoutFor, getClass, drawStamp, shotInterval, spreadFor, recoilKick, recoilRecovery, weaponById,
 } from '/shared/weapons.js';
 
 import { settings, set as setSetting, onChange as onSettingsChange, HEAVY_KEYS } from './settings.js';
@@ -1894,7 +1894,7 @@ export class Game {
     this.slot = slot;
     this.reloading = false;
     this.burst = 0;
-    this.lastShotAt = performance.now() / 1000 - 0.1;
+    this.lastShotAt = drawStamp(this.weapons[slot], performance.now() / 1000, 0.1);
     this.viewmodel.setWeapon(this.weapons[slot], this.skin);
     this.net.switchSlot(slot);
     sfx.switchWeapon();
@@ -1924,8 +1924,12 @@ export class Game {
     if (w.melee) return this.tryMelee();
 
     const now = performance.now() / 1000;
-    if (this.reloading || now < this.pumpUntil) return;
-    if (now - this.lastShotAt < shotInterval(w)) return;
+    // The room puts the same floor under every wait in god mode — fire rate,
+    // bolt and the leftover draw alike. Predicting anything slower would just
+    // be the client refusing shots the server would have taken.
+    const gate = this.godMode ? Math.min(shotInterval(w), K.GOD_SHOT_INTERVAL) : shotInterval(w);
+    if (this.reloading || (now < this.pumpUntil && !this.godMode)) return;
+    if (now - this.lastShotAt < gate) return;
 
     if (this.ammo[this.slot] <= 0) {
       sfx.dryFire();
@@ -2076,7 +2080,8 @@ export class Game {
   tryMelee() {
     if (!this.alive || this.state !== 'playing') return;
     const now = performance.now() / 1000;
-    if (now - this.lastMeleeAt < K.MELEE_COOLDOWN) return;
+    const cooldown = this.godMode ? Math.min(K.MELEE_COOLDOWN, K.GOD_SHOT_INTERVAL) : K.MELEE_COOLDOWN;
+    if (now - this.lastMeleeAt < cooldown) return;
     this.lastMeleeAt = now;
     this.net.melee();
     // The swing fills most of the cooldown, so the blade is home again just

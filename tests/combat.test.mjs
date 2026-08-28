@@ -6,7 +6,7 @@ import { Room } from '../server/game/room.js';
 import { Player } from '../server/game/player.js';
 import { World } from '../shared/physics.js';
 import * as K from '../shared/constants.js';
-import { getClass } from '../shared/weapons.js';
+import { getClass, CLASS_IDS, drawStamp, loadoutFor, shotInterval } from '../shared/weapons.js';
 import { suite, check, info } from './harness.mjs';
 
 export default function run() {
@@ -222,6 +222,65 @@ export default function run() {
       && sp.maxDamage * sp.selfMult < K.MAX_HEALTH * 0.5
       && rpg.reloadTime <= 1.2;
   })());
+
+  suite('Combat — bringing a weapon up');
+
+  {
+    /*
+     * A swap is recorded as a shot a moment ago, so what stands between a
+     * weapon coming up and its first round is the weapon's own fire interval.
+     * That is invisible on anything quick and was a second and a third on the
+     * launcher. `drawTime` caps it; nothing without one may have moved.
+     */
+    const firstShotAt = (w, grace, tolerance) =>
+      drawStamp(w, 0, grace) + shotInterval(w) * tolerance;
+
+    const rpg = loadoutFor('rocketeer')[0];
+    check('the launcher fires about a quarter of a second after it comes up',
+      Math.abs(firstShotAt(rpg, 0.1, 1) - 0.25) < 0.001,
+      `${firstShotAt(rpg, 0.1, 1).toFixed(3)}s, down from ${(shotInterval(rpg) - 0.1).toFixed(3)}s`);
+
+    check('and the room takes it sooner than the client sends it, as it does for every shot',
+      firstShotAt(rpg, 0.15, 0.9) < firstShotAt(rpg, 0.1, 1),
+      `room ${firstShotAt(rpg, 0.15, 0.9).toFixed(3)}s · client ${firstShotAt(rpg, 0.1, 1).toFixed(3)}s`);
+
+    check('no weapon that sets no draw time changed at all', (() => {
+      const moved = [];
+      for (const classId of CLASS_IDS) {
+        for (const w of loadoutFor(classId)) {
+          if (w.melee || w.drawTime !== undefined) continue;
+          // What the line used to be, spelled out: `now - 0.1`.
+          if (Math.abs(drawStamp(w, 0, 0.1) - -0.1) > 1e-9) moved.push(w.id);
+        }
+      }
+      info(moved.length ? moved.join(' · ') : 'every one still opens on `now - 0.1`');
+      return moved.length === 0;
+    })());
+
+    check('the room wires it to the actual swap', (() => {
+      const p = new Player({ name: 'Drawer', classId: 'rocketeer' });
+      room.players.set(p.id, p);
+      p.spawnAt(0, 60, 0, 0, room.now);
+      p.protectedUntil = -1;
+      room.onSwitch(p, { s: 1 });
+      room.onSwitch(p, { s: 0 });
+
+      const t0 = room.now;
+      let waited = null;
+      for (let i = 0; i < 400 && waited === null; i++) {
+        const fired = p.score.shotsFired;
+        room.onShoot(p, { y: 0, p: 0, n: p.shotSeq + 1 });
+        if (p.score.shotsFired > fired) waited = room.now - t0;
+        else room.now += 0.005;
+      }
+      room.now = t0;
+      room.players.delete(p.id);
+      room.projectiles.length = 0;
+      info(`${waited === null ? 'never' : waited.toFixed(3) + 's'} after the swap`);
+      // The room's 10% tolerance puts it ahead of the client's quarter second.
+      return waited !== null && waited > 0.1 && waited < 0.25;
+    })());
+  }
 
   suite('Combat — lag compensation');
   a.setClass('triggerman');
