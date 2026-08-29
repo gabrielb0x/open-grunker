@@ -241,6 +241,14 @@ export class Net {
   }
   respawn() { this.send({ o: K.C2S.RESPAWN }); }
   setClass(classId) { this.send({ o: K.C2S.CLASS, c: classId }); }
+  /**
+   * Ask to be a different kind of player, in the mode that has them.
+   *
+   * A request, like every other line in this file: the room decides whether it
+   * lands now or on the next respawn, and answers with a `perkSet` or a
+   * `perkQueued` either way. Nothing here changes anything.
+   */
+  setPerk(perkId) { this.send({ o: K.C2S.PERK, p: perkId }); }
   /** A spectator asking for a seat in the match it is watching. */
   play() { this.send({ o: K.C2S.PLAY }); }
   /** Vote for the next map during the intermission. */

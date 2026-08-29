@@ -77,11 +77,13 @@ const SCORING_HELP = [
 ];
 
 export class Menu {
-  constructor({ onPlay, onSettingsChange, onClassChange, onClassPreview, onCosmeticsChange, onBindsChange, input }) {
+  constructor({ onPlay, onSettingsChange, onClassChange, onClassPreview, onPerkChange,
+    onCosmeticsChange, onBindsChange, input }) {
     this.onPlay = onPlay;
     this.onSettingsChange = onSettingsChange;
     this.onClassChange = onClassChange;
     this.onClassPreview = onClassPreview;
+    this.onPerkChange = onPerkChange;
     /** Something was equipped: the running match rebuilds its viewmodel. */
     this.onCosmeticsChange = onCosmeticsChange;
     this.onBindsChange = onBindsChange;
@@ -135,6 +137,7 @@ export class Menu {
     this._bindPlay();
     this._bindAuth();
     this._bindClassModal();
+    this._bindPerkModal();
     this._bindProfile();
     this._bindAccountNav();
     this._bindAvatar();
@@ -215,6 +218,7 @@ export class Menu {
       if (!this.panelOpen) return;
       if (!$('authModal').classList.contains('hidden')) return;
       if (!$('classModal').classList.contains('hidden')) return;
+      if (!$('perkModal').classList.contains('hidden')) return;
       e.preventDefault();
       // Mid-match the game's own Escape handler is listening on window, and it
       // would close the whole menu behind this. One Escape, one panel.
@@ -656,7 +660,7 @@ export class Menu {
    */
   get coveredByPanel() {
     if (this.padKeyboard?.open_) return true;
-    for (const id of ['confirmModal', 'reportCard', 'playerCard', 'classModal', 'authModal', 'menuPanel']) {
+    for (const id of ['confirmModal', 'reportCard', 'playerCard', 'classModal', 'perkModal', 'authModal', 'menuPanel']) {
       const el = $(id);
       if (el && !el.classList.contains('hidden')) return true;
     }
@@ -677,7 +681,7 @@ export class Menu {
      * scope that stopped at the menu left a pad able to open every one of them
      * and press nothing on any of them.
      */
-    for (const id of ['confirmModal', 'reportCard', 'playerCard', 'classModal', 'authModal',
+    for (const id of ['confirmModal', 'reportCard', 'playerCard', 'classModal', 'perkModal', 'authModal',
       'pause', 'matchEnd', 'scoreboard']) {
       const el = $(id);
       if (el && !el.classList.contains('hidden')) return el;
@@ -749,6 +753,7 @@ export class Menu {
       ['reportCard', () => $('reportCancel')?.click()],
       ['playerCard', () => this.closePlayerCard()],
       ['classModal', () => this.closeClassModal()],
+      ['perkModal', () => this.closePerkModal()],
       ['authModal', () => $('authClose')?.click()],
     ]) {
       const el = $(id);
@@ -3772,6 +3777,59 @@ export class Menu {
 
   closeClassModal() { $('classModal').classList.add('hidden'); }
   get classModalOpen() { return !$('classModal').classList.contains('hidden'); }
+
+  /* ── The perk picker ────────────────────────────────────────────────────────
+   *
+   * Deliberately the same shape as the class modal above, because it is the
+   * same gesture: a grid of cards, one of them lit, click to choose. What is
+   * different is what the cards say — a class card is a stat block, and there
+   * is no useful stat block for "half the health, hops that never bleed". So
+   * each card is two lists in plain words, the good and the bad, and the player
+   * reads a trade rather than four bars.
+   *
+   * The catalogue comes from the room over the wire rather than from this
+   * client's copy of the constants, so a server running its own numbers
+   * describes its own numbers. `onPerkChange` is the game's; nothing here
+   * decides anything.
+   * ─────────────────────────────────────────────────────────────────────────*/
+
+  _bindPerkModal() {
+    $('perkClose').addEventListener('click', () => this.closePerkModal());
+    $('perkModal').addEventListener('click', (e) => {
+      if (e.target === $('perkModal')) this.closePerkModal();
+    });
+    $('perkGrid').addEventListener('click', (e) => {
+      const card = e.target.closest('[data-perk]');
+      if (!card) return;
+      sfx.ui('ok');
+      this.selectedPerk = card.dataset.perk;
+      this.buildPerks(this.perkCatalogue, this.selectedPerk);
+      this.onPerkChange?.(this.selectedPerk);
+      this.closePerkModal();
+    });
+  }
+
+  buildPerks(list, selected) {
+    this.perkCatalogue = list ?? this.perkCatalogue ?? [];
+    this.selectedPerk = selected ?? this.selectedPerk;
+    const hex = (n) => `#${Number(n ?? 0x8b95a6).toString(16).padStart(6, '0')}`;
+    $('perkGrid').innerHTML = this.perkCatalogue.map((p) => `
+      <div class="perk-card${p.id === this.selectedPerk ? ' selected' : ''}" data-perk="${escapeHtml(p.id)}">
+        <span class="pick">SELECTED</span>
+        <h4 style="color:${hex(p.color)}">${escapeHtml(p.name)}</h4>
+        <p>${escapeHtml(p.tagline ?? '')}</p>
+        <ul class="perk-good">${(p.good ?? []).map((g) => `<li>${escapeHtml(g)}</li>`).join('')}</ul>
+        <ul class="perk-bad">${(p.bad ?? []).map((b) => `<li>${escapeHtml(b)}</li>`).join('')}</ul>
+      </div>`).join('');
+  }
+
+  openPerkModal(list, selected) {
+    this.buildPerks(list, selected);
+    $('perkModal').classList.remove('hidden');
+  }
+
+  closePerkModal() { $('perkModal').classList.add('hidden'); }
+  get perkModalOpen() { return !$('perkModal').classList.contains('hidden'); }
   get authModalOpen() { return !$('authModal').classList.contains('hidden'); }
 
   /* ── Creator ────────────────────────────────────────────────────────────────

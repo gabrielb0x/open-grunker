@@ -202,7 +202,7 @@ per action: primary, alternate, and the pad. These are the defaults:
 | --- | --- | --- |
 | `W` `A` `S` `D` | Left stick | Move |
 | — | Right stick | Look |
-| `Space` | `A` | Jump — tap it on every landing to chain hops |
+| `Space` | `A` | Jump — tap it on every landing to chain hops. While dead it is also the [kill cam](#the-kill-cam) skip |
 | `Shift` / `C` | `B` | Slide — crouch at speed for a burst, then keep hopping. Carves toward your crosshair |
 | `Left click` | `RT` | Fire |
 | `Right click` | `LT` | Aim down sights / scope |
@@ -211,7 +211,7 @@ per action: primary, alternate, and the pad. These are the defaults:
 | `Q` | `Y` | Last weapon · `V` / `R3` quick melee · wheel or `LB`/`RB` to cycle |
 | `N` | `L3` | Launch the nuke — live only while a twelve-kill streak has earned one |
 | `Tab` | `BACK` | Scoreboard · `Esc` / `START` menu |
-| `Enter` / `T` | — | Chat (needs an account at level 2) · `B` / `D-pad →` change class |
+| `Enter` / `T` | — | Chat (needs an account at level 2) · `B` / `D-pad →` change class, or your [perk](#perks-choosing-what-kind-of-player-you-are) in the mode that has them |
 | `M` | — | Toggle minimap · `F` toggle FPS counter |
 
 **Movement is the game.** Ground speed is capped, but air acceleration is not:
@@ -319,7 +319,31 @@ hands the screen back.
 then, so the wait explains itself. Three is not a compromise between the ten and
 impatience: it is long enough that the cam has said what it came to say, and past
 `RESPAWN_TIME`, so pressing skip really does put you straight back in rather than
-into a wait the cam was hiding. The jump key does it as well as the button.
+into a wait the cam was hiding. The jump key does it as well as the button — and
+that now includes **A on a controller**, which it did not before: the pad layer
+only reported the *discrete* actions on a press and left held ones like jump to
+be polled, so a player holding a pad had no way past the card except to reach
+for the mouse. The button itself names whichever key or button is in your hands.
+
+**It is meant to look like footage.** Three things stood between it and that,
+and none of them was the replay itself. The server broadcasts thirty times a
+second, and a straight line between two of those changes direction at every one
+— invisible on a body across the map, and the whole picture with the camera
+standing *inside* one, so the replay fits a curve through the snapshots either
+side instead. On top of that a first-person view carries the killer's landing
+jolts and every twitch of their mouse, all of it real and all of it unwatchable
+from inside their skull for ten seconds, so a light filter takes the top off it
+while leaving the movement that reads as *them* — a flick still snaps, it simply
+does not ring. And the hand-off from the replay to the orbit used to ease the
+camera's position across while cutting its orientation, which was a whip pan on
+the one frame nobody expects one; the orbit aims itself now, so the whole
+hand-over is one move.
+
+What is deliberately *not* smoothed is the playback clock. It advances by the
+real frame time, so what you see always matches how much time has passed — a
+long frame shows a bigger step because a bigger step is what happened. Feeding
+it an averaged frame time decouples the two and is biased upward besides, which
+in testing played the replay half again as fast as the match it was replaying.
 
 **None of it is a rule the match enforces.** The room's respawn timer is
 untouched; the cam holds your respawn by *not asking for one*, exactly the way an
@@ -1245,6 +1269,7 @@ timer matter.
 | **Sandstorm** | Whitewashed desert town around a dry fountain — built for team play |
 | **Shipyard** | Painted container maze under a steel gantry, with the sea down one side |
 | **Subzero** | An alpine village around a frozen pond. Short rotations, constant contact |
+| **Nova** | A night station under a pink-and-blue nebula, on four floors — see below |
 
 No map is walled in. The edge of the playable area is an invisible boundary, and
 past it the level carries on in scenery you can see but never reach — which is
@@ -1263,8 +1288,29 @@ tree was the single loudest thing wrong with these maps, and a tree that stops
 bullets is a tree that is cover — which is what everybody already believed it
 was. Only genuinely flat or genuinely overhead dressing stays decor.
 
-Modes: **Free For All** (30 kills / 4 min) and **Team Deathmatch**
-(50 kills / 4 min), up to **8 players** per room. When the clock runs out the
+**Nova** is the largest map in the game and the first one built as a stack
+rather than a plan. Four floors, all of them walkable, all of them reachable
+from each other without a lift or a trick jump: the plaza at ground level, a
+ring walkway around the reactor bay six metres up, the tower roofs and the
+bridges joining them at thirteen, and one platform on top of the reactor spire
+at twenty. The only way to that last one is the spiral — six flights wound one
+and a half times around the spire, each facing a different quarter of the map —
+so the best perch on the map costs eight seconds in the open, in view of four
+towers, to reach. Nobody holds it for long, which is the point of putting it
+there.
+
+It is also the first night map, and it is lit differently on purpose: every
+walkable edge glows and nothing else does. Cyan means structure you can stand
+on, magenta means the reactor and the crown, and white means a spawn hall — so a
+player who has lost their bearings finds the way back by looking for the one
+colour that means back. The sky is not a painted dome like the others: two
+fields of gas drift past each other, stars twinkle behind them and a meteor
+crosses every few seconds, all of it derived from one clock so every screen in
+the match is looking at the same sky.
+
+Modes: **Free For All** (30 kills / 4 min), **Team Deathmatch**
+(50 kills / 4 min) and **Perks** (30 kills / 4 min — see below), up to
+**8 players** per room. When the clock runs out the
 full scoreboard — score, GR earned, kills, deaths, assists, headshots, damage,
 accuracy, best streak — stays on screen for the 18-second intermission, then the
 room rotates to the next map.
@@ -1275,6 +1321,40 @@ moment they break line of sight (with a one-second fade on the minimap). Nothing
 on the HUD tells you about someone behind a wall — with one deliberate
 exception, and it belongs to a camera with no body in the match: a spectator can
 turn x-ray on with `X`.
+
+### Perks: choosing what kind of player you are
+
+A mode where the body is the choice. Before the match starts you pick one of
+seven, and every one of them is a trade — something you are better at than
+anybody has ever been, paid for with something you are worse at than anybody
+should accept.
+
+| Perk | What you get | What it costs |
+| --- | --- | --- |
+| **Trooper** | Reloads a fifth faster, a tenth tighter cone | 5% less health |
+| **Runner** | Bunny hops bleed no speed at all and top out 35% higher; faster on foot, jumps higher | **Half** the health of everybody else |
+| **Juggernaut** | Nearly twice the health, takes 15% less damage | Noticeably slower, reloads slowly, jumps badly |
+| **Marksman** | A third more damage, a little under half the spread | A quarter less health, slower on foot |
+| **Medic** | Heals more than twice as fast and starts almost immediately | Deals under a fifth less damage |
+| **Berserker** | 40% more damage, faster, takes no fall damage | Takes 40% more damage, **never regenerates** |
+| **Scavenger** | Magazines hold three quarters again as many rounds; a kill reloads the gun outright | Deals a little less damage, 10% less health, reloads slowly |
+
+There is deliberately no "balanced" option. A mode built on choices whose safe
+answer is "don't choose" has no choices in it, so the mildest of the seven —
+Trooper — is still a real pick rather than the absence of one.
+
+The picker opens at the start of every match and on the class key (`B` by
+default) at any time. Out of combat a swap lands immediately; mid-fight it waits
+for your next respawn, the same rule a class change follows and for a sharper
+reason — a perk changes how much health you have, and a swap under fire that
+took effect at once would be a Runner topping up to a Juggernaut's ninety hit
+points in the middle of losing a gunfight. The choice belongs to the *match*: a
+new one asks again.
+
+Everything a perk changes is decided by the server. Movement is the one part
+that also runs on your machine, because prediction has to agree with authority —
+the client is *told* which perk it has and builds the same numbers from it, and
+never chooses for itself. Nothing about a perk is ever read out of a packet.
 
 ### The room list grows with the crowd
 
@@ -1544,9 +1624,49 @@ silently ate their bullets would be indistinguishable from a broken server.
 **Nothing is decided by a machine alone.** Refusals are scored, the score decays
 in real time so an evening of jitter never accumulates, and crossing the kick
 threshold drops the connection *and files a report* — into the same queue the
-scoreboard's report button writes to, with the counts, the evidence and the
-match it happened in, read by a person before anything happens to an account.
-`ANTICHEAT_KICK=false` keeps the refusals and the reports without the kick.
+scoreboard's report button writes to, read by a person before anything happens
+to an account. `ANTICHEAT_KICK=false` keeps the refusals and the reports without
+the kick.
+
+That report is written as a page rather than as a log line, because the person
+working the queue at two in the morning has not read `anticheat.js` and should
+not have to. It names in plain words what was refused, what a cheat doing it
+would have been buying, when it started and when it stopped, the first *and*
+last piece of evidence for each kind — a client that was 8° off once and 174°
+off a minute later is a cheat somebody switched on mid-match; one that was 8°
+off every single time is a connection — and, next to all of it, the worst ping
+and jitter the server measured while it was happening. It also says, per kind,
+whether a bad line can produce that kind at all, which is the question that
+settles most of these reports.
+
+**A bad connection is not cheating.** Four of the seven checks read what a
+packet *contains* and cannot be produced by a bad line at all. The other three —
+the latency claim, the packet rate and the input backlog — read when packets
+*arrive*, and arrival times on a lossy connection are not a measurement of the
+client: TCP holds a stalled stream and then delivers the whole backlog in one
+frame, which looks exactly like a burst-fire speed hack for as long as you only
+look at one second of it. So all three judge the *sustained rate* rather than
+the burst, the burst itself is explicitly forgiven, and all three are weighted
+below the decay rate — one a second is a connection the server sheds faster than
+it accumulates.
+
+The latency check in particular used to be the worst offender in the game. It
+ran on both halves of every heartbeat, so a connection whose two medians merely
+*disagreed* was flagged twice a second: a warning in under three seconds and a
+kick in eight, for a player who had done nothing but ride a train through a
+tunnel. It now runs once per measured round trip, widens its tolerance by the
+line's own measured jitter, and only counts a disagreement that is sustained and
+one-directional for a dozen samples running — because jitter alternates and a
+made-up constant does not.
+
+The aim check had a quieter version of the same problem. Its tolerance opened
+with how stale the streamed view was *on the server*, which on an ordered socket
+is almost always zero — so the allowance for a fast mouse was being multiplied
+by nothing. What actually varies is on the other end: the view rides a
+simulation tick and the trigger is pulled on a frame, so above 60 fps there are
+frames with no tick in them and the crosshair has moved through all of them. The
+gate accounts for that now, and for ping and jitter on top, which is what
+stopped a hard flick at 144 fps reading as silent aim.
 
 Every check is measured against something the *client itself* said earlier, never
 against the server's own bookkeeping — and the difference is not academic. The
@@ -1895,7 +2015,7 @@ function mymap() {
 Then register it at the bottom of the file:
 
 ```js
-const BUILDERS = { littletown, burgtown, sandstorm, shipyard, subzero, crossfire, range, mymap };
+const BUILDERS = { littletown, burgtown, sandstorm, shipyard, subzero, crossfire, nova, range, mymap };
 export const MAP_IDS = [..., 'mymap'];   // omit to build it but keep it out of rotation
 ```
 
@@ -1922,7 +2042,8 @@ genuinely overhead dressing stays decor.
 particles, the ricochet sound and how solid it draws on the minimap), `roof:
 true` (a walkable top), `noShadow: true` (skip the shadow pass — use it for
 anything flush against the surface behind it, where the shadow would be inside
-another shadow anyway).
+another shadow anyway), and `glow: <number>` (draw it bright instead of lighting
+it — see the station set below).
 
 **The builders you get for free** — all of them return arrays, so hand them
 straight to `add()`:
@@ -1940,6 +2061,42 @@ straight to `add()`:
 | `lamp`, `pole`, `billboard`, `skyline` | Street furniture and the town past the boundary |
 | `cover(x, y, z, w, d)` | A plain waist-high block — the fastest way to test a lane |
 | `at(boxes, dx, dz)` | Translate a whole sub-assembly you have already built |
+
+…and the station set, written for [Nova](#maps-and-modes) and for any other map
+that has to be readable without a sun in it:
+
+| | |
+| --- | --- |
+| `G(x, y, z, w, h, d, colour, i)` | An emissive box: drawn bright rather than lit, never solid, never a shadow caster. `i` is how far past white it pushes — around 1.5 reads as a lit surface, past 2 it throws a halo |
+| `strip({…})` / `rimLight(…)` | A light line along an axis, and the four of them that mark the edge of a platform |
+| `deck({…})` / `bridge({…})` | A walkable slab and a span between two of them, both with lit kerbs, optional rails and legs underneath |
+| `railing(…)` / `railRun({…})` | Hip-high barrier with a lit cap, and a run of it with named gaps left where things arrive |
+| `pylon`, `mast`, `holo`, `pod`, `windows` | A lit column, a beacon mast, a hologram panel, lit cargo and a window band |
+
+The rule the set follows is **light marks what you can stand on**. Every
+walkable edge glows and nothing else does, so a player reading a night map at a
+glance is reading a map of its routes — the same job the bright roofs do on the
+town maps, moved to a level where the sun is not available to do it.
+
+**The sky.** By default it is painted once into a canvas and wrapped round a
+dome: a gradient, a sun disc, horizon haze and a band of cloud scaled by
+`sky.clouds`. Give the map a `sky.nebula` instead and it becomes a shader —
+
+```js
+sky: {
+  top: 0x070a1a, bottom: 0x2a1042, haze: 0x3d1a55,
+  nebula: { warm: 0xff4fa3, cool: 0x3f86ff, density: 1.05, speed: 1 },
+},
+```
+
+— two fields of gas drifting past each other at different rates, stars twinkling
+behind them, and a meteor every few seconds, all derived from one clock so every
+screen in the match sees the same sky. It costs one uniform per frame and only
+shades the sky the player can actually see past the level, because the dome is
+drawn last with the depth test on. `warm` and `cool` are the two colours the gas
+is mixed between, `density` is how far it may lift the sky (past about 1.4 it
+stops reading as gas and starts reading as fog), and `speed` scales the whole
+animation.
 
 **Spawns** are `[x, y, z, yaw]`, keyed by `ffa`, `red` and `blue`. Give a body
 about 0.3 of clearance above the floor it stands on. `npm test` walks every
@@ -2575,16 +2732,24 @@ timer, which threw away exactly what anybody wants when the same name turns up
 again. `REPORTS_KEEP_RESOLVED_DAYS` can put a horizon back if an operator wants
 one; open reports were never pruned and still are not.
 
-Reports filed by the anti-cheat land in the same queue, under the reporter name
-`anti-cheat`, carrying the counts and one line of evidence per kind. Nothing it
-catches results in a ban without a person reading that first.
+Reports filed by the [anti-cheat](#the-anti-cheat) land in the same queue, under
+the reporter name `anti-cheat` and marked **AUTOMATIC**. Nothing it catches
+results in a ban without a person reading them first, so they are written as a
+page rather than as a log line: what was refused in plain words, what a cheat
+doing it would have been buying, whether a bad connection can produce it at all,
+when each kind started and stopped, the first *and* the last piece of evidence
+for each — and the worst ping and jitter the server measured while it was
+happening, because "was this player lagging" is the question that settles most
+of them. The body is rendered in a monospace column, since the layout is
+carrying the structure.
 
 Selecting a report shows everything needed to settle it without leaving the pane:
 
 - **Who was reported** — their picture, level, K/D, whether they are already
   banned, muted or online right now, and the address they played from (the only
   handle there is on a reported guest, who has no account at all).
-- **The reporter's own words**, and **the chat as it stood** when they filed —
+- **Why it was filed** — the reporter's own words, or the anti-cheat's page —
+  and **the chat as it stood** when they filed —
   the last 25 lines of that match, kept because the match's own log is dropped
   the moment it ends. The reported player's lines are picked out in red.
 - **Everything else filed about the same player**, so a pattern is visible

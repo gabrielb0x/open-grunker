@@ -658,6 +658,18 @@ function renderReport({ report: rep, target, reporter, chatLog = [], history = [
   const body = $('reportDetailBody');
   body.classList.remove('hidden');
 
+  /*
+   * Filed by the server rather than by a person.
+   *
+   * `reporterId` is null on exactly these and on nothing else — the queue's own
+   * reporting ceilings are never spent on an automatic report, which is why the
+   * column was left empty in the first place. It changes three things on this
+   * page: the heading over the body (a machine did not "say" anything), the
+   * monospace rendering of that body (it is a laid-out page, not a sentence),
+   * and the REPORTER section at the bottom, which has nobody to be about.
+   */
+  const auto = !rep.reporterId;
+
   const pic = target?.avatar
     ? `<img class="pic" src="${esc(target.avatar)}" alt="">`
     : `<div class="pic letter">${esc((rep.target || '?')[0].toUpperCase())}</div>`;
@@ -675,10 +687,12 @@ function renderReport({ report: rep, target, reporter, chatLog = [], history = [
       </div>
     </div>
     <div class="sub" title="${rep.id}">Report #${shortId(rep.id)} · ${esc(rep.reasonLabel ?? rep.reason)} ·
-      filed by <b>${esc(rep.reporter)}</b> ${fmtAgo(rep.at)} · ${fmtDate(rep.at)}<br>
+      filed by <b>${esc(rep.reporter)}</b>${auto ? ' <span class="tag ban">AUTOMATIC</span>' : ''}
+      ${fmtAgo(rep.at)} · ${fmtDate(rep.at)}<br>
       ${esc([rep.mode?.toUpperCase(), rep.map, rep.room].filter(Boolean).join(' · ')) || 'no match recorded'}</div>
 
-    ${rep.detail ? `<h3>WHAT THEY SAID</h3><div class="quote">${esc(rep.detail)}</div>` : ''}
+    ${rep.detail ? `<h3>${auto ? 'WHY THE SERVER FILED THIS' : 'WHAT THEY SAID'}</h3>
+      <div class="quote${auto ? ' auto' : ''}">${esc(rep.detail)}</div>` : ''}
 
     <h3>CHAT AT THE TIME</h3>
     ${chatLog.length

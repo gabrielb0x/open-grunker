@@ -97,6 +97,23 @@ export class Input {
     if (this.down.has(code)) return;
     this.down.add(code);
     this._press(code, null);
+    /*
+     * …and the same edge the keyboard reports, on the same event.
+     *
+     * `_press` only fires the *discrete* actions — reload, weapon slots, chat.
+     * Everything held is polled instead, so a held action like `jump` produced
+     * no event at all from a pad, and anything listening for the press rather
+     * than the state never heard from a controller. That is not an oversight
+     * about jumping; it is one about every "press this to get on with it"
+     * gesture in the game, and the kill cam's skip is exactly one of those:
+     * dead, holding a pad, the jump button did nothing and the only way past
+     * the cam was to reach for the mouse and click the button on screen.
+     *
+     * Emitting the edge here is what makes a pad button and a key the same
+     * thing to everything downstream, which is the promise this whole file is
+     * supposed to be keeping.
+     */
+    this.emit('keydown', code);
   }
 
   _padUp(code) {

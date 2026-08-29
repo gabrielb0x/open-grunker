@@ -502,6 +502,15 @@ table.list tr.guest.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent)
   border-left: 3px solid var(--accent); border-radius: var(--r-xs) var(--r) var(--r) var(--r-xs);
   font: 600 13.5px/1.6 var(--font); white-space: pre-wrap; word-break: break-word;
 }
+/* The anti-cheat's own reports, which are a laid-out page rather than a
+   sentence: indentation carries the structure, so it needs the column the
+   proportional face will not give it. Capped in height because the point of the
+   queue is the list — a report that pushes the verdict buttons off the screen
+   is a report that does not get settled. */
+.quote.auto {
+  font: 500 12px/1.65 var(--mono); max-height: 420px; overflow: auto;
+  border-left-color: var(--red); word-break: normal;
+}
 .chat-snapshot {
   max-height: 240px; overflow: auto; padding: 12px 14px; background: var(--bg-2);
   border: 1px solid var(--line); border-radius: var(--r); font: 12px/1.75 var(--mono);

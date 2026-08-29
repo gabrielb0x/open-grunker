@@ -17,7 +17,7 @@
  * wrote it: what they can now do, or what stopped going wrong.
  */
 
-export const GAME_VERSION = '2.1.5';
+export const GAME_VERSION = '2.2.0';
 
 export const PATCH_KINDS = {
   new: { label: 'NEW', color: '#4ddb7a' },
@@ -26,6 +26,24 @@ export const PATCH_KINDS = {
 };
 
 export const PATCH_NOTES = [
+  {
+    version: '2.2.0',
+    date: '2026-08-29',
+    title: 'A night station on four floors, a mode where you choose what kind of player you are, '
+      + 'and a kill cam that finally looks like footage',
+    changes: [
+      { kind: 'new', text: 'Nova: the biggest map in the game, and the first one built as a stack rather than a plan. Four floors, all walkable and all reachable from each other without a lift or a trick jump — the plaza, a ring walkway around the reactor bay six metres up, the tower roofs and the bridges between them at thirteen, and one platform on top of the reactor spire at twenty. The only way to that last one is the spiral wound one and a half times around the spire, so the best perch on the map costs eight seconds in the open, in view of four towers. Nobody holds it for long.' },
+      { kind: 'new', text: 'It is night, under a pink-and-blue nebula, and the sky moves: two fields of gas drifting past each other, stars twinkling behind them and a meteor every few seconds. Every screen in the match is looking at the same sky. On the ground every walkable edge glows and nothing else does — cyan is something you can stand on, magenta is the reactor and the crown, white is a spawn hall, so if you are lost you can find the way back by looking for the one colour that means back.' },
+      { kind: 'new', text: 'Perks, a new mode where the body is the choice. Before the match you pick one of seven, and every one is a trade: Runner’s bunny hops bleed no speed at all and top out a third higher, on half the health of everybody else. Juggernaut has nearly twice the health and cannot catch anyone. Marksman hits a third harder through half the spread and dies to a stiff breeze. Berserker deals forty per cent more, takes forty per cent more, and never regenerates a single point. Medic, Scavenger and Trooper fill in the rest.' },
+      { kind: 'new', text: 'There is deliberately no “balanced” option. A mode whose safe answer is “don’t choose” has no choices in it, so the mildest of the seven is still a real pick. The picker opens at the start of every match and on the class key at any time; out of combat a swap lands at once, mid-fight it waits for your next respawn. The choice belongs to the match — the next one asks again.' },
+      { kind: 'change', text: 'The kill cam is meant to look like footage now, and three things were in the way. The server broadcasts thirty times a second and a straight line between two of those changes direction at every one — invisible on a body across the map, and the whole picture with the camera inside one — so the replay fits a curve through the snapshots instead. A light filter takes the top off the killer’s landing jolts and mouse twitches while leaving the movement that reads as them. And the hand-off to the orbit used to ease the position across while cutting the angle, which was a whip pan on the one frame nobody expects one.' },
+      { kind: 'new', text: 'A controller can skip the kill cam. A is the jump button and the jump button has always been the skip, but the pad layer only reported the buttons that fire something instantly — so with a pad in your hands the only way past the card was to reach for the mouse. The button on the card now names whichever key or button you are actually holding.' },
+      { kind: 'fix', text: 'The anti-cheat was kicking people for having a bad connection. Its latency check ran on both halves of every heartbeat, so a line whose two measurements merely disagreed — which is what an unstable line does all evening — earned a warning in under three seconds and a disconnect in eight. It now runs once per measured round trip, widens with the connection’s own jitter, and only counts a disagreement that holds in the same direction for a dozen samples running.' },
+      { kind: 'fix', text: 'Two more of the same. A stalled connection delivers everything it queued in one burst the moment it clears, which used to look exactly like a speed hack; the checks that read arrival times now judge the sustained rate and forgive the burst outright. And a hard flick above 60 fps could read as an aimbot, because the allowance for a fast mouse was being scaled by a number that is almost always zero.' },
+      { kind: 'change', text: 'Reports filed by the anti-cheat are written for the person who has to read them. Instead of one truncated line of counts, each is a page: what was refused in plain words, what a cheat doing it would have been buying, whether a bad connection can produce it at all, when it started and stopped, the first and last piece of evidence for each kind, and the worst ping and jitter measured while it was happening — because “was this player lagging” is the question that settles most of them.' },
+      { kind: 'change', text: 'Your health bar is a fraction now rather than a count out of a hundred, which only started mattering with Perks: a Runner on fifty of fifty is a full bar, and a Juggernaut on a hundred of a hundred and ninety is a half one. The same goes for the bar over everybody else’s head. In the Perks mode the scoreboard shows what each player chose to be instead of which rifle they are carrying.' },
+    ],
+  },
   {
     version: '2.1.5',
     date: '2026-08-29',

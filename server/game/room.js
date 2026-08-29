@@ -202,6 +202,18 @@ export class Room {
       p.vote = null;
       p.weaponKills.clear();
       if (this.mode.gunGame) this.applyGunGameRung(p, true);
+      // A new match asks again. The perk is a decision about *this* match — the
+      // map has changed, and so has who is in the room — and keeping the last
+      // one silently selected would make the picker something you dismiss once
+      // and never see again.
+      if (this.mode.perks) {
+        p.perkOn = true;
+        p.pendingPerk = null;
+        p.perkChosen = false;
+        this.sendTo(p, {
+          o: K.S2C.MATCH, phase: 'perkPick', perk: p.perkId, list: K.perkList(),
+        });
+      }
       this.respawn(p, true);
     }
     if (this.objectives.length) this.pushObjectives();
@@ -903,6 +915,27 @@ export class Room {
       this.savedScores.delete(player.identity);
     }
     if (this.mode.gunGame) this.applyGunGameRung(player, true);
+    /*
+     * Somebody arriving into a Perks match.
+     *
+     * The flag goes on here rather than in the constructor because a Player is
+     * built before it knows which room it is walking into — and a bot gets a
+     * perk of its own, picked from the same list, so a match half full of bots
+     * is still a match against seven different kinds of player rather than
+     * seven identical ones. The picker is only ever put in front of a person.
+     */
+    if (this.mode.perks) {
+      player.perkOn = true;
+      player.pendingPerk = null;
+      if (player.isBot) {
+        player.perkId = K.PERK_IDS[Math.floor(Math.random() * K.PERK_IDS.length)];
+        player.perkChosen = true;
+      } else {
+        player.perkChosen = false;
+      }
+    } else {
+      player.perkOn = false;
+    }
     this.respawn(player, true);
     this.broadcast({ o: K.S2C.JOIN, player: player.profile() }, player);
     if (!player.isBot) {
@@ -1151,7 +1184,12 @@ export class Room {
     player.spawnAt(x, y + 0.05, z, yaw, this.now);
     this.sendTo(player, {
       o: K.S2C.SPAWN, x: r2(x), y: r2(y + 0.05), z: r2(z), yaw: r2(yaw),
-      health: K.MAX_HEALTH, classId: player.classId,
+      // Not K.MAX_HEALTH: in Perks this is whatever the body they chose has,
+      // and the bar is drawn against the same number rather than against the
+      // constant — a Runner on fifty of fifty is full, not half dead.
+      health: player.health, maxHealth: player.maxHealth,
+      perk: player.perkOn ? player.perkId : undefined,
+      classId: player.classId,
       ammo: player.weapon.ammo, reserve: player.weapon.reserve, immediate,
     });
   }
@@ -1437,7 +1475,7 @@ export class Room {
       serverTime: Math.round(this.now * 1000),
       map: this.mapPayload(),
       you: {
-        ...player.profile(), health: player.health,
+        ...player.profile(), health: player.health, maxHealth: player.maxHealth,
         ammo: player.weapon.ammo, reserve: player.weapon.reserve,
         spectator: player.spectator,
       },
@@ -1449,6 +1487,19 @@ export class Room {
       })),
       gunGame: this.mode.gunGame
         ? { ladder: K.GUN_GAME_LADDER, need: K.GUN_GAME_KILLS_PER_RUNG, rung: player.ggRung, kills: player.ggKills }
+        : null,
+      /*
+       * Everything the client needs to draw the picker, and the standing answer
+       * to "have they chosen yet".
+       *
+       * The catalogue rides on the handshake rather than being imported by the
+       * client from the shared constants, for the same reason the mode list
+       * does: what the *server* is running is the only version of these numbers
+       * that decides anything, and a client reading its own copy would quietly
+       * describe a perk the room does not have.
+       */
+      perks: this.mode.perks
+        ? { list: K.perkList(), perk: player.perkId, chosen: player.perkChosen }
         : null,
       vote: this.state === 'intermission' ? this.voteState() : null,
       chat: this.chatPayload(player),
@@ -1482,6 +1533,7 @@ export class Room {
       case K.C2S.CHAT: return this.onChat(player, msg);
       case K.C2S.RESPAWN: return this.onRespawnRequest(player);
       case K.C2S.CLASS: return this.onClassChange(player, msg);
+      case K.C2S.PERK: return this.onPerkChange(player, msg);
       case K.C2S.PLAY: return this.onPlayRequest(player);
       case K.C2S.VOTE: return this.onVote(player, msg);
       case K.C2S.SPECTATE: return this.onSpectateTarget(player, msg);
@@ -1516,8 +1568,12 @@ export class Room {
    */
   onPing(player, msg) {
     if (typeof msg.rtt === 'number' && Number.isFinite(msg.rtt)) {
+      // Stored, never checked here. The comparison belongs to `onAck`, where a
+      // *fresh measurement* has just landed: running it on both halves of the
+      // heartbeat counted one disagreement twice a second, which is how a line
+      // that was merely unstable used to out-accumulate the decay and reach a
+      // kick in eight seconds. One measured round trip, one sample.
       player.claimedRtt = clamp(msg.rtt / 1000, 0, 2);
-      this.checkLagClaim(player);
     }
     // A fresh token every heartbeat, so a client cannot bank an old one and
     // answer it late to buy a rewind window it never earned.
@@ -1544,6 +1600,10 @@ export class Room {
     if (!player.pingToken || msg.k !== player.pingToken) return;
     player.pingToken = 0;
     player.noteRtt(this.now - player.pingSentAt);
+    // Remembered whether or not anything is ever flagged. If this connection
+    // does end up in the report queue, "what did their line look like" is the
+    // question that settles it, and it is not recoverable after the fact.
+    ac.noteLine(player, player.rtt, player.rttJitter());
     this.checkLagClaim(player);
   }
 
@@ -1551,24 +1611,73 @@ export class Room {
    * Compares what the client says its latency is against what was measured.
    *
    * Honest clients agree: both numbers are a median of the same round trips,
-   * one timed at each end. Disagreement in *either* direction is worth a flag,
-   * and the two directions are two different attempts at the same exploit —
-   * claiming more than you have, which is what the userscript did, or sitting
-   * on the acknowledgement to make the measurement itself say more than you
-   * have. The second is bounded by MAX_LAG_COMP whatever it buys, which is the
-   * same ceiling an honest player on a bad line already gets.
+   * one timed at each end. Disagreement in *either* direction is worth
+   * *watching*, and the two directions are two different attempts at the same
+   * exploit — claiming more than you have, which is what the userscript did, or
+   * sitting on the acknowledgement to make the measurement itself say more than
+   * you have. The second is bounded by MAX_LAG_COMP whatever it buys, which is
+   * the same ceiling an honest player on a bad line already gets.
+   *
+   * ── Why this used to be the worst false positive in the game ──────────────
+   *
+   * It ran on both halves of the heartbeat — once when the PING arrived with
+   * the claim on it, once when the ACK closed the measurement — so a connection
+   * whose two medians simply *disagreed* was flagged twice a second at eight
+   * points a time. Against a decay of 0.6/s that is sixteen points a second
+   * accumulating: a warning in under three seconds and a kick in eight, for a
+   * player who had done nothing but ride a train through a tunnel. The two
+   * numbers are medians of different halves of different round trips, and on a
+   * line with 200 ms of jitter they are *supposed* to disagree.
+   *
+   * Three things fix it, and all three are about the same distinction — a line
+   * that wanders versus a client that lies:
+   *
+   *   • The tolerance now includes the line's own measured jitter. A stable
+   *     connection gets almost none and a swinging one gets exactly as much as
+   *     it is actually swinging by, which is the only honest gate here.
+   *   • Disagreement has to be *sustained and one-directional* —
+   *     CHEAT_LAG_STREAK samples in a row, all the same way. Jitter alternates;
+   *     a made-up constant does not. Any sample that agrees resets the streak.
+   *   • And the flag itself is rate-limited, so the worst a genuinely broken
+   *     line can score is one flag every CHEAT_LAG_COOLDOWN seconds — well
+   *     under what the decay sheds in the same time.
    */
   checkLagClaim(player) {
+    const st = player.cheat;
+    if (!st || player.isBot) return;
     if (player.rttSamples.length < K.RTT_SAMPLES || player.claimedRtt <= 0) return;
-    // Relative as well as absolute: the two numbers are medians of different
-    // halves of different round trips, so a genuinely jittery 300 ms line will
-    // have them disagree by tens of milliseconds all evening without anybody
-    // lying about anything. What is not jitter is a claim half again as big as
-    // the measurement.
-    const gap = Math.abs(player.claimedRtt - player.rtt);
-    if (gap <= Math.max(0.10, player.rtt * 0.5)) return;
+
+    // How much this line is actually swinging by, right now: the full spread of
+    // the server's own RTT window. It costs a pass over eight numbers once a
+    // second, and it is the difference between a mobile connection playing and
+    // a mobile connection being kicked.
+    const jitter = player.rttJitter();
+    ac.noteLine(player, player.rtt, jitter);
+
+    const gap = player.claimedRtt - player.rtt;
+    const tolerance = Math.max(0.10, player.rtt * 0.5) + jitter * K.CHEAT_LAG_JITTER_MULT;
+    if (Math.abs(gap) <= tolerance) {
+      // Agreement — or disagreement inside what the line's own jitter explains.
+      // Either way the run is over, and a run that never completes never costs
+      // anything at all.
+      st.lagStreak = 0;
+      st.lagDir = 0;
+      return;
+    }
+
+    const dir = gap > 0 ? 1 : -1;
+    // A flip in direction is jitter by definition: nobody fakes their ping high
+    // and then low. Start the count again rather than continuing it.
+    if (dir !== st.lagDir) { st.lagDir = dir; st.lagStreak = 1; return; }
+    if (++st.lagStreak < K.CHEAT_LAG_STREAK) return;
+    if (st.lagFlagAt >= 0 && this.now - st.lagFlagAt < K.CHEAT_LAG_COOLDOWN) return;
+    st.lagFlagAt = this.now;
+
     const verdict = ac.flag(player, 'lag',
-      `claims ${Math.round(player.claimedRtt * 1000)}ms, measured ${Math.round(player.rtt * 1000)}ms`);
+      `claims ${Math.round(player.claimedRtt * 1000)}ms, measured `
+      + `${Math.round(player.rtt * 1000)}ms (±${Math.round(jitter * 1000)}ms jitter) — `
+      + `${st.lagStreak} samples running, all ${dir > 0 ? 'over' : 'under'}`,
+      null, this.now);
     if (verdict !== 'none') ac.enforce(this, player, verdict, 'lag');
   }
 
@@ -1669,20 +1778,52 @@ export class Room {
   onInput(player, msg) {
     if (!Array.isArray(msg.i)) return;
 
-    // A packet-per-second ceiling, counted on the room's own clock: it is the
-    // one that advances at the tick rate whatever the machine is doing, so a
-    // stalled process cannot turn a normal second into a flood. The client
-    // flushes at SNAPSHOT_RATE and once more per shot, so even a player
-    // emptying a magazine stays far under this.
+    /*
+     * The packet ceiling, as a leaky bucket rather than a count per second.
+     *
+     * The ceiling itself is unchanged and still throws the packet away: the
+     * client flushes at SNAPSHOT_RATE plus once per shot, so nobody playing the
+     * game reaches INPUT_PACKETS_PER_SEC. What changed is what it *costs*.
+     *
+     * A per-second count could not tell a speed hack from a recovered stall,
+     * because over TCP they are the same shape: the socket goes quiet, the
+     * backlog piles up in the kernel, and the whole second's worth lands in one
+     * frame the moment it clears. Anybody on a train was being flagged for it.
+     *
+     * The bucket separates them on the one axis that actually differs — how
+     * long it goes on. Overflow fills it, an ordinary second drains it, and a
+     * stall's backlog is one filling followed by seconds of draining. A client
+     * genuinely sending twice what it should never drains at all, and reaches
+     * CHEAT_RATE_SUSTAINED in a few seconds.
+     */
     const nowMs = Date.now();
+    const st = player.cheat;
     if (player.packetWindowAt < 0 || this.now - player.packetWindowAt >= 1) {
       player.packetWindowAt = this.now;
       player.packetWindow = 0;
     }
     if (++player.packetWindow > INPUT_PACKETS_PER_SEC) {
-      if (player.packetWindow === INPUT_PACKETS_PER_SEC + 1) {
-        const verdict = ac.flag(player, 'rate', `${player.packetWindow} input packets in one second`);
-        if (verdict !== 'none') ac.enforce(this, player, verdict, 'rate');
+      if (st) {
+        // Leak first, so a quiet stretch since the last overflow is credited
+        // before this one is charged.
+        if (st.rateAt >= 0) {
+          st.rateBucket = Math.max(0, st.rateBucket - (this.now - st.rateAt) * INPUT_PACKETS_PER_SEC);
+        }
+        st.rateAt = this.now;
+        st.rateBucket++;
+        // One flag per sustained excess, and the excess is spent paying for it:
+        // subtracting rather than comparing against a running multiple is what
+        // keeps this from depending on where the float landed.
+        if (st.rateBucket >= K.CHEAT_RATE_BURST + K.CHEAT_RATE_SUSTAINED) {
+          st.rateBucket -= K.CHEAT_RATE_SUSTAINED;
+          const verdict = ac.flag(player, 'rate',
+            `${player.packetWindow} input packets in one second, and `
+            + `${K.CHEAT_RATE_SUSTAINED} packets over the ceiling without the burst ever `
+            + `draining (a recovered stall drains inside `
+            + `${(K.CHEAT_RATE_BURST / INPUT_PACKETS_PER_SEC).toFixed(1)}s)`,
+            null, this.now);
+          if (verdict !== 'none') ac.enforce(this, player, verdict, 'rate');
+        }
       }
       return;
     }
@@ -1692,22 +1833,48 @@ export class Room {
      *
      * Dropping the oldest keeps the freshest inputs — the ones the player is
      * actually feeling — rather than wiping the lot and stalling the body for a
-     * tick. It also *is* the speed-hack detector, and a far better one than any
+     * tick. It is also the speed-hack detector, and a far better one than any
      * count of inputs: the client's own batch holds at most
-     * MAX_INPUTS_PER_PACKET, so a backlog this deep cannot be built out of
-     * jitter or a stall however bad the line is. It is only ever a client
-     * producing more simulation steps than a second contains, and finding the
-     * bucket refuses to pay for them.
+     * MAX_INPUTS_PER_PACKET, so the *sustained* depth of this backlog is only
+     * ever a client producing more simulation steps than a second contains, and
+     * finding the bucket refuses to pay for them.
+     *
+     * Sustained is the word doing the work, and it was missing. A backlog this
+     * deep is also exactly what a client that lost two seconds to a stall
+     * delivers the moment its socket clears — the old check counted overflowing
+     * *packets*, so one stall on a bad line spent thirty of them in a single
+     * frame and flagged a player who had done nothing. What separates the two
+     * is time: catch-up drains through the credit bucket within a second or
+     * two, a speed hack never drains at all. So the clock starts on the first
+     * overflow, any frame that comes back under the cap stops it, and nothing
+     * is counted until it has run unbroken for CHEAT_SPEED_SUSTAIN seconds.
      */
     if (player.inputQueue.length > MAX_QUEUED_INPUTS) {
       player.inputQueue.splice(0, player.inputQueue.length - MAX_QUEUED_INPUTS);
-      if (++player.inputOverflow % 30 === 0) {
-        const verdict = ac.flag(player, 'speed',
-          `${player.inputOverflow} inputs discarded past a ${MAX_QUEUED_INPUTS}-deep backlog`);
-        if (verdict !== 'none') ac.enforce(this, player, verdict, 'speed');
+      player.inputOverflow++;
+      if (st) {
+        if (st.speedSince < 0) st.speedSince = this.now;
+        const held = this.now - st.speedSince;
+        const due = st.speedFlagAt < 0
+          ? held >= K.CHEAT_SPEED_SUSTAIN
+          : this.now - st.speedFlagAt >= K.CHEAT_SPEED_REPEAT;
+        if (due) {
+          st.speedFlagAt = this.now;
+          const verdict = ac.flag(player, 'speed',
+            `input queue held past ${MAX_QUEUED_INPUTS} deep for ${held.toFixed(1)}s without `
+            + `draining, ${player.inputOverflow} packets over (a recovered stall drains in `
+            + 'under a second)',
+            null, this.now);
+          if (verdict !== 'none') ac.enforce(this, player, verdict, 'speed');
+        }
       }
-    } else if (!player.inputQueue.length) {
+    } else if (player.inputQueue.length <= MAX_QUEUED_INPUTS / 2) {
+      // Drained. Not "empty" — the queue is rarely empty on a healthy
+      // connection, and requiring it to be meant a client hovering one input
+      // over the cap kept a run alive forever. Half the cap is unambiguously
+      // caught up.
       player.inputOverflow = 0;
+      if (st) { st.speedSince = -1; st.speedFlagAt = -1; }
     }
 
     for (const e of msg.i.slice(0, K.MAX_INPUTS_PER_PACKET)) {
@@ -1775,14 +1942,66 @@ export class Room {
     }
   }
 
+  /**
+   * Choosing what kind of player you are.
+   *
+   * Deliberately the same shape as `onClassChange`, because it is the same
+   * decision one layer down: out of combat it lands immediately, mid-fight it
+   * waits for the respawn. That rule is doing more work here than it does for a
+   * class — a perk changes how much health you have, and a swap under fire that
+   * took effect at once would be a Runner topping themselves up to a
+   * Juggernaut's ninety hit points in the middle of losing a gunfight.
+   *
+   * It refuses outright in every mode that is not Perks. There is nothing to
+   * exploit in a perk the room never reads, but a client that thinks it changed
+   * something the server ignored is a client whose interface is lying to the
+   * person holding it, and that is worse than an error.
+   */
+  onPerkChange(player, msg) {
+    if (typeof msg.p !== 'string') return;
+    if (!this.mode.perks) {
+      this.sendTo(player, { o: K.S2C.MATCH, phase: 'perkLocked', perk: null });
+      return;
+    }
+    const id = K.PERK_IDS.includes(msg.p) ? msg.p : K.DEFAULT_PERK;
+    player.perkChosen = true;
+
+    const safe = !player.alive || this.now - player.lastCombatAt > 4;
+    if (id === player.perkId && !player.pendingPerk) {
+      this.sendTo(player, { o: K.S2C.MATCH, phase: 'perkSet', perk: id, health: player.maxHealth });
+      return;
+    }
+    if (safe) {
+      player.perkId = id;
+      player.pendingPerk = null;
+      // A living player who swaps out of combat is topped up to the new body's
+      // ceiling rather than left on the old one's number, which would be a
+      // Juggernaut standing at fifty of their ninety for no reason anybody
+      // watching could work out.
+      if (player.alive) player.health = Math.min(player.maxHealth, Math.max(player.health, player.maxHealth * 0.5));
+      this.sendTo(player, {
+        o: K.S2C.MATCH, phase: 'perkSet', perk: id,
+        health: player.maxHealth, immediate: player.alive,
+      });
+      this.broadcast({ o: K.S2C.JOIN, player: player.profile() }, player);
+    } else {
+      player.pendingPerk = id;
+      this.sendTo(player, { o: K.S2C.MATCH, phase: 'perkQueued', perk: id });
+    }
+  }
+
   onReload(player) {
     const w = player.weapon;
     if (!player.alive || w.def.melee || w.reloading) return;
-    if (w.ammo >= w.def.magSize || w.reserve === 0) return;
+    if (w.ammo >= player.magOf(w) || w.reserve === 0) return;
+    // The perk stretches or shortens it, and the *same* number goes on the wire
+    // as drives the timer here — the client draws the reload bar off what it is
+    // told rather than off the weapon, so the bar and the gun agree.
+    const time = w.def.reloadTime * player.perk.reload;
     w.reloading = true;
-    w.reloadEnd = this.now + w.def.reloadTime;
+    w.reloadEnd = this.now + time;
     this.sendTo(player, {
-      o: K.S2C.AMMO, slot: player.slot, ammo: w.ammo, reserve: w.reserve, reloading: w.def.reloadTime,
+      o: K.S2C.AMMO, slot: player.slot, ammo: w.ammo, reserve: w.reserve, reloading: r2(time),
     });
   }
 
@@ -1801,6 +2020,10 @@ export class Room {
     }
     if (this.mode.gunGame) this.applyGunGameRung(player, true);
     else if (player.pendingClass) { player.setClass(player.pendingClass); player.pendingClass = null; }
+    // Before the respawn, not after: `spawnAt` reads `maxHealth` and the spare
+    // ammunition off the perk, so applying it afterwards would spawn the player
+    // with the previous body's health and then quietly disagree with the bar.
+    if (player.pendingPerk) { player.perkId = player.pendingPerk; player.pendingPerk = null; }
     this.respawn(player);
   }
 
@@ -1897,14 +2120,14 @@ export class Room {
     // first thing gravity does is a fall, not a launch.
     if (!on) { player.state.vy = Math.min(0, player.state.vy); player.state.vx *= 0.3; player.state.vz *= 0.3; }
     else {
-      player.health = K.MAX_HEALTH;
+      player.health = player.maxHealth;
       // Every magazine, not just the one in hand: nothing spends them from here
       // on, so a secondary left half empty would stay half empty for the rest
       // of the session. A reload already running is over — it has nothing left
       // to put in.
       for (const gun of player.weapons) {
         if (gun.def.melee) continue;
-        gun.ammo = gun.def.magSize ?? 0;
+        gun.ammo = player.magOf(gun);
         gun.reloading = false;
       }
       const held = player.weapon;
@@ -2049,15 +2272,68 @@ export class Room {
     // there is nothing to check it against, and one shot is not an exploit.
     if (player.viewAt <= 0 || player.isBot) return claimed;
 
+    /*
+     * What the gate is really allowed to forgive.
+     *
+     * Four terms, and only the first two were here before — which is why an
+     * honest player on a fast mouse was being flagged for flicking.
+     *
+     *   base       one frame of ordinary mouse movement, always granted
+     *   staleness  how old the streamed view is *on this server*. On an ordered
+     *              socket that is almost always zero, because the client
+     *              flushes its inputs immediately before the shoot packet, so
+     *              this term is nearly always worth nothing — which is exactly
+     *              the problem, because it was carrying the turn-rate allowance
+     *              with it. Multiplying an allowance by a number that is
+     *              reliably zero is the same as not having the allowance.
+     *   sampling   how far the crosshair could have moved since the last thing
+     *              the client actually *told* us about it. The view rides a
+     *              simulation tick and the trigger is pulled on a frame, so
+     *              above 60 fps there are frames with no tick in them and the
+     *              mouse has been moving through all of them. This is the term
+     *              that was missing, and it is measured on the client's own
+     *              turn rate: standing perfectly still it is worth nothing,
+     *              which is precisely what a silent aim looks like from here.
+     *   line       ping and jitter. A distant shot was aimed further in the
+     *              past; an unstable one could have been aimed anywhere inside
+     *              its own jitter. Neither is a loophole: the ceiling below is
+     *              a third of a radian and silent aim wants three.
+     *
+     * The whole thing stays under AIM_TOLERANCE_MAX (plus the line term), so no
+     * amount of shaking the mouse before firing buys an angle worth having.
+     */
+    const jitter = player.rttJitter();
+    const slack = (player.rtt + jitter) * K.AIM_TOLERANCE_RTT_MULT;
     const age = clamp(this.now - player.viewAt, 0, K.AIM_VIEW_MAX_AGE);
-    const allowed = Math.min(K.AIM_TOLERANCE_MAX, K.AIM_TOLERANCE
+    const allowed = Math.min(K.AIM_TOLERANCE_MAX + slack,
+      K.AIM_TOLERANCE
+      + slack
+      + player.viewTurnRate * (K.AIM_SAMPLE_GAP + jitter)
       + age * (K.AIM_TOLERANCE_RATE + player.viewTurnRate * K.AIM_TOLERANCE_TURN_MULT));
+
+    /*
+     * Matched against the newest streamed view, and deliberately only that one.
+     *
+     * It is tempting — and was tried — to accept a claim that matches *any* of
+     * the last dozen views, on the theory that a burst of packets arriving in
+     * one frame leaves the shot lined up with an older one. It does not. Input
+     * and shoot travel the same ordered socket and the client flushes before it
+     * fires, so however late or bunched the delivery, the newest view the
+     * server has read when the shoot packet arrives is always the last one the
+     * client generated before pulling the trigger. Ordering already solves the
+     * problem the window was for, and the window costs something real: it hands
+     * a cheat a third of a second in which to glance at a target, look away,
+     * and still be allowed to shoot it.
+     */
     const off = ac.viewDistance(claimed.yaw, claimed.pitch, held.yaw, held.pitch);
     if (off <= allowed) return claimed;
 
+    const deg = (r) => (r * 180 / Math.PI).toFixed(1);
     const verdict = ac.flag(player, 'aim',
-      `shot ${(off * 180 / Math.PI).toFixed(1)}\u00b0 off the streamed view `
-      + `(allowed ${(allowed * 180 / Math.PI).toFixed(1)}\u00b0)`);
+      `shot ${deg(off)}\u00b0 off the streamed view (allowed ${deg(allowed)}\u00b0: `
+      + `${Math.round(age * 1000)}ms stale, turning ${player.viewTurnRate.toFixed(1)} rad/s, `
+      + `line ${Math.round(player.rtt * 1000)}\u00b1${Math.round(jitter * 1000)}ms)`,
+      null, this.now);
     if (verdict !== 'none') ac.enforce(this, player, verdict, 'aim');
     return held;
   }
@@ -2096,7 +2372,9 @@ export class Room {
     if (msg.n === previous + 1) return;
 
     const verdict = ac.flag(player, 'seq',
-      `skipped ${msg.n - previous - 1} sequence(s) — claimed ${msg.n} after ${previous}`);
+      `skipped ${msg.n - previous - 1} of its own shot sequences — claimed ${msg.n} `
+      + `straight after ${previous}, where an honest client is always exactly one on`,
+      null, this.now);
     if (verdict !== 'none') ac.enforce(this, player, verdict, 'seq');
   }
 
@@ -2175,7 +2453,9 @@ export class Room {
       // the same thing as a client that claims the sights it never holds.
       if (++player.adsMismatch >= ADS_MISMATCH_RUN) {
         const verdict = ac.flag(player, 'ads',
-          `claimed ads=${msg.a ? 1 : 0} on ${player.adsMismatch} shots the input stream never held it for`);
+          `claimed ads=${msg.a ? 1 : 0} on ${player.adsMismatch} shots in a row that the `
+          + 'input stream never held the sights down for',
+          null, this.now);
         if (verdict !== 'none') ac.enforce(this, player, verdict, 'ads');
       }
     } else {
@@ -2199,6 +2479,11 @@ export class Room {
       ads: adsHeld,
       crouching: player.state.crouching,
       burst,
+      // The shooter's own perk. It has to be in the number the pellets are
+      // drawn from rather than applied afterwards, because the client derives
+      // its tracers from the identical call — a cone the two sides disagreed
+      // about would draw a round somewhere the server never fired one.
+      mult: player.perk.spread,
     });
 
     const eye = player.eye();
@@ -2218,7 +2503,10 @@ export class Room {
       const f = lookDir(yaw, pitch);
       const dot = clamp(dirs[0].x * f.x + dirs[0].y * f.y + dirs[0].z * f.z, -1, 1);
       if (ac.trackSpread(player, Math.acos(dot), spread)) {
-        const verdict = ac.flag(player, 'spread', 'rounds landing at the centre of every cone');
+        const verdict = ac.flag(player, 'spread',
+          'over 40 rounds, every one drew within a fifth of the cone of point of aim — '
+          + 'honest play averages four fifths of it',
+          null, this.now);
         if (verdict !== 'none') ac.enforce(this, player, verdict, 'spread');
       }
     }
@@ -2348,7 +2636,11 @@ export class Room {
   }
 
   applyHit(attacker, victim, rawDamage, head, weaponDef, point, ctx = {}) {
-    const amount = Math.max(1, Math.round(rawDamage));
+    // Two perks meet on every bullet: the shooter's, which decides what the
+    // round is worth, and the victim's, which decides what it costs them and is
+    // applied inside `applyDamage`. Keeping them at opposite ends means neither
+    // player ever has to know what the other one chose to be.
+    const amount = Math.max(1, Math.round(rawDamage * (attacker?.perk.damage ?? 1)));
     const res = victim.applyDamage(amount, this.now, attacker?.id ?? 0);
     if (res.damage <= 0) return;
 
@@ -2443,6 +2735,30 @@ export class Room {
       if ((ctx.distance ?? 0) > K.LONGSHOT_RANGE) killer.score.longshots++;
       killer.score.longestShot = Math.max(killer.score.longestShot, Math.round(ctx.distance ?? 0));
       killer.creditWeapon(weaponId);
+      /*
+       * The Scavenger's kill refill.
+       *
+       * It tops the magazine up out of the reserve rather than out of nothing —
+       * a perk that manufactured ammunition would make the reserve, and
+       * therefore the reload, meaningless, which is the exact opposite of what
+       * this one is about. It also cancels a reload in progress: finishing a
+       * kill mid-reload and then standing there completing it would be the
+       * perk taking a fight away rather than handing one over.
+       */
+      const kw = killer.weapon;
+      if (killer.perk.killRefill && kw && !kw.def.melee) {
+        const want = killer.magOf(kw) - kw.ammo;
+        const take = kw.reserve < 0 ? want : Math.min(want, kw.reserve);
+        if (take > 0) {
+          kw.ammo += take;
+          if (kw.reserve > 0) kw.reserve -= take;
+          kw.reloading = false;
+          kw.burst = 0;
+          this.sendTo(killer, {
+            o: K.S2C.AMMO, slot: killer.slot, ammo: kw.ammo, reserve: kw.reserve, refill: 1,
+          });
+        }
+      }
 
       if (friendly) {
         this.award(killer, [{ key: 'TEAMKILL', points: K.SCORE.TEAMKILL, label: K.SCORE_LABELS.TEAMKILL }]);
@@ -2847,7 +3163,11 @@ export class Room {
       if (other.id === nuke.by) continue;
       if (this.mode.teams && other.team === nuke.team) continue;
       other.protectedUntil = -1;                       // nothing survives this
-      other.applyDamage(K.MAX_HEALTH * 2, this.now, caller?.id ?? 0);
+      // Four times *their* ceiling, not twice the constant. A Juggernaut has
+      // nearly twice the health and takes fifteen per cent less of everything,
+      // and two hundred points of damage against a hundred and ninety of health
+      // is a nuke somebody walks away from.
+      other.applyDamage(other.maxHealth * 4, this.now, caller?.id ?? 0);
       this.onKill(caller ?? null, other, 'nuke', false, null, { distance: 0, ads: false, scopeTime: 0 });
     }
 
@@ -2880,7 +3200,7 @@ export class Room {
 
       const w = p.weapon;
       if (w.reloading && this.now >= w.reloadEnd) {
-        const want = w.def.magSize - w.ammo;
+        const want = p.magOf(w) - w.ammo;
         const take = w.reserve < 0 ? want : Math.min(want, w.reserve);
         w.ammo += take;
         if (w.reserve > 0) w.reserve -= take;
@@ -2918,14 +3238,14 @@ export class Room {
           p.ads = (input.keys & KEY.ADS) !== 0;
           if (p.ads && !wasAds) p.adsStart = this.now;
           p.firing = (input.keys & KEY.FIRE) !== 0;
-          step(p.state, input, this.world, K.TICK_DT, { speedMult: p.speedMult(p.ads), fly: p.god });
+          step(p.state, input, this.world, K.TICK_DT, { ...p.moveOpts(p.ads), fly: p.god });
           this.postStep(p);
           applied++;
         }
         if (applied === 0) {
           if (p.isBot) {
             step(p.state, p.botInput ?? { keys: 0, yaw: p.state.yaw, pitch: p.state.pitch },
-              this.world, K.TICK_DT, { speedMult: p.speedMult(false) });
+              this.world, K.TICK_DT, p.moveOpts(false));
             this.postStep(p);
           } else if (this.now - (p.lastInputAt ?? this.now) > INPUT_STARVE_GRACE) {
             // The client stopped sending input (packet loss, tabbed out, dead
@@ -2940,7 +3260,7 @@ export class Room {
             // of the key a free hop on the far side of every lost packet.
             const held = p.state.prevKeys;
             step(p.state, { keys: 0, prev: 0, yaw: p.state.yaw, pitch: p.state.pitch },
-              this.world, K.TICK_DT, { speedMult: p.speedMult(false), fly: p.god });
+              this.world, K.TICK_DT, { ...p.moveOpts(false), fly: p.god });
             p.state.prevKeys = held;
             this.postStep(p);
           }
@@ -3006,7 +3326,7 @@ export class Room {
   /** Post-movement consequences: fall damage and the out-of-world kill plane. */
   postStep(p) {
     if (p.state.landed) {
-      const fd = fallDamage(p.state.fallSpeed);
+      const fd = fallDamage(p.state.fallSpeed) * p.perk.fallDamage;
       if (fd > 0) {
         const res = p.applyDamage(fd, this.now, 0);
         if (res.damage > 0) {
@@ -3018,7 +3338,7 @@ export class Room {
     // The void takes everybody except the one player it cannot: `applyDamage`
     // already refuses, and killing anyway would make god mode a slower death.
     if (p.alive && !p.god && p.state.y < -40) {
-      p.applyDamage(K.MAX_HEALTH, this.now, 0);
+      p.applyDamage(p.maxHealth * 4, this.now, 0);
       this.onKill(null, p, 'void', false);
     }
   }

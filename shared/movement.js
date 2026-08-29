@@ -294,13 +294,27 @@ function moveAndCollide(s, world, dx, dy, dz) {
  *        are replayed out of order, or a rewind would swallow a fresh press.
  * @param {World}  world  collision world
  * @param {number} dt     seconds (normally K.TICK_DT)
- * @param {object} opts   { speedMult, frozen }
+ * @param {object} opts   { speedMult, frozen, fly, jumpMult, hopKeep, airMax }
  */
 export function step(s, input, world, dt = K.TICK_DT, opts = {}) {
   const keys = input.keys | 0;
   const prevKeys = (input.prev ?? s.prevKeys ?? 0) | 0;
   s.prevKeys = keys;
   const speedMult = opts.speedMult ?? 1;
+  /*
+   * The four numbers a perk is allowed to reach into the physics with.
+   *
+   * They are read here, once, and every one of them falls back to the constant
+   * it overrides — so a caller that knows nothing about perks (which is every
+   * caller outside the Perks mode, plus every test written before it existed)
+   * gets exactly the movement it always got. That property is not a nicety: a
+   * perk that changed the shared step for everybody would change it on the
+   * client and the server at slightly different moments, and prediction would
+   * disagree with authority for as long as the mismatch lasted.
+   */
+  const jumpVel = K.JUMP_VELOCITY * (opts.jumpMult ?? 1);
+  const hopKeep = opts.hopKeep ?? K.HOP_SPEED_KEEP;
+  const airMax = K.MAX_AIR_SPEED * (opts.airMax ?? 1);
 
   s.yaw = input.yaw;
   s.pitch = clamp(input.pitch, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
@@ -472,8 +486,10 @@ export function step(s, input, world, dt = K.TICK_DT, opts = {}) {
     } else {
       if (willHop) {
         // Bunny hop: skip ground friction entirely and bleed a fraction instead.
-        s.vx *= K.HOP_SPEED_KEEP;
-        s.vz *= K.HOP_SPEED_KEEP;
+        // At a `hopKeep` of exactly 1 it bleeds nothing and hops compound until
+        // the air cap stops them, which is the whole of what the Runner perk is.
+        s.vx *= hopKeep;
+        s.vz *= hopKeep;
       } else {
         // Just landed? Friction stays soft for a moment so a late hop still works.
         applyFriction(s, K.GROUND_FRICTION * (s.hopGrace > 0 ? 0.28 : 1), dt);
@@ -487,12 +503,12 @@ export function step(s, input, world, dt = K.TICK_DT, opts = {}) {
     // other job.
     if (carving) steerVelocity(s, lookX, lookZ, K.AIR_STEER, dt);
     const sp = Math.hypot(s.vx, s.vz);
-    if (sp > K.MAX_AIR_SPEED) { s.vx *= K.MAX_AIR_SPEED / sp; s.vz *= K.MAX_AIR_SPEED / sp; }
+    if (sp > airMax) { s.vx *= airMax / sp; s.vz *= airMax / sp; }
   }
 
   /* Jump — buffered and coyote-timed so bunny-hopping feels forgiving. */
   if (willHop) {
-    s.vy = K.JUMP_VELOCITY;
+    s.vy = jumpVel;
     s.hopping = s.hopGrace > 0;
     s.onGround = false;
     s.coyote = 0;

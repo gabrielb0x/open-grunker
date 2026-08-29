@@ -2883,7 +2883,11 @@ export default async function run() {
     const ring = history(7, 0.6);
     cam.begin(deathMsg(), ring);
     const shot = cam.update(1 / 60, ring, { x: 0, y: 0, z: 0 });
-    return cam.replayTime === null && shot && shot.replay === false && !shot.rot;
+    // The orbit aims itself now — it returns yaw and pitch the same way the
+    // replay does, because a `lookAt` cut the orientation on the frame the two
+    // change hands. What says this is the orbit and not a replay is `replay`
+    // and a clock with nothing to play, which is what the flag is for.
+    return cam.replayTime === null && shot && shot.replay === false && !!shot.at;
   })());
 
   check('a client with no ring at all still gets the cam it always had', (() => {
@@ -2951,6 +2955,131 @@ export default async function run() {
     return v.name === 'Nemesis' && v.clan === 'GRUN' && v.clanVerified === true
       && v.level === 34 && v.creator === 'music' && v.distance === 41 && v.health === 8
       && v.head === true;
+  })());
+
+  /* ── Smoothness ───────────────────────────────────────────────
+   *
+   * The server broadcasts thirty times a second and the cam runs at whatever
+   * the screen does. Every check below is about the gap between those two
+   * numbers, which nobody can see on a body across the map and nobody can
+   * un-see with the camera strapped inside one.
+   * ────────────────────────────────────────────────────────── */
+
+  /** Biggest change in velocity between consecutive samples of a path. */
+  const worstKink = (path) => {
+    let worst = 0;
+    for (let i = 2; i < path.length; i++) {
+      const v1 = path[i - 1] - path[i - 2];
+      const v2 = path[i] - path[i - 1];
+      worst = Math.max(worst, Math.abs(v2 - v1));
+    }
+    return worst;
+  };
+
+  check('the replay reads a curve through the snapshots, not a line between them', (() => {
+    /*
+     * A body moving on a curve, sampled at the broadcast rate. Straight-line
+     * interpolation reproduces it as a polyline: constant velocity inside each
+     * span and a corner at every snapshot, thirty times a second. With the
+     * camera *inside* that body those corners are the whole picture, and no
+     * filter downstream removes them, because the kink is in the data.
+     */
+    const ring = new EntityManager(scene);
+    ring.localId = 1;
+    ring.addPlayer({ id: 3, name: 'B', team: K.TEAM.BLUE, classId: 'hunter' });
+    const step = 1000 / K.SNAPSHOT_RATE;
+    for (let i = 0; i < 80; i++) {
+      const t = i * step / 1000;
+      ring.pushSnapshot(i * step,
+        [[3, Math.sin(t * 2.2) * 6, 0, Math.cos(t * 2.2) * 6, t * 1.3, 0, 0b011, 100, 0, 0]]);
+    }
+    const linear = [], smooth = [];
+    for (let ms = 200; ms < 2200; ms += 4) {
+      linear.push(ring.sampleAt(3, ms).x);
+      smooth.push(ring.sampleAt(3, ms, true).x);
+    }
+    const kLin = worstKink(linear), kSmooth = worstKink(smooth);
+    info(`worst velocity step: ${kLin.toExponential(2)} linear → `
+      + `${kSmooth.toExponential(2)} smoothed`);
+    // The curve still has to be the *same* curve: a smoothing that wanders off
+    // the recorded path is not smoothing, it is fiction.
+    const drift = Math.max(...linear.map((v, i) => Math.abs(v - smooth[i])));
+    return kSmooth < kLin / 4 && drift < 0.05;
+  })());
+
+  check('and it is the same path, sample for sample, at every snapshot', (() => {
+    // A cubic that does not pass through its own control points would be
+    // playing back something that never happened.
+    const ring = new EntityManager(scene);
+    ring.localId = 1;
+    ring.addPlayer({ id: 3, name: 'B', team: K.TEAM.BLUE, classId: 'hunter' });
+    const step = 1000 / K.SNAPSHOT_RATE;
+    for (let i = 0; i < 20; i++) {
+      ring.pushSnapshot(i * step, [[3, i * i * 0.05, i * 0.1, -i, i * 0.03, 0, 0b011, 100, 0, 0]]);
+    }
+    let worst = 0;
+    for (let i = 2; i < 18; i++) {
+      const at = ring.sampleAt(3, i * step + 0.0001, true);
+      worst = Math.max(worst, Math.abs(at.x - i * i * 0.05), Math.abs(at.z + i));
+    }
+    info(`worst deviation at a snapshot: ${worst.toExponential(2)}u`);
+    return worst < 1e-3;
+  })());
+
+  check('the camera does not carry the killer’s head-bob into your eyes', (() => {
+    /*
+     * The ring here is quantised to the broadcast rate, which is what the real
+     * one is: the raw sample is therefore a staircase, and a camera placed on
+     * it moves in steps. The filter is what turns that into a shot.
+     */
+    const cam = new KillCam();
+    const ring = history(7, K.KILLCAM_SECONDS);
+    cam.begin(deathMsg(), ring);
+    const path = [];
+    for (let i = 0; i < 240; i++) {
+      const shot = cam.update(1 / 120, ring, { x: 0, y: 0, z: 0 });
+      if (shot?.replay) path.push(shot.from.x);
+    }
+    const raw = [];
+    for (let i = 0; i < path.length; i++) {
+      raw.push(ring.sampleAt(7, ring.latestTime - K.KILLCAM_SECONDS * 1000 + i * (1000 / 120)).x);
+    }
+    const kRaw = worstKink(raw), kCam = worstKink(path);
+    info(`worst step at 120fps: ${kRaw.toFixed(4)}u raw → ${kCam.toFixed(4)}u through the cam`);
+    // …and it still goes where the killer went: a filter that lags a whole
+    // metre behind is not a camera on them any more.
+    const behind = Math.abs(raw[raw.length - 1] - path[path.length - 1]);
+    return kCam < kRaw / 3 && behind < 0.5;
+  })());
+
+  check('the playback head is real time, never a filtered guess at it', (() => {
+    /*
+     * Smoothing this clock is the obvious third move after the curve and the
+     * camera filter, and it is wrong twice over. What is drawn has to match how
+     * much time has actually passed — a long frame *should* show a bigger step,
+     * because a bigger step is what happened — and an exponential average of
+     * frame times is biased upward on top of that: it weights every sample by
+     * its own length, so a stream of 7 ms frames with a 31 ms one every so
+     * often settles at 14 ms and plays the replay half again as fast as the
+     * match it is replaying. This is the check that caught that.
+     */
+    const cam = new KillCam();
+    const ring = history(7, K.KILLCAM_SECONDS);
+    cam.begin(deathMsg(), ring);
+    let last = cam.replayTime, total = 0, worst = 0, played = 0;
+    for (let i = 0; i < 300; i++) {
+      const dt = (i % 11 === 0 ? 0.031 : 0.0072);   // a real, uneven frame pacing
+      total += dt;
+      cam.update(dt, ring, { x: 0, y: 0, z: 0 });
+      const now = cam.replayTime;
+      if (now === null) break;
+      played += now - last;
+      worst = Math.max(worst, Math.abs((now - last) / 1000 - dt));
+      last = now;
+    }
+    info(`plays ${(played / (total * 1000)).toFixed(4)}\u00d7 real time over `
+      + `${total.toFixed(1)}s · worst frame off by ${(worst * 1e6).toFixed(1)}\u00b5s`);
+    return Math.abs(played / (total * 1000) - 1) < 1e-6 && worst < 1e-6;
   })());
 
   /* ── Developer mode ─────────────────────────────────────────────────────── */

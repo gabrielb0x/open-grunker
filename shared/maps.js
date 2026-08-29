@@ -574,6 +574,234 @@ function treeline(radius, { count = 30, seed = 11, c = 0x3f8c3c, trunk = 0x6f4c2
   return out;
 }
 
+/* ── The station set ─────────────────────────────────────────────────────────
+ *
+ * Everything above dresses a town in daylight: fences, hedges, parked cars, a
+ * sun to throw shadows off them. None of it survives being moved to a night
+ * map, and not because of the colours — because of the *lighting model*. A
+ * sunlit box at midnight is a dark box, and a level built out of dark boxes is
+ * a level you cannot read: no silhouettes, no edges, nowhere for the eye to go.
+ *
+ * So the set below is built around light rather than around geometry. `G` is a
+ * box that is drawn bright instead of being lit, which the renderer batches
+ * into an unlit material whose colour runs past 1.0 — over-bright, so the post
+ * chain's bright pass finds it and blooms it (client/js/world.js, `_buildBoxes`).
+ * Every other helper here is a shape with those strips already in the right
+ * places: a rim on the edge of a platform, a seam up the corner of a tower, a
+ * bar along the top of a railing.
+ *
+ * The rule the whole set follows: **light marks what you can stand on**. Every
+ * walkable edge glows and nothing else does, so a player reading the map at a
+ * glance is reading a map of the routes. It is the night-time equivalent of the
+ * bright roofs on the town maps, and it is doing the same job.
+ * ──────────────────────────────────────────────────────────────────────────*/
+
+/**
+ * An emissive box: drawn, never lit, never solid, never a shadow caster.
+ *
+ * `i` is how far past white it pushes. Around 1.5 it reads as a lit surface;
+ * past 2 it throws a visible halo and starts to bleed into whatever is in front
+ * of it, which is right for a sign and wrong for a floor strip.
+ */
+const G = (x, y, z, w, h, d, c, i = 1.6) =>
+  ({ x, y, z, w, h, d, c, decor: true, noShadow: true, mat: S.NEON, glow: i });
+
+/** A light strip laid along X or Z. The workhorse of the whole set. */
+function strip({ axis = 'x', at: a = 0, from, to, y = 0.03, c = 0x4fe3ff, t = 0.3, h = 0.07, i = 1.7 }) {
+  const len = Math.abs(to - from), mid = (from + to) / 2;
+  return axis === 'x' ? G(mid, y, a, len, h, t, c, i) : G(a, y, mid, t, h, len, c, i);
+}
+
+/**
+ * Glowing trim around the edge of a platform, just inside its rim.
+ *
+ * Four strips rather than one hollow box because a box would light the middle
+ * of the deck as well, and a deck that glows all over stops telling you where
+ * its edge is — which is the only thing this is for. Every drop on this map is
+ * long enough to matter, so the edge has to be legible from above.
+ */
+function rimLight(x, y, z, w, d, c = 0x4fe3ff, i = 1.7, t = 0.26) {
+  const hx = w / 2 - t / 2, hz = d / 2 - t / 2;
+  return [
+    G(x, y, z - hz, w, 0.07, t, c, i), G(x, y, z + hz, w, 0.07, t, c, i),
+    G(x - hx, y, z, t, 0.07, d - t * 2, c, i), G(x + hx, y, z, t, 0.07, d - t * 2, c, i),
+  ];
+}
+
+/**
+ * A walkable slab with a lit edge — the unit every level of this map is made of.
+ *
+ * The slab is solid and the trim is not, so the light never eats a bullet and
+ * never takes a corner off a fight. `rail` puts a hip-high barrier round it,
+ * which is cover you can shoot over and, more usefully, a line that stops a
+ * player walking off a twenty-metre drop they could not see the edge of.
+ */
+function deck(x, y, z, w, d, {
+  c = 0x39445c, mat = S.TILE, glowC = 0x4fe3ff, thick = 0.55, rail = 0, i = 1.7,
+  glow: hasGlow = true, gaps = [],
+} = {}) {
+  const out = [B(x, y, z, w, thick, d, c, { roof: true, mat })];
+  const top = y + thick;
+  if (hasGlow) out.push(...rimLight(x, top + 0.01, z, w, d, glowC, i));
+  if (rail > 0) {
+    // A gap is a side left open: where a stair arrives, or where a bridge
+    // leaves. Named by side rather than by coordinate because that is how the
+    // level reads when you are standing on it.
+    const has = (side) => !gaps.includes(side);
+    const t = 0.22;
+    if (has('n')) out.push(...railing(x, top, z - d / 2 + t, w, t, rail, c, glowC));
+    if (has('s')) out.push(...railing(x, top, z + d / 2 - t, w, t, rail, c, glowC));
+    if (has('w')) out.push(...railing(x - w / 2 + t, top, z, t, d, rail, c, glowC));
+    if (has('e')) out.push(...railing(x + w / 2 - t, top, z, t, d, rail, c, glowC));
+  }
+  return out;
+}
+
+/** Hip-high barrier with a lit cap: cover to crouch behind, a line not to cross. */
+function railing(x, y, z, w, d, h = 1.0, c = 0x2b3242, glowC = 0x4fe3ff) {
+  return [
+    B(x, y, z, w, h, d, c, { mat: S.METAL }),
+    G(x, y + h, z, w + 0.06, 0.08, d + 0.06, glowC, 1.9),
+  ];
+}
+
+/**
+ * A structural column with a lit core running up it.
+ *
+ * Solid, so it is cover; the light is a decor sleeve around it, so shooting at
+ * the glow hits the column. Used under every deck on the map — a floating slab
+ * with nothing holding it up is the single fastest way to make a level read as
+ * a whitebox rather than as a place.
+ */
+function pylon(x, z, { y = 0, h = 6.4, r = 0.8, c = 0x232b3c, glowC = 0x4fe3ff, i = 1.5 } = {}) {
+  return [
+    B(x, y, z, r * 2, h, r * 2, c, { mat: S.METAL }),
+    G(x, y + 0.3, z - r - 0.03, 0.24, h - 0.9, 0.06, glowC, i),
+    G(x, y + 0.3, z + r + 0.03, 0.24, h - 0.9, 0.06, glowC, i),
+    G(x - r - 0.03, y + 0.3, z, 0.06, h - 0.9, 0.24, glowC, i),
+    G(x + r + 0.03, y + 0.3, z, 0.06, h - 0.9, 0.24, glowC, i),
+  ];
+}
+
+/**
+ * A bridge between two levels of the map, with rails down both long sides.
+ *
+ * Solid deck, lit kerbs, and a pylon every eight metres so it is carried rather
+ * than floating. The rails are the point: a bridge is the most exposed place on
+ * a map like this, and something to crouch behind is what makes crossing one a
+ * decision instead of a coin toss.
+ */
+function bridge({ axis = 'z', at: a = 0, from, to, y = 6.4, w = 5,
+  c = 0x39445c, glowC = 0x4fe3ff, rail = 0.95, legs = true, legTo = 0 } = {}) {
+  const len = Math.abs(to - from), mid = (from + to) / 2;
+  const out = [];
+  const along = axis === 'z';
+  out.push(...deck(along ? a : mid, y, along ? mid : a,
+    along ? w : len, along ? len : w,
+    { c, glowC, rail, gaps: along ? ['n', 's'] : ['w', 'e'] }));
+  if (legs) {
+    const step = 9;
+    for (let s = -len / 2 + step; s < len / 2 - 1; s += step) {
+      const px = along ? a : mid + s, pz = along ? mid + s : a;
+      out.push(...pylon(px, pz, { y: legTo, h: y - legTo, r: 0.55, c, glowC, i: 1.3 }));
+    }
+  }
+  return out;
+}
+
+/**
+ * A holographic panel: a dark frame with a bright face floating inside it.
+ *
+ * Decor throughout — a sign you can hide behind is a sign somebody will hide
+ * behind, and a two-metre-wide invisible wall in the middle of a lane is the
+ * worst kind of level bug. The frame is drawn dark so the face reads as
+ * *emitting* rather than as painted on.
+ */
+function holo(x, y, z, { w = 6, h = 3.2, axis = 'x', c = 0x4fe3ff, frame = 0x1b2130, i = 2.1 } = {}) {
+  const t = 0.22;
+  const fw = axis === 'x' ? w : t, fd = axis === 'x' ? t : w;
+  return [
+    D(x, y, z, fw, h, fd, frame, { mat: S.METAL, noShadow: true }),
+    G(x, y + 0.28, z, axis === 'x' ? w - 0.7 : t + 0.06, h - 0.56,
+      axis === 'x' ? t + 0.06 : w - 0.7, c, i),
+  ];
+}
+
+/**
+ * A run of railing along an axis, with named gaps left open.
+ *
+ * The gaps are the whole reason this exists rather than four calls to
+ * `railing`: every edge on a vertical map wants a barrier *except* exactly
+ * where a stair arrives or a bridge leaves, and a level whose rails are drawn
+ * across its own doorways is a level nobody can move around.
+ */
+function railRun({ axis = 'x', at: a = 0, from, to, y = 0, h = 1.0, t = 0.22,
+  c = 0x2b3242, glowC = 0x4fe3ff, gaps = [] } = {}) {
+  const out = [];
+  const lo = Math.min(from, to), hi = Math.max(from, to);
+  const seg = (s, e) => {
+    if (e - s < 0.4) return;
+    const mid = (s + e) / 2, len = e - s;
+    out.push(...(axis === 'x'
+      ? railing(mid, y, a, len, t, h, c, glowC)
+      : railing(a, y, mid, t, len, h, c, glowC)));
+  };
+  let cursor = lo;
+  for (const [gs, ge] of gaps.slice().sort((p, q) => p[0] - q[0])) {
+    seg(cursor, Math.min(gs, hi));
+    cursor = Math.max(cursor, ge);
+  }
+  seg(cursor, hi);
+  return out;
+}
+
+/**
+ * A mast with a slow beacon on it. Pure silhouette: it exists to give the
+ * skyline something to cut against a sky that is otherwise all gradient.
+ */
+function mast(x, z, { y = 0, h = 12, c = 0x2b3242, glowC = 0xff4fa3 } = {}) {
+  return [
+    D(x, y, z, 0.5, h, 0.5, c, { mat: S.METAL }),
+    D(x, y + h * 0.45, z, 2.4, 0.16, 0.16, c, { mat: S.METAL, noShadow: true }),
+    D(x, y + h * 0.72, z, 0.16, 0.16, 2.0, c, { mat: S.METAL, noShadow: true }),
+    G(x, y + h, z, 0.7, 0.7, 0.7, glowC, 2.4),
+  ];
+}
+
+/**
+ * A cargo pod: waist-high cover with a lit band round it.
+ *
+ * The map needs a lot of these and they need to be *readable* at forty metres
+ * in the dark, which a plain crate is not. The band is what turns it into a
+ * shape the eye finds without looking for it.
+ */
+function pod(x, z, { y = 0, w = 2.6, d = 2.6, h = 1.3, c = 0x46536e, glowC = 0x4fe3ff } = {}) {
+  return [
+    B(x, y, z, w, h, d, c, { mat: S.METAL }),
+    G(x, y + h * 0.62, z, w + 0.05, 0.1, d + 0.05, glowC, 1.5),
+  ];
+}
+
+/**
+ * A window band up the face of a building — dark glass with a lit sill.
+ *
+ * Decor, and flush with the wall it sits on rather than proud of it: it is
+ * texture, not geometry, and a player should never be able to stand on a
+ * window ledge that was drawn to break up a flat wall.
+ */
+function windows(x, y, z, { w = 10, axis = 'x', floors = 3, pitch = 3.2, c = 0x16324e, glowC = 0x4fe3ff } = {}) {
+  const out = [];
+  const t = 0.12;
+  for (let f = 0; f < floors; f++) {
+    const fy = y + 1.1 + f * pitch;
+    const bw = axis === 'x' ? w : t, bd = axis === 'x' ? t : w;
+    out.push(D(x, fy, z, bw, 1.5, bd, c, { mat: S.WINDOW, noShadow: true }));
+    out.push(G(x, fy - 0.16, z, axis === 'x' ? w : t + 0.04, 0.09,
+      axis === 'x' ? t + 0.04 : w, glowC, 1.35));
+  }
+  return out;
+}
+
 /* ── Maps ────────────────────────────────────────────────────────────────── */
 
 /**
@@ -1478,6 +1706,511 @@ function subzero() {
 }
 
 /**
+ * NOVA — a transit station on the night side, under a nebula.
+ *
+ * The biggest map in the game and the first one built as a *stack*: four floors
+ * of walkable level over one plaza, each reachable from the others without a
+ * lift, a ladder or a trick jump. The pitch is that you should never be able to
+ * say where the fight is — it is on the deck, on the ring, on the spans and on
+ * the crown at the same time, and the interesting decision is which of those
+ * you want to be on.
+ *
+ * ── The four floors ────────────────────────────────────────────────────────
+ *
+ *   DECK    y = 0      The plaza. Two avenues crossing at the reactor, long
+ *                      enough to see the length of the map down, broken every
+ *                      few metres by cargo and pylons so no part of that length
+ *                      is a corridor with nothing in it.
+ *   RING    y = 6.95   A square walkway around the reactor bay, eight metres
+ *                      wide, with four stair runs up from the avenues. It meets
+ *                      the tower balconies and the hangar roofs, so the whole
+ *                      mid-level is one loop you can run without touching the
+ *                      floor — and nothing is over it, so the towers look down
+ *                      on every step of it.
+ *   SPAN    y = 13.35  Four tower roofs and the square of bridges joining them.
+ *                      Sight lines the length of the map, almost no cover, and
+ *                      a very long way down.
+ *   CROWN   y = 20.5   One platform on top of the reactor spire. It sees
+ *                      everything and everything sees it, and the only way up
+ *                      is the spiral: six flights wrapped round the spire, each
+ *                      exposed to a different quarter of the map.
+ *
+ * The spiral is the piece the layout hangs off. A map with a best perch and one
+ * ladder to it is a map about who got there first; a map where the climb takes
+ * eight seconds in the open, in view of four towers, is a map where the perch
+ * is a bet. Nobody holds the crown for long. That is what it is for.
+ *
+ * ── Reading it in the dark ─────────────────────────────────────────────────
+ *
+ * Every walkable edge is lit and nothing else is. That is not decoration: it is
+ * the job the bright roofs do on the town maps, moved to a level where there is
+ * no sun to do it. Cyan is structure you can stand on. Magenta is the reactor
+ * and the crown — the two things worth crossing the map for. White is the spawn
+ * halls, and it is the only white light here, so a player who has lost their
+ * bearings finds the way back by looking for the colour that means back.
+ *
+ * ── Symmetry ───────────────────────────────────────────────────────────────
+ *
+ * Rotational rather than mirrored: everything not already symmetric about the
+ * origin is authored once and passed through `rot180`. Both teams therefore
+ * play the same map from the same angle rather than a reflection of it, so a
+ * route learned from one spawn is the same route from the other and no weapon
+ * favours a side. The spiral is the one exception, and deliberately: it winds
+ * one way, out of the middle of the map, which is the one place equidistant
+ * from both spawns.
+ */
+function nova() {
+  /*
+   * Structure runs cold and unsaturated; the light is the only colourful thing
+   * on the map. That is the only reason a hundred neon strips do not turn into
+   * soup the moment you look at them together — every hue in the scene is
+   * either one of the three lights or a shade of blue-grey that reads as none.
+   */
+  const DECKC = 0x3a465e, DARK = 0x222a3a, FRAME = 0x1a2030, PANEL = 0xa9b8d0,
+        TRIM = 0x55637e, PLATE = 0x2d3648, GLASSC = 0x1b3350;
+  /* The three lights, and they mean three different things — see the header. */
+  const CYA = 0x4fe3ff, MAG = 0xff4fa3, WHT = 0xdfe8ff;
+
+  const boxes = [];
+  const add = (...xs) => { for (const x of xs) boxes.push(...(Array.isArray(x) ? x : [x])); };
+
+  /* Heights every floor is measured from, so a change to one moves the level
+   * that stands on it rather than leaving a step nobody meant to author. */
+  const RY = 6.4, RTOP = RY + 0.55;               // ring slab, and its walking surface
+  const SPAN = 12.8, SPANTOP = SPAN + 0.55;       // tower roofs and the bridges between
+  const CROWN = 19.95, CROWNTOP = CROWN + 0.55;   // the platform on the spire
+
+  /* ── The deck ──────────────────────────────────────────────────────────────
+   * The plaza floor is the map's own ground plane, so there is no slab here —
+   * only what is painted on it and what stands on it. The avenues are light,
+   * not geometry: two lines crossing at the reactor that tell a player which
+   * way is out from anywhere they happen to be standing.
+   * ────────────────────────────────────────────────────────────────────────*/
+  for (const off of [-7.4, 7.4]) {
+    add(strip({ axis: 'z', at: off, from: -60, to: 60, c: CYA, t: 0.34, i: 1.5 }));
+    add(strip({ axis: 'x', at: off, from: -60, to: 60, c: CYA, t: 0.34, i: 1.5 }));
+  }
+  // Cross-hatching under the ring, where the avenues open out into the bay.
+  for (const z of [-46, -34, 34, 46]) {
+    add(strip({ axis: 'x', at: z, from: -7.4, to: 7.4, c: CYA, t: 0.2, i: 1.1 }));
+    add(strip({ axis: 'z', at: z, from: -7.4, to: 7.4, c: CYA, t: 0.2, i: 1.1 }));
+  }
+  // Deck plating, laid as broad panels so the floor is not one flat colour.
+  for (const [px, pz] of [[-38, -38], [38, -38], [-38, 38], [38, 38]]) {
+    add(D(px, 0.01, pz, 30, 0.04, 30, PLATE, { mat: S.TILE, noShadow: true }));
+  }
+
+  /* ── The reactor ───────────────────────────────────────────────────────────
+   * Two steps up to a plinth, and a spire out of the middle of it that carries
+   * the crown twenty metres overhead. It is the only thing on the map visible
+   * from every square metre of it, which is the whole job: a player who is lost
+   * looks up, finds the magenta, and knows which way the middle is.
+   * ────────────────────────────────────────────────────────────────────────*/
+  add(B(0, 0, 0, 26, 0.6, 26, DECKC, { roof: true, mat: S.TILE }));
+  add(B(0, 0.6, 0, 20, 0.6, 20, DECKC, { roof: true, mat: S.TILE }));
+  add(rimLight(0, 0.62, 0, 26, 26, MAG, 1.5));
+  add(rimLight(0, 1.22, 0, 20, 20, MAG, 1.8));
+  /*
+   * The spire is four columns and a light, not a pillar.
+   *
+   * A solid twenty-metre block would have been simpler and it was the first
+   * thing here, but it made the exact centre of the map the one square metre
+   * nobody can stand on — which is a problem when the centre is where the
+   * objective goes. Four columns carry the crown just as well, leave the core
+   * walkable, and turn the landmark into something you can be *inside* rather
+   * than something you walk around. The beam between them is decor: a bullet
+   * passes straight through it, which is the only honest way to draw light.
+   */
+  for (const cx of [-3.4, 3.4]) {
+    for (const cz of [-3.4, 3.4]) {
+      add(B(cx, 1.2, cz, 2.6, 19.3, 2.6, DARK, { mat: S.METAL }));
+      add(G(cx, 2.2, cz - 1.36, 1.4, 17.4, 0.1, MAG, 1.7));
+      add(G(cx, 2.2, cz + 1.36, 1.4, 17.4, 0.1, MAG, 1.7));
+    }
+  }
+  add(G(0, 1.25, 0, 2.6, 19.2, 2.6, MAG, 2.3));
+  // Coolant bands, at the heights the spiral passes — so the climb has rungs to
+  // measure itself against instead of twenty metres of the same wall. Decor, so
+  // the core stays a place you can walk into from any side.
+  for (const y of [4.4, 7.6, 10.8, 14.1, 17.3]) {
+    add(D(0, y, 0, 9.4, 0.3, 1.2, PLATE, { mat: S.METAL, noShadow: true }));
+    add(D(0, y, 0, 1.2, 0.3, 9.4, PLATE, { mat: S.METAL, noShadow: true }));
+    add(G(0, y + 0.3, 0, 9.6, 0.1, 1.3, MAG, 1.5));
+    add(G(0, y + 0.3, 0, 1.3, 0.1, 9.6, MAG, 1.5));
+  }
+
+  /* ── The spiral ────────────────────────────────────────────────────────────
+   * Six flights and five landings wound one and a half times round the spire,
+   * from the plinth to the crown. Two of the flights pass over two others, so
+   * the middle of the map is genuinely layered rather than a staircase drawn on
+   * a wall — and every flight faces a different quarter of the map, which is
+   * what makes the climb a decision instead of a formality.
+   * ────────────────────────────────────────────────────────────────────────*/
+  {
+    const step = { rise: 0.268, run: 1.0, steps: 12, w: 3.4, c: TRIM, mat: S.GRATE };
+    const rise = step.rise * step.steps;          // 3.216 per flight
+    const land = (x, z, top) => [
+      B(x, top - 0.55, z, 4, 0.55, 4, TRIM, { roof: true, mat: S.GRATE }),
+      ...rimLight(x, top + 0.01, z, 4, 4, CYA, 1.6),
+    ];
+    let y = 1.2;
+    // 1 — north face, out of the plinth.
+    add(stairs({ ...step, x: -6, z: -8, y, dir: '+x' }));
+    y += rise; add(land(8, -8, y));
+    // 2 — east face.
+    add(stairs({ ...step, x: 8, z: -6, y, dir: '+z' }));
+    y += rise; add(land(8, 8, y));
+    // 3 — south face.
+    add(stairs({ ...step, x: 6, z: 8, y, dir: '-x' }));
+    y += rise; add(land(-8, 8, y));
+    // 4 — west face.
+    add(stairs({ ...step, x: -8, z: 6, y, dir: '-z' }));
+    y += rise; add(land(-8, -8, y));
+    // 5 — north face again, this time fourteen metres over the first flight.
+    add(stairs({ ...step, x: -6, z: -8, y, dir: '+x' }));
+    y += rise; add(land(8, -8, y));
+    // 6 — east face again, arriving level with the crown.
+    add(stairs({ ...step, x: 8, z: -6, y, dir: '+z' }));
+    // The four columns the whole thing hangs off. They run the full height, so
+    // the spiral reads as being carried rather than as floating.
+    for (const [px, pz] of [[-8, -8], [8, -8], [-8, 8], [8, 8]]) {
+      add(pylon(px, pz, { y: 1.2, h: CROWNTOP - 1.2, r: 0.55, c: DARK, glowC: MAG, i: 1.2 }));
+    }
+  }
+
+  /* ── The crown ───────────────────────────────────────────────────────────*/
+  add(deck(0, CROWN, 0, 15, 15, { c: DARK, glowC: MAG, i: 2.0 }));
+  // Parapet, with the corner the spiral arrives at left open.
+  add(railRun({ axis: 'x', at: -7.3, from: -7.5, to: 7.5, y: CROWNTOP, c: DARK, glowC: MAG }));
+  add(railRun({ axis: 'x', at: 7.3, from: -7.5, to: 7.5, y: CROWNTOP, c: DARK, glowC: MAG, gaps: [[5, 7.5]] }));
+  add(railRun({ axis: 'z', at: -7.3, from: -7.5, to: 7.5, y: CROWNTOP, c: DARK, glowC: MAG }));
+  add(railRun({ axis: 'z', at: 7.3, from: -7.5, to: 7.5, y: CROWNTOP, c: DARK, glowC: MAG, gaps: [[5, 7.5]] }));
+  // A beacon on the very top, which is the thing you can see from the spawn.
+  add(D(0, CROWNTOP, 0, 1.2, 2.4, 1.2, DARK, { mat: S.METAL }));
+  add(G(0, CROWNTOP + 2.4, 0, 2.0, 1.2, 2.0, MAG, 2.6));
+
+  /* ── The ring ──────────────────────────────────────────────────────────────
+   * Four slabs making a square donut round the reactor bay: outer edge at 26,
+   * inner at 18. Rails everywhere except the eight places something arrives,
+   * because an edge with no rail on a twenty-metre map is a death nobody chose.
+   * ────────────────────────────────────────────────────────────────────────*/
+  add(B(0, RY, -22, 52, 0.55, 8, DECKC, { roof: true, mat: S.TILE }));
+  add(B(0, RY, 22, 52, 0.55, 8, DECKC, { roof: true, mat: S.TILE }));
+  add(B(-22, RY, 0, 8, 0.55, 36, DECKC, { roof: true, mat: S.TILE }));
+  add(B(22, RY, 0, 8, 0.55, 36, DECKC, { roof: true, mat: S.TILE }));
+  for (const sign of [-1, 1]) {
+    add(strip({ axis: 'x', at: sign * 25.85, from: -26, to: 26, y: RTOP, c: CYA }));
+    add(strip({ axis: 'z', at: sign * 25.85, from: -18, to: 18, y: RTOP, c: CYA }));
+    add(strip({ axis: 'x', at: sign * 18.15, from: -18, to: 18, y: RTOP, c: CYA }));
+    add(strip({ axis: 'z', at: sign * 18.15, from: -18, to: 18, y: RTOP, c: CYA }));
+    // Outer rails: open at the avenue, where the stairs land, and at both
+    // corners, where the tower balconies meet the ring.
+    add(railRun({ axis: 'x', at: sign * 25.8, from: -26, to: 26, y: RTOP,
+      gaps: [[-4, 4], [-26, -22], [22, 26]] }));
+    add(railRun({ axis: 'z', at: sign * 25.8, from: -18, to: 18, y: RTOP,
+      gaps: [[-4, 4]] }));
+    // Inner rails: open only where the bay stairs arrive.
+    add(railRun({ axis: 'x', at: sign * 18.2, from: -18, to: 18, y: RTOP, gaps: [[-3.5, 3.5]] }));
+    add(railRun({ axis: 'z', at: sign * 18.2, from: -18, to: 18, y: RTOP, gaps: [[-3.5, 3.5]] }));
+  }
+  // What holds it up.
+  for (const [px, pz] of [[-22, -22], [22, -22], [-22, 22], [22, 22],
+    [0, -22], [0, 22], [-22, 0], [22, 0], [-12, -22], [12, -22], [-12, 22], [12, 22]]) {
+    add(pylon(px, pz, { h: RY, r: 0.7, c: DARK, glowC: CYA, i: 1.2 }));
+  }
+
+  /* ── Getting up ────────────────────────────────────────────────────────────
+   * Four runs from the avenues, outward and up, and four out of the reactor bay
+   * itself. Eight ways onto the ring, all of them in the open — the mid-level
+   * should be easy to reach and impossible to reach unseen.
+   * ────────────────────────────────────────────────────────────────────────*/
+  const flight = { w: 7, steps: 12, rise: 0.58, run: 0.72, c: TRIM, mat: S.GRATE };
+  add(stairs({ ...flight, x: 0, z: -34.6, dir: '+z' }));
+  add(stairs({ ...flight, x: 0, z: 34.6, dir: '-z' }));
+  add(stairs({ ...flight, x: -34.6, z: 0, dir: '+x' }));
+  add(stairs({ ...flight, x: 34.6, z: 0, dir: '-x' }));
+  for (const sign of [-1, 1]) {
+    add(strip({ axis: 'z', at: sign * 3.6, from: -34.6, to: -26, y: 0.1, c: CYA, i: 1.2 }));
+    add(strip({ axis: 'z', at: sign * 3.6, from: 26, to: 34.6, y: 0.1, c: CYA, i: 1.2 }));
+    add(strip({ axis: 'x', at: sign * 3.6, from: -34.6, to: -26, y: 0.1, c: CYA, i: 1.2 }));
+    add(strip({ axis: 'x', at: sign * 3.6, from: 26, to: 34.6, y: 0.1, c: CYA, i: 1.2 }));
+  }
+  const bay = { w: 6, steps: 12, rise: 0.53, run: 0.68, y: 0.6, c: TRIM, mat: S.GRATE };
+  add(stairs({ ...bay, x: 0, z: -10, dir: '-z' }));
+  add(stairs({ ...bay, x: 0, z: 10, dir: '+z' }));
+  add(stairs({ ...bay, x: -10, z: 0, dir: '-x' }));
+  add(stairs({ ...bay, x: 10, z: 0, dir: '+x' }));
+
+  /* ── The towers ────────────────────────────────────────────────────────────
+   * One in each diagonal. A hall on the deck whose roof is the tower's balcony
+   * and part of the mid-level loop, a smaller block on top of that, and the
+   * roof of *that* is the span. Two floors, two ways up, and the outer stair is
+   * on the outside where the rest of the map can watch it.
+   * ────────────────────────────────────────────────────────────────────────*/
+  const tower = (x, z, inward) => {
+    const out = [];
+    const sx = Math.sign(x), sz = Math.sign(z);
+    // Ground hall, with its doors facing the middle of the map.
+    out.push(...building({
+      x, z, w: 22, d: 22, h: 6.6, c: DECKC, roofC: PLATE, mat: S.CONCRETE,
+      roofMat: S.TILE, overhang: 3, t: 0.5,
+      doors: [
+        { side: sx > 0 ? 'w' : 'e', at: 0, w: 6 },
+        { side: sz > 0 ? 'n' : 's', at: 0, w: 6 },
+        { side: sx > 0 ? 'e' : 'w', at: 6, w: 4 },
+      ],
+    }));
+    // Balcony trim and the rail round its outer two sides.
+    out.push(...rimLight(x, RTOP + 0.01, z, 28, 28, CYA, 1.6));
+    out.push(...railRun({ axis: 'x', at: z - sz * 14, from: x - 14, to: x + 14, y: RTOP,
+      gaps: [[x - sx * 14, x - sx * 6]] }));
+    out.push(...railRun({ axis: 'z', at: x - sx * 14, from: z - 14, to: z + 14, y: RTOP,
+      gaps: [[z - sz * 14, z - sz * 6]] }));
+    // Upper block. Smaller, so the balcony is a walkway round it rather than a
+    // ledge — a roof you can only stand on the edge of is a roof nobody uses.
+    out.push(...building({
+      x, z, w: 13, d: 13, y: RTOP, h: SPAN - RTOP, c: PLATE, roofC: DECKC,
+      mat: S.METAL, roofMat: S.TILE, t: 0.45,
+      doors: [{ side: sx > 0 ? 'w' : 'e', at: 0, w: 4 }],
+    }));
+    out.push(...windows(x - sx * 6.6, RTOP, z, { w: 11, axis: 'z', floors: 2, pitch: 2.6, glowC: CYA }));
+    out.push(...windows(x, RTOP, z - sz * 6.6, { w: 11, axis: 'x', floors: 2, pitch: 2.6, glowC: CYA }));
+    // The stair up to the span, on the outer face.
+    out.push(...stairs({
+      x: x + sx * 8.4, z: z + sz * 4.2, w: 4, steps: 12, rise: 0.535, run: 0.8,
+      dir: sz > 0 ? '+z' : '-z', y: RTOP, c: TRIM, mat: S.GRATE,
+    }));
+    // Span parapet, open where the bridges leave and where the stair arrives.
+    out.push(...rimLight(x, SPANTOP + 0.01, z, 13.5, 13.5, CYA, 1.8));
+    out.push(...railRun({ axis: 'x', at: z - sz * 6.5, from: x - 6.5, to: x + 6.5, y: SPANTOP,
+      gaps: [[x - 3, x + 3]] }));
+    out.push(...railRun({ axis: 'x', at: z + sz * 6.5, from: x - 6.5, to: x + 6.5, y: SPANTOP,
+      gaps: [[x + sx * 5.4, x + sx * 11]] }));
+    out.push(...railRun({ axis: 'z', at: x - sx * 6.5, from: z - 6.5, to: z + 6.5, y: SPANTOP,
+      gaps: [[z - 3, z + 3]] }));
+    out.push(...railRun({ axis: 'z', at: x + sx * 6.5, from: z - 6.5, to: z + 6.5, y: SPANTOP }));
+    // Silhouette. Nothing to stand on, and the point of it is the sky.
+    out.push(...mast(x + sx * 4.6, z + sz * 4.6, { y: SPANTOP, h: 13, c: FRAME, glowC: MAG }));
+    out.push(...holo(x - sx * 11.2, RTOP + 2.4, z, { w: 9, h: 4.2, axis: 'z', c: inward }));
+    return out;
+  };
+  const nw = tower(-36, -36, CYA), ne = tower(36, -36, MAG);
+  add(nw, ne, rot180(nw), rot180(ne));
+
+  /* ── The spans ────────────────────────────────────────────────────────────
+   * A square of bridges joining the four tower roofs, forty metres up in the
+   * corners of the map. It is the only route that never touches the middle, so
+   * it is the flanking lane — and it is also the most exposed place to be
+   * standing on the whole map, which is the trade.
+   * ────────────────────────────────────────────────────────────────────────*/
+  for (const sign of [-1, 1]) {
+    add(bridge({ axis: 'x', at: sign * 36, from: -30, to: 30, y: SPAN, w: 5,
+      c: PLATE, glowC: CYA, legTo: 0 }));
+    add(bridge({ axis: 'z', at: sign * 36, from: -30, to: 30, y: SPAN, w: 5,
+      c: PLATE, glowC: CYA, legTo: 0 }));
+  }
+
+  /* ── The hangars ──────────────────────────────────────────────────────────
+   * Two sheds on the east and west edges, open toward the middle. Their roofs
+   * are at ring height and touch the tower balconies, which is what closes the
+   * mid-level into a loop; underneath them is the only genuinely enclosed
+   * fighting space on the map, which a level of this much open air needs.
+   * ────────────────────────────────────────────────────────────────────────*/
+  const hangar = (x) => {
+    const out = [];
+    const sx = Math.sign(x);
+    out.push(...building({
+      x, z: 0, w: 18, d: 50, h: 6.4, c: PLATE, roofC: DECKC, mat: S.METAL,
+      roofMat: S.TILE, t: 0.5, overhang: 1,
+      doors: [
+        { side: sx > 0 ? 'w' : 'e', at: -14, w: 7 },
+        { side: sx > 0 ? 'w' : 'e', at: 14, w: 7 },
+        { side: 'n', at: 0, w: 8 }, { side: 's', at: 0, w: 8 },
+      ],
+    }));
+    out.push(...rimLight(x, RTOP + 0.01, 0, 20, 52, CYA, 1.6));
+    out.push(...railRun({ axis: 'z', at: x + sx * 10, from: -26, to: 26, y: RTOP }));
+    out.push(...railRun({ axis: 'z', at: x - sx * 10, from: -26, to: 26, y: RTOP,
+      gaps: [[-4, 4]] }));
+    // Roof stair, off the deck at the middle of the inner face.
+    out.push(...stairs({
+      x: x - sx * 11.6, z: 0, w: 5, steps: 12, rise: 0.58, run: 0.72,
+      dir: sx > 0 ? '+x' : '-x', c: TRIM, mat: S.GRATE,
+    }));
+    // Connectors to the tower balconies, north and south — this is the join
+    // that turns the mid-level from four platforms into one circuit.
+    for (const sz of [-1, 1]) {
+      out.push(...deck(x + sx * 2, RY, sz * 27, 12, 8, { c: PLATE, glowC: CYA, rail: 0 }));
+      out.push(...railRun({ axis: 'z', at: x + sx * 8, from: sz * 23, to: sz * 31, y: RTOP }));
+    }
+    // Inside: cargo, and a lit gantry over it so the interior is not a cave.
+    for (const cz of [-18, -6, 6, 18]) {
+      out.push(...pod(x - sx * 4, cz, { w: 3.2, d: 4.4, h: 1.5, c: DECKC, glowC: CYA }));
+    }
+    out.push(strip({ axis: 'z', at: x, from: -24, to: 24, y: 5.4, c: WHT, t: 0.5, i: 1.4 }));
+    out.push(...holo(x - sx * 8.6, 3.4, 14, { w: 8, h: 3, axis: 'z', c: CYA }));
+    return out;
+  };
+  add(hangar(-48), hangar(48));
+
+  /* ── The spawn halls ──────────────────────────────────────────────────────
+   * Open-fronted, roofed, and the only white light on the map. A player who
+   * spawns is looking down the long avenue at the reactor with the crown over
+   * it, which tells them where they are and which way is forward in one frame.
+   * ────────────────────────────────────────────────────────────────────────*/
+  const hall = () => {
+    const out = [];
+    out.push(...building({
+      x: 0, z: -54, w: 30, d: 16, h: 6.4, c: DECKC, roofC: PLATE, mat: S.CONCRETE,
+      roofMat: S.TILE, t: 0.5, overhang: 1,
+      // One wide mouth facing the map, and a side door out of each flank. The
+      // wide one is what makes the spawn read as a starting line rather than as
+      // a room: everything a player needs to see is framed by it before they
+      // have taken a step.
+      doors: [{ side: 's', at: 0, w: 16 },
+        { side: 'w', at: 0, w: 5 }, { side: 'e', at: 0, w: 5 }],
+    }));
+    out.push(...rimLight(0, RTOP + 0.01, -54, 32, 18, WHT, 1.5));
+    out.push(strip({ axis: 'x', at: -54, from: -14, to: 14, y: 5.2, c: WHT, t: 0.6, i: 1.5 }));
+    out.push(strip({ axis: 'x', at: -46.4, from: -15, to: 15, y: 0.06, c: WHT, t: 0.5, i: 1.4 }));
+    out.push(...holo(0, 2.6, -46.2, { w: 12, h: 3.4, axis: 'x', c: WHT, i: 1.7 }));
+    // Cover immediately outside the door, so a spawn is never a shooting
+    // gallery for whoever happens to be looking down the avenue.
+    out.push(...pod(-11, -42, { w: 4, d: 3, h: 1.4, c: DECKC, glowC: WHT }));
+    out.push(...pod(11, -42, { w: 4, d: 3, h: 1.4, c: DECKC, glowC: WHT }));
+    out.push(...pylon(-16, -47, { h: 7, r: 0.7, c: DARK, glowC: WHT, i: 1.3 }));
+    out.push(...pylon(16, -47, { h: 7, r: 0.7, c: DARK, glowC: WHT, i: 1.3 }));
+    return out;
+  };
+  const red = hall();
+  add(red, rot180(red));
+
+  /* ── Cover ─────────────────────────────────────────────────────────────────
+   * Authored once for the north-west and north-east of the deck and rotated,
+   * so the two halves are identical fights. Everything here is knee to chest
+   * high: on a map with four floors, anything taller starts blocking a sight
+   * line that another floor depends on.
+   * ────────────────────────────────────────────────────────────────────────*/
+  const clutter = () => {
+    const out = [];
+    for (const [px, pz] of [[-14, -32], [-20, -30], [-26, -40], [-32, -30],
+      [-13, -46], [-24, -50], [-33, -44], [-40, -30], [-30, -20], [-40, -14],
+      [-50, -32], [-16, -20], [-12, -12]]) {
+      out.push(...pod(px, pz, { c: DECKC, glowC: CYA }));
+    }
+    for (const [px, pz, w, d] of [[-22, -22, 6, 1.4], [-30, -36, 1.4, 7],
+      [-42, -22, 7, 1.4], [-18, -44, 1.4, 6]]) {
+      out.push(B(px, 0, pz, w, 1.25, d, PLATE, { mat: S.CONCRETE }));
+      out.push(G(px, 1.25, pz, w + 0.06, 0.09, d + 0.06, CYA, 1.4));
+    }
+    out.push(...pylon(-16, -16, { h: 5.4, r: 0.8, c: DARK, glowC: MAG, i: 1.4 }));
+    out.push(...pylon(-46, -46, { h: 7.5, r: 0.9, c: DARK, glowC: CYA, i: 1.4 }));
+    out.push(...holo(-30, 2.8, -12, { w: 8, h: 3.4, axis: 'x', c: MAG }));
+    return out;
+  };
+  const nwClutter = clutter();
+  const neClutter = nwClutter.map((b) => ({ ...b, x: -b.x }));
+  add(nwClutter, neClutter, rot180(nwClutter), rot180(neClutter));
+
+  /* ── Past the edge ────────────────────────────────────────────────────────
+   * The invisible boundary, and then a city that keeps going without us. Every
+   * one of these is decor: the point of the skyline is that the map does not
+   * end at a wall, it ends at a line you bump into once and stop thinking
+   * about — and at night a far-off tower with a light on it does that job far
+   * better than a near one with detail on it.
+   * ────────────────────────────────────────────────────────────────────────*/
+  add(bounds(128, 46));
+  add(skyline(96, { count: 34, seed: 137, palette: [FRAME, DARK, PLATE], h: [14, 46],
+    mat: S.METAL, roofC: FRAME }));
+  add(skyline(150, { count: 26, seed: 211, palette: [FRAME, 0x141a26], h: [22, 62],
+    mat: S.METAL, roofC: FRAME }));
+  // Beacons out in the city, at the top of the nearer towers.
+  {
+    let seed = 4919;
+    const rnd = () => ((seed = (Math.imul(seed ^ (seed >>> 15), 0x2545f491) + 0x9e3779b9) >>> 0) / 4294967296);
+    for (let i = 0; i < 22; i++) {
+      const ang = (i / 22) * Math.PI * 2 + rnd() * 0.3;
+      const dist = 96 + rnd() * 46;
+      add(G(Math.cos(ang) * dist, 16 + rnd() * 34, Math.sin(ang) * dist, 2.2, 2.2, 2.2,
+        rnd() > 0.5 ? MAG : CYA, 2.2));
+    }
+  }
+
+  return {
+    id: 'nova', name: 'Nova',
+    description: 'A night station under a pink-and-blue nebula. Four floors of it, '
+      + 'and a spiral up the reactor to the platform that sees all of them.',
+    size: 128, tags: ['large', 'vertical', 'night', 'futuristic'],
+    /*
+     * The sky is a shader here rather than a painted dome — `sky.nebula` is
+     * what switches the renderer over (client/js/world.js, `_buildNebulaSky`).
+     * Two gas fields drift past each other, stars twinkle behind them and a
+     * meteor crosses every few seconds, all of it derived from one clock so
+     * every screen in the match is looking at the same sky.
+     */
+    sky: {
+      top: 0x070a1a, bottom: 0x2a1042, haze: 0x3d1a55,
+      nebula: { warm: 0xff4fa3, cool: 0x3f86ff, density: 1.05, speed: 1 },
+    },
+    fog: { color: 0x1d1533, near: 78, far: 260 },
+    /*
+     * There is no sun. What this is, is the nebula: a broad cool light from
+     * high and behind, dim enough to read as night and directional enough that
+     * every box still has a lit face and a dark one — without which a map made
+     * of boxes is a map made of silhouettes.
+     */
+    sun: { dir: [-0.32, 0.86, 0.4], color: 0x9db4ff, intensity: 0.92 },
+    /*
+     * …and the ambient carries the rest, which is where a night map is won or
+     * lost. Too little and the level is unreadable; too much and the neon stops
+     * being the brightest thing in the frame and the whole art direction goes
+     * with it. This sits just under the point where the strips stop reading as
+     * light sources.
+     */
+    ambient: { color: 0x6f63b4, intensity: 1.05 },
+    ground: { color: 0x171d2b, size: 420, mat: S.TILE },
+    boxes,
+    /*
+     * Every one of these faces the reactor.
+     *
+     * `yaw` is Math.atan2(x, z) for a body at (x, z) looking at the origin —
+     * the movement code's own convention, where a yaw of zero looks down -Z. A
+     * spawn is a player's first frame of the match, and pointing it at the one
+     * landmark on the map is the difference between knowing where you are
+     * immediately and turning on the spot to find out.
+     */
+    spawns: {
+      ffa: [
+        [0, 0.3, -50, Math.PI], [0, 0.3, 50, 0], [-50, 0.3, 0, -1.571], [50, 0.3, 0, 1.571],
+        [-36, RTOP + 0.2, -36, -2.356], [36, RTOP + 0.2, 36, 0.785],
+        [36, RTOP + 0.2, -36, 2.356], [-36, RTOP + 0.2, 36, -0.785],
+        [-44, 0.3, -12, -1.834], [44, 0.3, 12, 1.307],
+        [0, RTOP + 0.2, -22, Math.PI], [0, RTOP + 0.2, 22, 0],
+      ],
+      red: [
+        [-6, 0.3, -52, 3.03], [6, 0.3, -52, -3.03], [-11, 0.3, -47, 2.91], [11, 0.3, -47, -2.91],
+        [-36, RTOP + 0.2, -36, -2.356],
+      ],
+      blue: [
+        [6, 0.3, 52, 0.115], [-6, 0.3, 52, -0.115], [11, 0.3, 47, 0.23], [-11, 0.3, 47, -0.23],
+        [36, RTOP + 0.2, 36, 0.785],
+      ],
+    },
+    /*
+     * A and C sit out on the deck by the hangars, where the fight is a normal
+     * one; B is the reactor plinth, which anybody can reach from any of the
+     * four avenues and nobody can hold, because four floors are looking down
+     * into it. That is deliberately the least defensible point on the map.
+     */
+    objectives: [
+      { id: 'A', x: -38, y: 0.2, z: -18 },
+      { id: 'B', x: 0, y: 1.4, z: 0 },
+      { id: 'C', x: 38, y: 0.2, z: 18 },
+    ],
+  };
+}
+
+/**
  * RANGE — the practice map. No enemies unless you ask for them: a firing line,
  * a movement course and a wall of targets to learn a spray pattern against.
  */
@@ -1564,10 +2297,10 @@ function range() {
 /* ── Registry ────────────────────────────────────────────────────────────── */
 
 const _cache = new Map();
-const BUILDERS = { littletown, burgtown, sandstorm, shipyard, subzero, crossfire, range };
+const BUILDERS = { littletown, burgtown, sandstorm, shipyard, subzero, crossfire, nova, range };
 
 /** Maps that appear in normal rotation (the range is opt-in only). */
-export const MAP_IDS = ['littletown', 'burgtown', 'crossfire', 'sandstorm', 'shipyard', 'subzero'];
+export const MAP_IDS = ['littletown', 'burgtown', 'crossfire', 'sandstorm', 'shipyard', 'subzero', 'nova'];
 export const ALL_MAP_IDS = Object.keys(BUILDERS);
 
 /** Build (and memoise) a map by id. */

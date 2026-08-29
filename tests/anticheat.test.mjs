@@ -332,21 +332,62 @@ export default function run() {
       Math.abs(far.a.rtt - 0.30) < 0.01 && (far.a.cheat.counts.lag ?? 0) === 0,
       `${Math.round(far.room.rewindFor(far.a) * 1000)}ms rewind, no flag`);
 
-    // The cheat: `net.ping` rewritten to report 300 ms it does not have.
+    /*
+     * A line that is genuinely unstable, which is what this check kept
+     * mistaking for a cheat.
+     *
+     * The two numbers being compared are medians of different halves of
+     * different round trips, one timed at each end. On a connection swinging
+     * between 60 ms and 400 ms they disagree all evening without anybody lying
+     * about anything — and the check used to run on *both* halves of every
+     * heartbeat at eight points a time, which out-accumulated the decay four to
+     * one. A player riding a train was reaching a kick in eight seconds.
+     */
+    const jittery = arena('ac-lag-jitter');
+    const swing = [0.06, 0.34, 0.09, 0.41, 0.07, 0.28, 0.38, 0.05, 0.30, 0.11,
+      0.36, 0.08, 0.26, 0.40, 0.06, 0.33, 0.12, 0.29, 0.07, 0.37,
+      0.10, 0.31, 0.05, 0.39, 0.08, 0.27, 0.35, 0.06, 0.32, 0.09];
+    for (let i = 0; i < swing.length; i++) {
+      // What such a client honestly reports: a median of its own last eight
+      // trips, which is not the same eight the server took a median of.
+      const seen = swing.slice(Math.max(0, i - 7), i + 1).sort((x, y) => x - y);
+      heartbeat(jittery.room, jittery.a, {
+        rtt: swing[i], claimMs: Math.round(seen[seen.length >> 1] * 1000),
+      });
+    }
+    check('a line swinging between 50 and 400ms is never a cheat',
+      (jittery.a.cheat.counts.lag ?? 0) === 0,
+      `${swing.length} heartbeats, jitter ±${Math.round(jittery.a.rttJitter() * 1000)}ms, `
+      + `${jittery.a.cheat.counts.lag ?? 0} flags`);
+
+    // The cheat: `net.ping` rewritten to report 300 ms it does not have. It has
+    // to keep saying it — one disagreement is jitter, and a run of them all in
+    // the same direction is the only thing a made-up constant can produce.
     const liar = arena('ac-lag-liar');
-    for (let i = 0; i < 8; i++) heartbeat(liar.room, liar.a, { rtt: 0.04, claimMs: 300 });
+    const liarBeats = K.RTT_SAMPLES + K.CHEAT_LAG_STREAK + 1;
+    for (let i = 0; i < liarBeats; i++) heartbeat(liar.room, liar.a, { rtt: 0.04, claimMs: 300 });
     check('a claimed round trip moves nothing',
       Math.abs(liar.a.rtt - 0.04) < 0.005, `still ${Math.round(liar.a.rtt * 1000)}ms`);
     check('the rewind stays where the measurement puts it',
       Math.abs(liar.room.rewindFor(liar.a) - (0.04 / 2 + K.INTERP_DELAY)) < 0.006,
       `${Math.round(liar.room.rewindFor(liar.a) * 1000)}ms`);
-    check('and the claim is recorded against the connection',
-      (liar.a.cheat.counts.lag ?? 0) > 0, `${liar.a.cheat.counts.lag} claims`);
+    check('and a run of the same claim is recorded against the connection',
+      (liar.a.cheat.counts.lag ?? 0) > 0,
+      `${liar.a.cheat.counts.lag} flags after ${liarBeats} heartbeats`);
+
+    // …but not before the run is long enough to mean something. Half a streak
+    // of disagreement is a bad minute on a bad line.
+    const brief = arena('ac-lag-brief');
+    for (let i = 0; i < K.RTT_SAMPLES + (K.CHEAT_LAG_STREAK >> 1); i++) {
+      heartbeat(brief.room, brief.a, { rtt: 0.04, claimMs: 300 });
+    }
+    check('a short run of it is not', (brief.a.cheat.counts.lag ?? 0) === 0,
+      `${K.CHEAT_LAG_STREAK >> 1} disagreeing samples, no flag`);
 
     // The harder version: sit on the acknowledgement instead of lying about it.
     // It is bounded by MAX_LAG_COMP either way, and it is still a flag.
     const staller = arena('ac-lag-stall');
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < liarBeats; i++) {
       heartbeat(staller.room, staller.a, { rtt: 0.04, claimMs: 40, ackDelay: 0.3 });
     }
     check('and sitting on the acknowledgement is one too',
@@ -632,5 +673,110 @@ export default function run() {
       a.cheat.incidents === 0 && a.cheat.score === 0,
       JSON.stringify(a.cheat.summary()));
     check('and the shots landed', b.health < K.MAX_HEALTH, `${Math.round(b.health)} hp left`);
+  }
+
+  /* ── A bad connection is not a cheat ─────────────────────────────────────
+   * Three of the seven checks are downstream of *arrival times* rather than of
+   * packet contents, and arrival times on a lossy line are not a measurement of
+   * the client at all: TCP holds a stalled stream and hands over the whole
+   * backlog the moment it clears. Every case below is a real connection doing
+   * something entirely normal, and every one of them used to be flagged.
+   * ──────────────────────────────────────────────────────────────────────── */
+  suite('Anti-cheat — lag is not cheating');
+  {
+    // A two-second stall, then everything the client queued during it arriving
+    // in one frame. This is the single most common shape on a mobile network.
+    const { room, a } = arena('ac-stall');
+    let seq = 0;
+    const burst = [];
+    for (let i = 0; i < 120; i++) burst.push([++seq, KEY.FWD, 0, 0]);
+    for (let i = 0; i < burst.length; i += K.MAX_INPUTS_PER_PACKET) {
+      room.onInput(a, { i: burst.slice(i, i + K.MAX_INPUTS_PER_PACKET) });
+    }
+    check('a two-second backlog delivered in one frame is not a speed hack',
+      (a.cheat.counts.speed ?? 0) === 0 && (a.cheat.counts.rate ?? 0) === 0,
+      `${a.inputQueue.length} queued, ${a.cheat.incidents} incidents`);
+
+    // …and it drains. Which is the whole difference: a stall catches up, a
+    // speed hack never does, and only the second one is ever counted.
+    for (let tick = 0; tick < 240; tick++) {
+      room.tick(K.TICK_DT);
+      if (tick % 2 === 0) room.onInput(a, { i: [[++seq, KEY.FWD, 0, 0]] });
+    }
+    check('and once it has drained the connection is clean again',
+      (a.cheat.counts.speed ?? 0) === 0 && a.inputQueue.length <= K.MAX_INPUTS_PER_PACKET,
+      `${a.inputQueue.length} queued after catching up`);
+
+    // A flurry of packets — a stall's worth arriving inside one second — is a
+    // burst, and the burst is explicitly forgiven. Only a client that never
+    // stops sending them fills the bucket.
+    const flood = arena('ac-flood');
+    let fseq = 0;
+    for (let i = 0; i < 140; i++) flood.room.onInput(flood.a, { i: [[++fseq, 0, 0, 0]] });
+    check('a second of held-back packets arriving at once is not a flood',
+      (flood.a.cheat.counts.rate ?? 0) === 0,
+      `140 packets in one second, ${flood.a.cheat.counts.rate ?? 0} flags`);
+
+    // The 144 fps flick, which is the aim check's own false positive: the view
+    // rides a simulation tick, the trigger is pulled on a frame, and above
+    // 60 fps there are frames with no tick in them — so the mouse has moved
+    // through a whole tick nothing described by the time the shot goes out.
+    const fast = arena('ac-flick-fps');
+    let vseq = 0, flagged = 0;
+    let vyaw = 0;
+    const TURN = 12;                               // rad/s — a hard flick
+    for (let frame = 0; frame < 400; frame++) {
+      const dt = 1 / 144;
+      vyaw += TURN * dt;
+      // Two frames in three carry no tick at 144 fps: the input stream is a
+      // third of the frame rate, and the shot lands on one of the other two.
+      if (frame % 3 === 0) {
+        fast.room.onInput(fast.a, { i: [[++vseq, 0, vyaw, 0.1]] });
+      }
+      if (frame % 12 === 0) {
+        ready(fast.room, fast.a);
+        const before = fast.a.cheat.counts.aim ?? 0;
+        fast.room.onShoot(fast.a, { y: vyaw, p: 0.1, n: fast.a.shotSeq + 1 });
+        if ((fast.a.cheat.counts.aim ?? 0) > before) flagged++;
+      }
+      fast.room.tick(dt);
+    }
+    check('flicking at 144 fps is not silent aim',
+      flagged === 0, `${flagged} of 34 shots flagged, turning ${TURN} rad/s`);
+  }
+
+  /* ── The report a person has to read ─────────────────────────────────────
+   * A queue entry nobody can act on is a queue entry that gets closed with "no
+   * action", which is the same as never having filed it.
+   * ──────────────────────────────────────────────────────────────────────── */
+  suite('Anti-cheat — the report body');
+  {
+    const { room, a } = arena('ac-report');
+    a.userId = 'u-test';
+    room.now += 12;
+    ac.flag(a, 'aim', 'shot 173.4\u00b0 off the streamed view (allowed 6.1\u00b0)', null, room.now);
+    room.now += 30;
+    ac.flag(a, 'aim', 'shot 179.9\u00b0 off the streamed view (allowed 5.9\u00b0)', null, room.now);
+    ac.flag(a, 'seq', 'skipped 160 of its own shot sequences', null, room.now);
+    a.cheat.worstRtt = 0.21;
+    a.cheat.worstJitter = 0.06;
+    const body = ac.reportBody(room, a, 'aim');
+
+    check('it names the kind in words before it names it in code',
+      body.includes(K.CHEAT_KIND_INFO.aim.title) && body.includes('(aim)'));
+    check('it says what a cheat doing this would be buying',
+      body.includes('Silent aim'));
+    check('it answers the question that settles most of these — could lag do it',
+      /Can a bad connection cause it\?/.test(body));
+    check('it quotes the first and the last piece of evidence, not just one',
+      body.includes('173.4') && body.includes('179.9'));
+    check('it says when it started and when it stopped',
+      /First .* before the disconnect, last .* before it\./.test(body));
+    check('it prints the connection that was live while it happened',
+      body.includes('210ms') && body.includes('60ms'));
+    check('every kind seen is listed, not only the one that tripped it',
+      body.includes(K.CHEAT_KIND_INFO.seq.title));
+    check('and it fits in the column the queue stores it in',
+      body.length < 4000, `${body.length} characters`);
   }
 }

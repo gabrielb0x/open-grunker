@@ -1616,7 +1616,17 @@ export const reports = {
       String(o.targetName ?? 'unknown').slice(0, 32),
       o.targetIp ? normaliseIp(o.targetIp) : null,
       String(o.reason ?? 'other').slice(0, 24),
-      o.detail ? String(o.detail).slice(0, 400) : null,
+      /*
+       * Room for a page, not a sentence.
+       *
+       * A player's own words are already clipped to REPORT_DETAIL_MAX (300) by
+       * the handler that takes them, so this ceiling is not what bounds user
+       * input — it bounds the *automatic* reports the anti-cheat writes, which
+       * are a structured page explaining what was refused and why. Those were
+       * being cut off mid-evidence at 400 characters, which is how a report
+       * ends up saying "aim×14 (shot 173.4° off the strea".
+       */
+      o.detail ? String(o.detail).slice(0, 4000) : null,
       o.room ? String(o.room).slice(0, 40) : null,
       o.mode ? String(o.mode).slice(0, 24) : null,
       o.map ? String(o.map).slice(0, 40) : null,

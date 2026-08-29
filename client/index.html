@@ -108,6 +108,10 @@
       <div class="hp-stack">
         <div class="hp-num" id="hpNum">100</div>
         <div class="hp-bar"><span id="hpFill"></span><i id="hpGhost"></i></div>
+        <!-- What kind of player this is, in the mode that has kinds. Hidden
+             outright everywhere else: an empty element still takes its margin,
+             and every other mode would carry a gap for a feature it lacks. -->
+        <div class="perk-chip hidden" id="perkChip"><b id="perkName" data-i18n-skip>TROOPER</b></div>
       </div>
     </div>
     <div class="lvl-wrap">
@@ -202,6 +206,11 @@
       <button type="button" class="kc-skip" id="kcSkip" disabled>
         <span class="kc-skip-fill" id="kcSkipFill"></span>
         <span class="kc-skip-label" id="kcSkipLabel">SKIP IN 3</span>
+        <!-- Which key or button actually does it. Filled by hud.refreshHints
+             from the live binding, so it says SPACE on a keyboard and A on a
+             controller — the two are the same action and always have been. A
+             pad player used to have no way past this card but the mouse. -->
+        <kbd class="kc-skip-key" id="kcSkipKey" data-i18n-skip>SPACE</kbd>
       </button>
       <div class="kc-hint" id="kcDirector"></div>
     </div>
@@ -1511,6 +1520,23 @@
     <h3>CHOOSE YOUR CLASS</h3>
     <div id="classGridModal" class="class-grid"></div>
     <p class="modal-note">Out of combat the swap is instant — otherwise it lands on your next respawn.</p>
+  </div>
+</div>
+
+<!-- ══ Perk picker ══════════════════════════════════════════════════════
+     Only ever opened in the Perks mode, and opened for you at the start of
+     every match in it — the choice belongs to the match, not to the account.
+     Every card is a pair of lists: what this body is better at than anybody,
+     and what it pays for it. There is no "balanced" card on purpose; see the
+     block above PERKS in shared/constants.js.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div id="perkModal" class="modal hidden">
+  <div class="modal-card wide">
+    <button class="modal-x" id="perkClose">×</button>
+    <h3>WHAT KIND OF PLAYER ARE YOU?</h3>
+    <div id="perkGrid" class="perk-grid"></div>
+    <p class="modal-note">Out of combat the swap is instant — otherwise it lands on your
+      next respawn. You can change it any time; the match asks again when the next one starts.</p>
   </div>
 </div>
 

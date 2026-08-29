@@ -97,6 +97,13 @@ export const ACTIONS = [
   // actions may not share a default, it would have had to be a different key
   // from the one every player's hand is already on.
   //
+  // That covers the pad as well, and did not used to: the gamepad layer only
+  // fired the *discrete* actions on a press and left held ones like this to be
+  // polled, so a controller had no way past the cam except to reach for the
+  // mouse. It reports the edge now (input.js, `_padDown`), so A skips it for
+  // exactly the same reason Space does, and the button on the card names
+  // whichever of the two is in the player's hands.
+  //
   // Nothing by default: developer mode is a level-10 unlock most accounts will
   // never open, and a key it does not use is a key it should not be holding.
   { id: 'devMode', group: 'Interface', label: 'Developer overlays', keys: ['', '', ''] },

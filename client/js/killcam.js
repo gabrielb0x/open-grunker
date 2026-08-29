@@ -19,7 +19,10 @@
  *   the camera   the killer's own eye and view angles, sampled straight out of
  *                that buffer — so a flick they made is the flick you see —
  *                handed back to main.js as a position and a rotation rather
- *                than applied here. main.js owns the camera.
+ *                than applied here. main.js owns the camera. Three filters sit
+ *                between the buffer and that hand-off, and the block by
+ *                `POV_POS_TAU` explains what each of them is for; between them
+ *                they are the difference between a replay and a slideshow.
  *   the overlay  the DOM card the HUD draws. This module decides what is *on*
  *                it and when it may be skipped; hud.js decides how it looks.
  *   the anthem   fetched on the first death to a given player, decoded once,
@@ -87,6 +90,51 @@ const ORBIT_RADIUS = 4.6;
 const ORBIT_HEIGHT = 2.4;
 /** Radians per second. A quarter turn over the ten seconds — a drift, not a spin. */
 const ORBIT_SPEED = 0.16;
+
+/* ── Smoothing ───────────────────────────────────────────────────────────────
+ *
+ * Three separate sources of judder, and each one needs its own answer. Every
+ * constant below is a *time constant* in seconds — how long the filter takes to
+ * close most of a gap — rather than a per-frame factor, because a per-frame
+ * factor means something different at 60 fps and at 240.
+ *
+ *  1. The snapshot grid. The server broadcasts thirty times a second, and a
+ *     straight line between two of those changes direction at every one of
+ *     them. Fixed in entities.js by fitting a cubic instead; nothing here can
+ *     help with it, because the kink is in the data.
+ *
+ *  2. The player's own head. A first-person view carries the killer's landing
+ *     jolts, strafe snaps and every twitch of their mouse — all of it real, all
+ *     of it recorded, and all of it unwatchable when you are strapped inside
+ *     their skull for ten seconds with no control over where it goes. A light
+ *     low-pass takes the edge off the highest frequencies while leaving the
+ *     movement that reads as *them*: a flick still snaps, it just does not ring.
+ *
+ *  3. The playback clock, which is deliberately *not* filtered — and this is
+ *     worth writing down, because smoothing it is the obvious third move and it
+ *     is wrong. The head advances by the real frame time, so what is drawn
+ *     always matches how much time has actually passed; a long frame shows a
+ *     bigger step because a bigger step is what happened. Feeding it a smoothed
+ *     dt decouples the two, and an exponential average of frame times is biased
+ *     upward besides — it weights each sample by its own length, so a stream of
+ *     8 ms frames with an occasional 31 ms one settles at 14 ms and the replay
+ *     runs half again as fast as the match it is replaying. main.js already
+ *     clamps dt to 100 ms, which is the only protection a hitch needs.
+ * ──────────────────────────────────────────────────────────────────────────*/
+
+/** Time constant for the replay camera's position, in seconds. */
+const POV_POS_TAU = 0.055;
+/** …and for its view angles, which want to stay tighter or a flick feels mushy. */
+const POV_ROT_TAU = 0.035;
+/**
+ * A jump bigger than this is a cut, not a movement: the killer teleported
+ * (respawned, or the sampler crossed a gap in the buffer). The filter is
+ * dropped for that frame rather than sliding the camera across the map.
+ */
+const POV_SNAP = 6;                              // metres
+
+/** Frame-rate independent low-pass: how much of the gap to close this frame. */
+const closing = (dt, tau) => 1 - Math.exp(-dt / Math.max(1e-4, tau));
 
 /**
  * Less replay than this is not worth cutting to.
@@ -271,6 +319,13 @@ export class KillCam {
       replayTo,
       /** Where the camera was on the last frame of the replay, to ease out of. */
       handoff: null,
+      /**
+       * The filtered camera, carried between frames.
+       *
+       * Null until the first replay frame places it, so the cam opens exactly on
+       * the killer's eye rather than sliding onto it from the origin.
+       */
+      pov: null,
       // Where the body was standing when we died, so a killer who walks off —
       // or is killed themselves mid-cam — leaves the camera somewhere sensible
       // rather than snapping back to the corpse.
@@ -331,11 +386,14 @@ export class KillCam {
    * rules put it. That is the correct failure: a cam that cannot find its
    * subject should get out of the way, not point at the origin.
    *
-   * Two shapes come back. The replay half returns `rot`, the killer's own view
-   * angles, which main.js sets on the camera directly — a `lookAt` cannot
-   * reproduce a view that is pointing straight up, and being unable to look
-   * straight up is not a property a first-person camera may have. The orbit
-   * half returns `at`, a point to aim at, and no rotation.
+   * Both halves return `rot` — yaw and pitch, which main.js sets on the camera
+   * directly. The replay needs it because a `lookAt` cannot reproduce a view
+   * pointing straight up, and being unable to look straight up is not a
+   * property a first-person camera may have. The orbit needs it because a
+   * `lookAt` is a hard set, and on the frame the replay hands over that meant
+   * the position eased across while the orientation cut — a whip pan on the one
+   * frame nobody expects one. `at` still comes back with it, for anything that
+   * wants to know what the shot is pointed at rather than how.
    *
    * `world` is optional and is the shared physics World. Without it the orbit
    * is geometric and will happily put the camera inside a wall; with it, the
@@ -361,7 +419,7 @@ export class KillCam {
     const stopAt = settings.killCamHold ? shot.seconds : shot.skipAfter;
     if (shot.elapsed >= stopAt) { this.end(); return null; }
 
-    const pov = this._pov(entities);
+    const pov = this._pov(entities, dt);
     if (pov) return pov;
 
     return this._orbit(dt, entities, deathPos, world);
@@ -375,17 +433,59 @@ export class KillCam {
    * interpolates the bodies, so reading the entity would draw a view one frame
    * behind the world it is looking at.
    */
-  _pov(entities) {
+  _pov(entities, dt) {
     const t = this.replayTime;
     if (t === null || !entities?.sampleAt) return null;
-    const s = entities.sampleAt(this.shot.targetId, t);
+    // `true` asks for the cubic rather than the straight line between
+    // snapshots. It costs two extra map lookups per frame and it is the whole
+    // difference between a replay and a slideshow — see entities.js, `catmull`.
+    const s = entities.sampleAt(this.shot.targetId, t, true);
     // The killer left the room mid-replay, taking their half of the buffer
     // with them. The orbit cannot find them either, and both say so by
     // answering null; the death screen takes over.
     if (!s) return null;
-    const from = { x: s.x, y: s.y + s.height - K.EYE_OFFSET, z: s.z };
-    this.shot.handoff = from;
-    return { from, rot: { yaw: s.yaw, pitch: s.pitch }, replay: true };
+
+    const want = { x: s.x, y: s.y + s.height - K.EYE_OFFSET, z: s.z };
+    const shot = this.shot;
+    /*
+     * The low-pass, and why the camera is not simply put where the killer's
+     * head was.
+     *
+     * Because the killer's head is not a camera. It lands from jumps, it snaps
+     * between strafes, and it carries every correction their mouse made — all
+     * of which is real, all of which was recorded, and all of which is
+     * unwatchable from inside their skull for ten seconds with no control over
+     * where it points. Taking the top off those frequencies leaves everything
+     * that reads as *them* and removes the part that reads as a fault.
+     */
+    if (!shot.pov) {
+      shot.pov = { x: want.x, y: want.y, z: want.z, yaw: s.yaw, pitch: s.pitch };
+    } else {
+      const p = shot.pov;
+      // A jump this big is a cut, not a movement — the killer respawned, or the
+      // sampler crossed a hole in the buffer. Filtering across it would slide
+      // the camera through the level; snapping is the honest answer.
+      if (Math.hypot(want.x - p.x, want.y - p.y, want.z - p.z) > POV_SNAP) {
+        p.x = want.x; p.y = want.y; p.z = want.z; p.yaw = s.yaw; p.pitch = s.pitch;
+      } else {
+        const kp = closing(dt, POV_POS_TAU);
+        p.x += (want.x - p.x) * kp;
+        p.y += (want.y - p.y) * kp;
+        p.z += (want.z - p.z) * kp;
+        const kr = closing(dt, POV_ROT_TAU);
+        // Shortest way round, or a yaw crossing ±π spins the camera the long
+        // way home over the next few frames.
+        let d = s.yaw - p.yaw;
+        while (d > Math.PI) d -= Math.PI * 2;
+        while (d < -Math.PI) d += Math.PI * 2;
+        p.yaw += d * kr;
+        p.pitch += (s.pitch - p.pitch) * kr;
+      }
+    }
+
+    const from = { x: shot.pov.x, y: shot.pov.y, z: shot.pov.z };
+    shot.handoff = from;
+    return { from, rot: { yaw: shot.pov.yaw, pitch: shot.pov.pitch }, replay: true };
   }
 
   /**
@@ -432,13 +532,49 @@ export class KillCam {
       z: look.z + Math.sin(shot.angle) * ORBIT_RADIUS,
     };
     const start = shot.settleFrom;
-    const from = start ? {
+    const want = start ? {
       x: start.x + (orbit.x - start.x) * ease,
       y: (start.y + 1.4) + (orbit.y - (start.y + 1.4)) * ease,
       z: start.z + (orbit.z - start.z) * ease,
     } : orbit;
+    /*
+     * `pullIn` is the last word on where the camera stands, and deliberately so.
+     *
+     * A low-pass on top of it was tried and reverted. It removes the one step
+     * the orbit still has — the frame the wall ray changes its mind, when the
+     * killer walks out from behind a pillar — but it does that by putting the
+     * camera somewhere `pullIn` did not choose, and the whole job of `pullIn`
+     * is that the place it chooses is *out of the wall*. A filtered camera
+     * clips through geometry for as long as the filter is catching up, which is
+     * a much worse frame than a hard cut. The smoothing that a shot like this
+     * actually wants is on where it points, and that is below.
+     */
+    const from = pullIn(at, want, world);
 
-    return { from: pullIn(at, from, world), at, replay: false };
+    /*
+     * The orbit points itself, rather than handing main.js a `lookAt`.
+     *
+     * `lookAt` is a hard set: on the frame the replay hands over, the camera's
+     * *position* eased across but its *orientation* cut, which is a whip pan on
+     * the one frame nobody is expecting one. Computing the same aim as yaw and
+     * pitch lets it be blended out of whatever the replay left, over the same
+     * eased window the position uses — so the whole handover is one move.
+     */
+    const dx = at.x - from.x, dy = at.y - from.y, dz = at.z - from.z;
+    const len = Math.hypot(dx, dy, dz) || 1;
+    const aim = {
+      yaw: Math.atan2(-dx / len, -dz / len),
+      pitch: Math.asin(Math.max(-1, Math.min(1, dy / len))),
+    };
+    if (shot.pov) {
+      let d = aim.yaw - shot.pov.yaw;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      aim.yaw = shot.pov.yaw + d * ease;
+      aim.pitch = shot.pov.pitch + (aim.pitch - shot.pov.pitch) * ease;
+    }
+
+    return { from, at, rot: aim, replay: false };
   }
 
   /** Everything the overlay needs, or null. Pure read — safe to call per frame. */

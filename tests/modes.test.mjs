@@ -9,6 +9,8 @@ import { Room } from '../server/game/room.js';
 import { Player } from '../server/game/player.js';
 import * as K from '../shared/constants.js';
 import { getMap } from '../shared/maps.js';
+import { World } from '../shared/physics.js';
+import { step, createState, KEY } from '../shared/movement.js';
 import { spreadFor } from '../shared/weapons.js';
 import { suite, check, info } from './harness.mjs';
 
@@ -339,4 +341,203 @@ export default function run() {
     for (let i = 0; i < 200 && nk.state === 'live'; i++) nk.tick(K.TICK_DT);
     return nk.state === 'intermission';
   })(), `state ${nk.state}`);
+
+  /* ── Perks ─────────────────────────────────────────────────────────────────
+   *
+   * The mode where the body is the choice. Every check below is the same
+   * question asked of a different system: does the number the perk promises
+   * actually reach the place that decides the fight, and does it reach *only*
+   * that place — a perk that leaked into Team Deathmatch would be a silent
+   * balance change to every other mode in the game.
+   * ────────────────────────────────────────────────────────────────────────*/
+
+  suite('Perks — the trade');
+
+  const pk = makeRoom({ id: 'test-perks', mapId: 'nova', modeId: 'perks' });
+  const runner = addHuman(pk, 'Runner', 201);
+  const jug = addHuman(pk, 'Jug', 202);
+  /** Picks a perk the way a player out of combat does: cleanly, at once. */
+  const pick = (p, id) => {
+    p.lastCombatAt = -999;
+    pk.onPerkChange(p, { p: id });
+  };
+
+  check('everybody starts on the default, and nobody starts having chosen',
+    runner.perkOn && runner.perkId === K.DEFAULT_PERK && !runner.perkChosen,
+    `${K.PERK_IDS.length} perks, default ${K.DEFAULT_PERK}`);
+
+  check('choosing one changes what the body *is*, not what it carries', (() => {
+    pick(runner, 'runner');
+    const p = K.getPerk('runner');
+    return runner.perkId === 'runner'
+      && runner.maxHealth === Math.round(K.MAX_HEALTH * p.health)
+      && Math.abs(runner.speedMult(false) - p.speed) < 1e-9;
+  })(), `Runner: ${runner.maxHealth} hp, ${runner.speedMult(false).toFixed(2)}× speed`);
+
+  check('and the movement it hands the shared step is the whole of its physics', (() => {
+    const opts = runner.moveOpts(false);
+    const p = K.getPerk('runner');
+    return opts.hopKeep === p.hopKeep && opts.airMax === p.airMax && opts.jumpMult === p.jump;
+  })(), JSON.stringify(runner.moveOpts(false)));
+
+  check('a Runner really does hop faster, and it is the air cap that lets them', (() => {
+    // The same strafe-hop the movement suite uses, run twice: once with no
+    // perk and once with Runner's. A plain body tops out at MAX_AIR_SPEED; the
+    // whole of Runner's upside is that its ceiling is higher and its hops stop
+    // bleeding into it.
+    const flat = new World({ boxes: [], solids: [], size: 400, ground: { size: 400 } });
+    const tap = (keys, tick) => (tick % 2 === 0 ? keys : keys & ~KEY.JUMP);
+    const top = (opts) => {
+      const s = createState(0, 0.5, 0, 0);
+      let yaw = 0;
+      for (let i = 0; i < 900; i++) {
+        yaw += 1.05 * K.TICK_DT;
+        step(s, { keys: tap(KEY.FWD | KEY.RIGHT | KEY.JUMP, i), yaw, pitch: 0 }, flat, K.TICK_DT, opts);
+      }
+      return Math.hypot(s.vx, s.vz);
+    };
+    const plain = top({ speedMult: 1 });
+    const fast = top(runner.moveOpts(false));
+    info(`plain tops out at ${plain.toFixed(1)} u/s, a Runner at ${fast.toFixed(1)} u/s`);
+    return Math.abs(plain - K.MAX_AIR_SPEED) < 0.5
+      && fast > plain * 1.25;
+  })());
+
+  check('two perks meet on every bullet, and neither player has to know the other', (() => {
+    pick(runner, 'marksman');
+    pick(jug, 'juggernaut');
+    jug.health = jug.maxHealth;
+    jug.protectedUntil = -1;
+    const before = jug.health;
+    pk.applyHit(runner, jug, 100, false, runner.weaponDef, { x: 0, y: 0, z: 0 }, {});
+    const dealt = before - jug.health;
+    const want = Math.round(Math.round(100 * K.getPerk('marksman').damage) * K.getPerk('juggernaut').taken);
+    info(`100 raw → ${dealt} through a Marksman's gun into a Juggernaut (expected ${want})`);
+    return dealt === want && jug.maxHealth === Math.round(K.MAX_HEALTH * 1.9);
+  })());
+
+  check('a Berserker never regenerates a single point', (() => {
+    pick(runner, 'berserker');
+    runner.alive = true;
+    runner.health = 40;
+    runner.lastDamageAt = -999;
+    runner.regen(100, 10);
+    return runner.health === 40;
+  })(), `${runner.health} hp after ten seconds untouched`);
+
+  check('…and a Medic is healing again before anybody else has stopped bleeding', (() => {
+    pick(runner, 'medic');
+    runner.alive = true;
+    runner.health = 40;
+    // Two seconds since the last hit: under the ordinary delay, over the
+    // Medic's. This is the whole of what the perk buys.
+    runner.lastDamageAt = 98;
+    runner.regen(100, 1);
+    const healed = runner.health - 40;
+    const ordinary = (() => {
+      pick(runner, 'trooper');
+      runner.health = 40;
+      runner.lastDamageAt = 98;
+      runner.regen(100, 1);
+      return runner.health - 40;
+    })();
+    info(`Medic recovers ${healed.toFixed(1)} hp where a Trooper recovers ${ordinary.toFixed(1)}`);
+    return healed > 20 && ordinary === 0;
+  })());
+
+  check('a Scavenger holds a bigger magazine, and a kill fills it', (() => {
+    /*
+     * Deliberately the *magazine* and not the reserve. Reserves are unlimited
+     * across the whole game (INFINITE_AMMO), so a perk that handed out spare
+     * ammunition would have been a card promising something that could not
+     * happen — what actually costs a fight is being the one who has to reload.
+     */
+    pick(jug, 'scavenger');
+    pk.respawn(jug, true);
+    const w = jug.weapon;
+    const mag = jug.magOf(w);
+    const bigger = mag === Math.max(1, Math.round(w.def.magSize * K.getPerk('scavenger').mag));
+    const spawnedFull = w.ammo === mag;
+    w.ammo = 3;
+    scriptKill(pk, jug, runner);
+    info(`magazine ${w.def.magSize} → ${mag}, and a kill took it from 3 to ${w.ammo}`);
+    return bigger && mag > w.def.magSize && spawnedFull && w.ammo === mag;
+  })());
+
+  check('…and the room refuses a reload it has already filled', (() => {
+    const w = jug.weapon;
+    w.ammo = jug.magOf(w);
+    w.reloading = false;
+    pk.onReload(jug);
+    // A gun the *weapon* thinks is over-full is a gun the old check would have
+    // refused to reload from the moment the magazine passed thirty.
+    const refusedWhenFull = !w.reloading;
+    w.ammo = w.def.magSize;                       // full by the weapon, not by us
+    pk.onReload(jug);
+    return refusedWhenFull && w.reloading;
+  })(), 'a bigger magazine is not a permanently full one');
+
+  check('the cone a perk narrows is the one the pellets are actually drawn from', (() => {
+    // Client and server both call `spreadFor` with the shooter's own multiplier
+    // and derive pellet directions from the result: a cone the two disagreed
+    // about would draw a tracer where nothing was fired.
+    const w = runner.weaponDef;
+    const plain = spreadFor(w, { moving: true, burst: 4 });
+    const keen = spreadFor(w, { moving: true, burst: 4, mult: K.getPerk('marksman').spread });
+    return Math.abs(keen - plain * K.getPerk('marksman').spread) < 1e-12 && keen < plain;
+  })());
+
+  suite('Perks — and nowhere else');
+
+  check('no other mode has them at all', (() => {
+    const plain = makeRoom({ id: 'test-noperks', mapId: 'crossfire', modeId: 'tdm' });
+    const p = addHuman(plain, 'Ordinary', 203);
+    // The field exists on every player in every mode so the damage path has no
+    // null check; what must not exist anywhere else is its *effect*.
+    p.perkId = 'runner';
+    const untouched = !p.perkOn && p.maxHealth === K.MAX_HEALTH
+      && p.speedMult(false) === 1
+      && p.moveOpts(false).hopKeep === K.HOP_SPEED_KEEP
+      && p.moveOpts(false).airMax === 1;
+    plain.onPerkChange(p, { p: 'juggernaut' });
+    const refused = p.perkId === 'runner'
+      && plain.messages.some((m) => m.phase === 'perkLocked');
+    return untouched && refused;
+  })());
+
+  check('and no perk rides on the wire where nobody chose one', (() => {
+    const plain = makeRoom({ id: 'test-noperks2', mapId: 'crossfire', modeId: 'tdm' });
+    const p = addHuman(plain, 'Ordinary', 204);
+    const perky = makeRoom({ id: 'test-perky', mapId: 'nova', modeId: 'perks' });
+    const q = addHuman(perky, 'Chooser', 205);
+    return p.profile().perk === undefined && q.profile().perk === K.DEFAULT_PERK;
+  })());
+
+  check('a swap under fire waits for the respawn, the way a class swap does', (() => {
+    const p = addHuman(pk, 'Fighter', 206);
+    pick(p, 'trooper');
+    p.alive = true;
+    p.lastCombatAt = pk.now;            // shot at, right now
+    pk.onPerkChange(p, { p: 'juggernaut' });
+    const queued = p.perkId === 'trooper' && p.pendingPerk === 'juggernaut';
+    // …and it is applied *before* the spawn, because `spawnAt` reads the
+    // ceiling and the spare ammunition off it.
+    p.alive = false;
+    p.respawnAt = -1;
+    pk.onRespawnRequest(p);
+    return queued && p.perkId === 'juggernaut' && p.pendingPerk === null
+      && p.health === p.maxHealth;
+  })(), 'queued, then applied on the respawn at full health');
+
+  check('a nuke still kills the hardest body in the game', (() => {
+    // Two hundred points of damage against a Juggernaut's hundred and ninety
+    // health and fifteen per cent damage reduction is a nuke somebody walks
+    // away from. The blast is measured against *their* ceiling now.
+    const p = addHuman(pk, 'Tank', 207);
+    pick(p, 'juggernaut');
+    pk.respawn(p, true);
+    p.protectedUntil = -1;
+    p.applyDamage(p.maxHealth * 4, pk.now, 0);
+    return p.health <= 0;
+  })());
 }

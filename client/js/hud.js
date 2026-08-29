@@ -51,6 +51,7 @@ export class Hud {
     this.el = {
       hud: $('hud'), crosshair: $('crosshair'), hitmarker: $('hitmarker'),
       hpFill: $('hpFill'), hpGhost: $('hpGhost'), hpNum: $('hpNum'),
+      perkChip: $('perkChip'), perkName: $('perkName'),
       ammoMag: $('ammoMag'), ammoReserve: $('ammoReserve'),
       ammoWrap: document.querySelector('#bottomRight .ammo'), weaponName: $('weaponName'),
       reloadHint: $('reloadHint'), reloadFill: $('reloadFill'),
@@ -81,6 +82,7 @@ export class Hud {
       playerLevel: $('playerLevel'), hintRespawn: $('hintRespawn'), hintClass: $('hintClass'),
       hintClass2: $('hintClass2'), deathHint: $('deathHint'), deathHintHeld: $('deathHintHeld'),
       killCam: $('killCam'), kcName: $('kcName'), kcTags: $('kcTags'), kcFacts: $('kcFacts'),
+      kcSkipKey: $('kcSkipKey'),
       kcAnthem: $('kcAnthem'), kcTrack: $('kcTrack'), kcTrackBy: $('kcTrackBy'),
       kcRemaining: $('kcRemaining'), kcSkip: $('kcSkip'), kcSkipFill: $('kcSkipFill'),
       kcSkipLabel: $('kcSkipLabel'), kcDirector: $('kcDirector'),
@@ -286,6 +288,10 @@ export class Hud {
 
   refreshHints() {
     if (this.el.hintRespawn) this.el.hintRespawn.textContent = this.hintFor('jump');
+    // The kill cam's skip is the jump binding — the same gesture as "put me
+    // back in", which is what a player pressing it means — so it names whatever
+    // that is bound to on whatever they are holding.
+    if (this.el.kcSkipKey) this.el.kcSkipKey.textContent = this.hintFor('jump');
     if (this.el.hintClass) this.el.hintClass.textContent = this.hintFor('classMenu');
     if (this.el.hintClass2) this.el.hintClass2.textContent = this.hintFor('classMenu');
     if (this.el.nukeKey) this.el.nukeKey.textContent = this.hintFor('nuke');
@@ -355,6 +361,22 @@ export class Hud {
     return this.mmLayer;
   }
 
+  /**
+   * The perk chip under the health bar, or nothing at all.
+   *
+   * Absent rather than empty outside the Perks mode: an element that is there
+   * but blank still takes its margin, and every other mode would carry a gap on
+   * the HUD for a feature it does not have.
+   */
+  setPerk(perk) {
+    const el = this.el.perkChip;
+    if (!el) return;
+    el.classList.toggle('hidden', !perk);
+    if (!perk) return;
+    this._text(this.el.perkName, 'perk.name', perk.name.toUpperCase());
+    this._style(el, 'perk.col', 'color', `#${(perk.color ?? 0x8b95a6).toString(16).padStart(6, '0')}`);
+  }
+
   setMode(modeId, modeName, practice = false) {
     this.mode = modeId ?? 'ffa';
     this.practice = !!practice;
@@ -370,13 +392,24 @@ export class Hud {
   update(state, dt) {
     const { health, ammo, reserve, weapon, slot, reloading, reloadFrac, spread, scoped,
       matchTime, teamScore, teamMode, ping, name, level, verified, speed, accuracy,
+      maxHealth = K.MAX_HEALTH,
       hideCrosshair = false, hasBody = true, godMode = false } = state;
 
-    // Health, with a ghost bar that drains behind the real one after a hit.
-    const pct = Math.max(0, Math.min(100, health));
+    /*
+     * Health, with a ghost bar that drains behind the real one after a hit.
+     *
+     * The bar is a *fraction* and the number is the raw hit points, which only
+     * became two different things when perks arrived: a Runner on fifty of
+     * fifty is a full bar reading 50, and a Juggernaut on a hundred of a
+     * hundred and ninety is a half bar reading 100. Drawing either of them
+     * against a fixed hundred would have been lying about the one thing on the
+     * HUD a player checks mid-fight.
+     */
+    const top = Math.max(1, maxHealth);
+    const pct = Math.max(0, Math.min(100, (health / top) * 100));
     this._style(this.el.hpFill, 'hp.w', 'width', `${pct}%`);
     this._className(this.el.hpFill, 'hp.cls', pct <= 25 ? 'crit' : pct <= 55 ? 'low' : '');
-    this._text(this.el.hpNum, 'hp.num', hasBody ? Math.ceil(pct) : '\u2014');
+    this._text(this.el.hpNum, 'hp.num', hasBody ? Math.ceil(Math.max(0, health)) : '\u2014');
     if (pct > this.ghostHealth) this.ghostHealth = pct;
     else this.ghostHealth += (pct - this.ghostHealth) * Math.min(1, dt * 3.2);
     // The ghost drains continuously, so it is quantised: a bar 280px wide has
@@ -1084,7 +1117,7 @@ export class Hud {
       this.reportTool ? (this.canReport ? 'r' : `x${this.reportReason ?? ''}`) : '-',
       ...sorted.map((r) => [
         r.id, r.score, r.kills, r.deaths, r.assists ?? 0, r.headshots ?? 0,
-        r.accuracy ?? 0, r.ping ?? 0, r.rung ?? 0, r.classId ?? '', r.team ?? 0,
+        r.accuracy ?? 0, r.ping ?? 0, r.rung ?? 0, r.classId ?? '', r.perk ?? '', r.team ?? 0,
         r.name, r.level ?? 0, r.clan ?? '', r.muted ? 1 : 0, r.bot ? 1 : 0,
       ].join(',')),
     ].join('|');
@@ -1103,7 +1136,11 @@ export class Hud {
         <td>${i + 1}</td>
         <td class="c-name">${playerName(r, 12, { link: true })}${
         r.bot ? '<span class="bot-tag">BOT</span>' : ''}${mutedTag(r.muted)}</td>
-        <td>${escapeHtml(gg ? `RUNG ${(r.rung ?? 0) + 1}` : (r.classId ?? ''))}</td>
+        <td>${escapeHtml(gg ? `RUNG ${(r.rung ?? 0) + 1}`
+        // In the Perks mode the class matters far less than the body: knowing
+        // the person top of the board is a Juggernaut is worth more than
+        // knowing which rifle they carry.
+        : r.perk ? K.getPerk(r.perk).name : (r.classId ?? ''))}</td>
         <td class="hi">${r.score}</td>
         <td>${r.kills}</td><td>${r.deaths}</td><td>${r.assists ?? 0}</td><td>${r.headshots ?? 0}</td>
         <td>${kd}</td><td>${r.accuracy ?? 0}%</td>

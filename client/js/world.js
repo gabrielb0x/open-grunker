@@ -104,6 +104,154 @@ const BOX_MAP = /* glsl */`
 #endif
 `;
 
+/* ── The nebula sky ──────────────────────────────────────────────────────────
+ *
+ * Every other map in the game gets its sky painted once into a 512×512 canvas
+ * and wrapped round a dome, which is exactly right for them: a flat blue
+ * daytime gradient with a cloud band is a *poster*, it does not move, and
+ * baking it costs one texture and nothing per frame.
+ *
+ * A night sky is not a poster. What makes a nebula read as a nebula rather than
+ * as wallpaper is that it has depth and that it *drifts* — two fields of gas at
+ * different scales sliding past each other, stars coming and going behind them,
+ * the occasional streak. None of that survives being baked, and all of it is
+ * cheap procedurally: the dome is drawn last with the depth test on, so only
+ * the sky the player can actually see through the level ever runs this.
+ *
+ * Written out by hand rather than pulled from a noise library for the same
+ * reason the post chain is: the client ships one three.js module and no build
+ * step. It is a hash, a value noise, an fbm and about thirty lines of art
+ * direction on top.
+ * ──────────────────────────────────────────────────────────────────────────*/
+
+const SKY_VS = /* glsl */`
+varying vec3 vDir;
+void main() {
+  // The dome is a sphere centred on the camera, so the object-space position
+  // *is* the view direction. No matrices needed to get it.
+  vDir = normalize(position);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`;
+
+const SKY_FS = /* glsl */`
+precision highp float;
+uniform float uTime;
+uniform float uDensity;
+uniform vec3 uTop, uBottom, uHaze, uFog, uWarm, uCool;
+varying vec3 vDir;
+
+// Three-dimensional value hash. Deterministic, so the sky is the same sky on
+// every screen in the match — which matters more than it sounds: a landmark
+// that is only on your monitor is not a landmark.
+float hash13(vec3 p) {
+  p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419));
+  p *= 17.0;
+  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float vnoise(vec3 x) {
+  vec3 i = floor(x), f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(mix(hash13(i + vec3(0, 0, 0)), hash13(i + vec3(1, 0, 0)), f.x),
+        mix(hash13(i + vec3(0, 1, 0)), hash13(i + vec3(1, 1, 0)), f.x), f.y),
+    mix(mix(hash13(i + vec3(0, 0, 1)), hash13(i + vec3(1, 0, 1)), f.x),
+        mix(hash13(i + vec3(0, 1, 1)), hash13(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+
+float fbm(vec3 p) {
+  float a = 0.5, sum = 0.0;
+  for (int i = 0; i < OG_OCTAVES; i++) {
+    sum += a * vnoise(p);
+    p *= 2.03;                       // not exactly 2: powers of two line the
+    a *= 0.5;                        // octaves up and the lattice shows through
+  }
+  return sum;
+}
+
+void main() {
+  vec3 dir = normalize(vDir);
+  float h = dir.y;
+
+  // The bare sky behind everything: deep at the zenith, warmer at the horizon.
+  vec3 col = mix(uBottom, uTop, smoothstep(-0.15, 0.85, h));
+
+  /*
+   * Two gas fields at different scales, drifting in different directions.
+   *
+   * One field alone is a stain. What reads as *volume* is a second, finer field
+   * sliding across the first at a different rate and warping it — so the shapes
+   * pull apart and rejoin instead of translating rigidly, which is the tell
+   * that gives away a single scrolling layer immediately.
+   */
+  float t = uTime;
+  vec3 q = dir * 2.1;
+  float f1 = fbm(q + vec3(t * 0.009, t * 0.0035, -t * 0.007));
+  float f2 = fbm(q * 1.9 + vec3(-t * 0.013, t * 0.002, t * 0.0055) + f1 * 0.8);
+  float cloud = smoothstep(0.30, 0.92, f1 * 0.7 + f2 * 0.55);
+
+  // Which of the two colours this part of the sky belongs to. The split runs
+  // diagonally rather than by height, so the two never stack into bands.
+  float lean = clamp(0.5 + dir.x * 0.55 + dir.z * 0.25 - dir.y * 0.30, 0.0, 1.0);
+  vec3 gas = mix(uCool, uWarm, clamp(lean * (0.45 + f2 * 0.85), 0.0, 1.0));
+  col += gas * cloud * uDensity;
+
+  // The bright heart of it, where the finer field piles up. Squared so it stays
+  // a *core* — anything gentler and the whole sky lifts instead.
+  float core = smoothstep(0.58, 1.02, f2);
+  col += uWarm * core * core * 0.45 * uDensity;
+
+  /*
+   * Stars, behind the gas rather than in front of it.
+   *
+   * A grid of cells, most of them empty; the ones that are not get a jittered
+   * position inside the cell, or the whole sky is a lattice. The twinkle is per
+   * star and at a per-star rate, because a sky that pulses in unison reads as
+   * the screen flickering rather than as stars.
+   */
+  vec3 sp = dir * 190.0;
+  vec3 si = floor(sp);
+  float sh = hash13(si);
+  if (sh > 0.9955) {
+    vec3 jitter = vec3(hash13(si + 11.0), hash13(si + 23.0), hash13(si + 37.0)) * 0.6 + 0.2;
+    float d = length(fract(sp) - jitter);
+    float rate = 1.2 + fract(sh * 71.0) * 3.4;
+    float twinkle = 0.55 + 0.45 * sin(t * rate + sh * 120.0);
+    // Dimmed where the gas is thick, so the cloud reads as being in front.
+    col += vec3(0.86, 0.91, 1.0) * smoothstep(0.34, 0.0, d) * twinkle
+      * (1.0 - cloud * 0.75) * smoothstep(0.0, 0.25, h);
+  }
+
+  /*
+   * One meteor at a time, on a fresh arc every few seconds.
+   *
+   * floor(t / period) names the meteor and seeds where it goes, fract() is
+   * how far along it is — so there is no state to keep and every client draws
+   * the same streak at the same moment without anything being sent about it.
+   */
+  float mt = t / 6.5;
+  float mi = floor(mt), mf = fract(mt);
+  vec3 axis = normalize(vec3(hash13(vec3(mi, 1.0, 2.0)) - 0.5,
+    0.30 + hash13(vec3(mi, 3.0, 4.0)) * 0.55,
+    hash13(vec3(mi, 5.0, 6.0)) - 0.5));
+  vec3 side = normalize(cross(axis, vec3(0.0, 1.0, 0.0)));
+  vec3 head = normalize(axis + side * (mf * 1.5 - 0.75));
+  vec3 tail = normalize(axis + side * (max(0.0, mf - 0.055) * 1.5 - 0.75));
+  vec3 seg = head - tail;
+  float along = clamp(dot(dir - tail, seg) / max(1e-5, dot(seg, seg)), 0.0, 1.0);
+  float dSeg = length(dir - (tail + seg * along));
+  // Brightest at the head, fading down the tail, and faded in and out at both
+  // ends of its run so it never pops into or out of existence.
+  col += vec3(1.0, 0.95, 0.98) * smoothstep(0.016, 0.0, dSeg) * (0.2 + 0.8 * along)
+    * 2.0 * smoothstep(0.0, 0.06, mf) * smoothstep(0.9, 0.6, mf);
+
+  // Down into the haze, then into the fog the level itself is standing in, so
+  // there is never a visible seam where the dome meets the ground.
+  col = mix(uHaze, col, smoothstep(-0.03, 0.40, h));
+  col = mix(uFog, col, smoothstep(-0.30, -0.01, h));
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
 export class GameWorld {
   /**
    * @param {HTMLCanvasElement} canvas
@@ -332,6 +480,12 @@ export class GameWorld {
    * is what the town maps want) up through 1 (the default overcast drift).
    */
   _buildSky(sky, map) {
+    // A map that declares a nebula gets the shader dome instead of the painted
+    // one. Both end up as a 600-unit sphere on `this.skyDome` drawn last, so
+    // everything downstream — the camera follow in `render`, the teardown in
+    // `setMap` — is the same for either.
+    if (sky.nebula) return this._buildNebulaSky(sky, map);
+
     const cnv = document.createElement('canvas');
     cnv.width = 512; cnv.height = 512;
     const g = cnv.getContext('2d');
@@ -432,6 +586,61 @@ export class GameWorld {
     this._perMapTextures.push(tex);
   }
 
+  /**
+   * The animated sky: two drifting gas fields, stars behind them and a meteor.
+   *
+   * `sky.nebula` carries the art direction and nothing structural:
+   *
+   *   warm / cool   the two colours the gas is mixed between. On the map this
+   *                 was written for they are magenta and cyan; nothing stops
+   *                 them being anything else.
+   *   density       how far the gas is allowed to lift the sky. Past about 1.4
+   *                 it stops reading as gas and starts reading as fog.
+   *   speed         a multiplier on the whole animation, so a map can have a
+   *                 sky that barely moves without editing the shader.
+   *
+   * The octave count comes off the quality setting rather than the map: it is
+   * the only knob in here that costs frame time, and which of the two it should
+   * answer to is the player's machine, not the level designer's taste.
+   */
+  _buildNebulaSky(sky, map) {
+    const q = quality();
+    const neb = sky.nebula;
+    const hex = (n, fallback) => new THREE.Color(n ?? fallback);
+
+    const material = new THREE.ShaderMaterial({
+      vertexShader: SKY_VS,
+      fragmentShader: SKY_FS,
+      defines: { OG_OCTAVES: q.sky >= 56 ? 5 : q.sky >= 40 ? 4 : 3 },
+      uniforms: {
+        uTime: { value: 0 },
+        uTop: { value: hex(sky.top, 0x0a0a1e) },
+        uBottom: { value: hex(sky.bottom, 0x1b1030) },
+        uHaze: { value: hex(sky.haze ?? sky.bottom, 0x2a1840) },
+        uFog: { value: hex(map.fog?.color, 0x1a1130) },
+        uWarm: { value: hex(neb.warm, 0xff4fa3) },
+        uCool: { value: hex(neb.cool, 0x3a7dff) },
+        uDensity: { value: neb.density ?? 1 },
+      },
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+    });
+
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(600, Math.max(24, q.sky), Math.max(16, q.sky / 2)),
+      material);
+    // Same contract as the painted dome: written last, writes no depth, so it
+    // only shades the sky that is actually visible past the level.
+    dome.renderOrder = 1000;
+    dome.frustumCulled = false;
+    this.mapGroup.add(dome);
+    this.skyDome = dome;
+    /** Non-null only while an animated sky is up; `render` advances it. */
+    this.skyTime = material.uniforms.uTime;
+    this.skySpeed = neb.speed ?? 1;
+  }
+
   _buildGround(map) {
     const size = map.ground?.size ?? 220;
     const mat = map.ground?.mat ?? SURFACE.DIRT;
@@ -487,7 +696,10 @@ export class GameWorld {
     const groups = new Map();
     for (const b of boxes) {
       const mat = b.mat ?? SURFACE.CONCRETE;
-      const key = `${mat}|${b.noShadow ? 1 : 0}`;
+      // Three axes, not one: the material decides the texture, shadow casting
+      // decides which of two meshes it lands in, and `glow` decides whether it
+      // is lit at all. A glowing box never casts, so the two flags collapse.
+      const key = `${mat}|${b.glow || b.noShadow ? 1 : 0}|${b.glow ? 1 : 0}`;
       let list = groups.get(key);
       if (!list) groups.set(key, (list = []));
       list.push(b);
@@ -500,17 +712,36 @@ export class GameWorld {
 
     for (const [key, list] of groups) {
       const surface = key.slice(0, key.indexOf('|'));
-      const casts = shadows && key.endsWith('|0');
+      const glows = key.endsWith('|1');
+      const casts = shadows && key.split('|')[1] === '0';
       const tex = surfaceTexture(surface);
       const shading = SURFACE_SHADING[surface] ?? { shininess: 6, specular: 0x101010 };
       const tile = SURFACE_TILE[surface] ?? 4;
 
-      const material = usePhong
-        ? new THREE.MeshPhongMaterial({
-          map: tex, vertexColors: true,
-          shininess: shading.shininess, specular: shading.specular,
-        })
-        : new THREE.MeshLambertMaterial({ map: tex, vertexColors: true });
+      /*
+       * A light source, drawn rather than lit.
+       *
+       * A sun-lit box at midnight is a dark box, and a night map built out of
+       * them is a night map you cannot read. What makes neon *look* like neon
+       * is that it is brighter than white: the scene renders into a half-float
+       * buffer, so a basic material whose colour multiplies past 1.0 survives
+       * as an over-bright value all the way to the composite, where the bright
+       * pass picks it up (threshold 0.85) and blooms it, and ACES pulls the
+       * core toward white while keeping the halo's hue. That is the entire
+       * lighting model for a strip light, and it costs one more draw call.
+       *
+       * Fog stays on. A sign two hundred metres away that does not fade into
+       * the haze reads as a decal on the lens rather than as something standing
+       * in the world.
+       */
+      const material = glows
+        ? new THREE.MeshBasicMaterial({ map: tex, vertexColors: true })
+        : usePhong
+          ? new THREE.MeshPhongMaterial({
+            map: tex, vertexColors: true,
+            shininess: shading.shininess, specular: shading.specular,
+          })
+          : new THREE.MeshLambertMaterial({ map: tex, vertexColors: true });
       material.onBeforeCompile = (shader) => {
         // All four hooks or none: a half-applied injection would declare a
         // varying the other stage never writes, and the program would not link.
@@ -528,7 +759,7 @@ export class GameWorld {
           .replace('#include <map_fragment>', BOX_MAP);
       };
       // Every batch compiles to the same program; only the tile uniform differs.
-      material.customProgramCacheKey = () => `og-box-${usePhong ? 'p' : 'l'}`;
+      material.customProgramCacheKey = () => `og-box-${glows ? 'e' : usePhong ? 'p' : 'l'}`;
 
       const mesh = new THREE.InstancedMesh(this.boxGeo, material, list.length);
       mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
@@ -542,11 +773,23 @@ export class GameWorld {
         m.makeScale(b.w, b.h, b.d);
         m.setPosition(b.x, b.y + b.h / 2, b.z);
         mesh.setMatrixAt(i, m);
-        // Deterministic per-box tint jitter breaks up large flat surfaces.
         col.setHex(b.c ?? 0x999999);
-        const j = (((i * 2654435761) >>> 0) % 100) / 100;
-        col.offsetHSL(0, 0, (j - 0.5) * 0.055);
-        if (b.roof) col.offsetHSL(0, 0, 0.025);
+        if (glows) {
+          // No jitter on a light. The tint variation below exists to break up
+          // large flat surfaces that would otherwise read as one poster-flat
+          // slab; a strip light that is randomly a shade dimmer than the strip
+          // next to it reads as a fault in the strip. What varies here is
+          // deliberate: `glow` is how far past white this particular fitting
+          // pushes, which is what decides whether it merely reads as lit or
+          // throws a halo. The instance colour buffer is floats, so it holds
+          // values over 1 without clipping.
+          col.multiplyScalar(typeof b.glow === 'number' ? b.glow : 1.55);
+        } else {
+          // Deterministic per-box tint jitter breaks up large flat surfaces.
+          const j = (((i * 2654435761) >>> 0) % 100) / 100;
+          col.offsetHSL(0, 0, (j - 0.5) * 0.055);
+          if (b.roof) col.offsetHSL(0, 0, 0.025);
+        }
         mesh.setColorAt(i, col);
       }
       mesh.instanceMatrix.needsUpdate = true;
@@ -576,6 +819,11 @@ export class GameWorld {
     this.batches.length = 0;
     this.ground = null;
     this.skyDome = null;
+    // Cleared with the dome that owned it: a stale uniform reference would keep
+    // being ticked every frame for a sky that is no longer in the scene, and on
+    // the next map would be the one thing left pointing at a disposed material.
+    this.skyTime = null;
+    this.skySpeed = 1;
   }
 
   /* ── Frame ─────────────────────────────────────────────────────────────── */
@@ -665,6 +913,11 @@ export class GameWorld {
    */
   render(dt = 0.016, drawOverlay = null) {
     if (this.skyDome) this.skyDome.position.copy(this.camera.position);
+    // An animated sky is one uniform. It is advanced here rather than from a
+    // clock inside the shader because that is the only place that knows the
+    // frame actually happened: a tab in the background stops drawing, and a sky
+    // driven by wall time would have jumped a minute when it came back.
+    if (this.skyTime) this.skyTime.value += dt * this.skySpeed;
     this._tickShadow(dt);
 
     if (this.post.enabled) {

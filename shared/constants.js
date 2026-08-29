@@ -141,6 +141,77 @@ export const CHEAT_KINDS = [
 ];
 
 /**
+ * What each kind *means*, in the words a moderator reads.
+ *
+ * The report queue used to get `aim×14, seq×3 (skipped 161 sequences)` and
+ * nothing else, which is a line only somebody who has read anticheat.js can
+ * act on — and the person working the queue at two in the morning has not.
+ * Three fields, and each one answers a different question the reader has:
+ *
+ *   title   what the server refused, as a noun phrase
+ *   what    what the client actually sent, in one sentence
+ *   cheat   what a real cheat doing this is trying to buy, so the reader can
+ *           tell a suspicious line from a damning one
+ *   lag     whether a bad connection can produce this on its own — the single
+ *           most useful thing on the page, because it is the difference
+ *           between "ban" and "this player is on hotel wifi"
+ *
+ * `lag` is deliberately honest rather than reassuring. Two of these kinds can
+ * be produced by a bad line and saying so is what makes the other five worth
+ * believing.
+ */
+export const CHEAT_KIND_INFO = {
+  aim: {
+    title: 'Shots that did not match the view',
+    what: 'The shoot packet claimed angles the client was not streaming as its view.',
+    cheat: 'Silent aim: the crosshair never moves, the bullet goes to the target anyway.',
+    lag: 'no — input and shoot travel the same ordered socket, so however late or bunched '
+      + 'the delivery, the view the server compares against is the last one this client '
+      + 'generated before firing. The gate also widens with measured ping, jitter and the '
+      + 'player\'s own turn rate',
+  },
+  seq: {
+    title: 'Spread seeds skipped rather than counted',
+    what: 'The client\'s own shot counter jumped forward by more than one between two shots.',
+    cheat: 'Seed grinding: burn through sequences until one draws a round dead centre.',
+    lag: 'no — the counter is compared against this client\'s own previous claim, never '
+      + 'against the server\'s, so refused shots and dropped packets cannot move it',
+  },
+  speed: {
+    title: 'More simulation steps than the clock allows',
+    what: 'Input arrived faster than real time for long enough to overflow the queue.',
+    cheat: 'Speed hack: every extra step is extra distance covered in the same second.',
+    lag: 'briefly — a stalled connection delivers its backlog in one burst. Only a rate '
+      + 'sustained past the burst allowance is counted',
+  },
+  rate: {
+    title: 'Input packets faster than a client can produce them',
+    what: 'More input packets arrived in one second than the client sends in one second.',
+    cheat: 'The crude half of a speed hack, and what a replay flood looks like.',
+    lag: 'briefly — the same burst-after-a-stall as above, and forgiven the same way',
+  },
+  lag: {
+    title: 'A round trip the server never measured',
+    what: 'The ping this client reports disagrees with the one the server timed itself.',
+    cheat: 'Fake lag: claim more latency than you have to be rewound further into the past.',
+    lag: 'yes, in short bursts — so this is only ever counted after a long run of '
+      + 'disagreement in the same direction, well past what the line\'s own jitter explains',
+  },
+  ads: {
+    title: 'A sight picture claimed but never held',
+    what: 'Shots claimed to be aimed down sights on a stream that never held the button.',
+    cheat: 'Scoped accuracy and hip-fire movement speed at the same time.',
+    lag: 'rarely — a single mismatch at the edge of a key press is ignored; only a run counts',
+  },
+  spread: {
+    title: 'Rounds landing at the centre of every cone',
+    what: 'Over a whole magazine, every round drew far closer to point of aim than the cone allows.',
+    cheat: 'No-spread: the residue left over once the seed itself is taken away from the client.',
+    lag: 'no — this is an average over 40 rounds of the server\'s own draw',
+  },
+};
+
+/**
  * What a caught client costs itself.
  *
  * Weight is per incident; the running total decays so an unlucky frame on a bad
@@ -148,15 +219,130 @@ export const CHEAT_KINDS = [
  * `CHEAT_KICK_SCORE` drops the connection and files a report the moderators
  * read next to the human ones, which is the only outcome that survives the
  * player simply reconnecting.
+ *
+ * The three connection-sensitive kinds — `lag`, `rate`, `speed` — are weighted
+ * *below* the decay rate on purpose. One of them a second is a connection the
+ * server sheds faster than it accumulates; it takes a sustained multiple of
+ * that, or one of the four kinds a bad line cannot produce, to reach a
+ * threshold. That is the whole false-positive policy in three numbers.
  */
 export const CHEAT_WEIGHTS = {
-  aim: 12, seq: 6, speed: 4, rate: 3, lag: 8, ads: 2, spread: 10,
+  aim: 12, seq: 6, speed: 3, rate: 2, lag: 5, ads: 2, spread: 10,
 };
 export const CHEAT_DECAY_PER_SEC = 0.6;       // points shed per second of clean play
 export const CHEAT_WARN_SCORE = 40;
 export const CHEAT_KICK_SCORE = 120;
 /** Below this many incidents nothing is ever acted on, whatever the score. */
 export const CHEAT_MIN_INCIDENTS = 4;
+
+/* ── What a bad connection is allowed to look like ───────────────────────────
+ *
+ * Every constant below exists because of one report: a player on a 4G phone
+ * kicked for cheating twice in an evening, having done nothing but ride through
+ * a tunnel. Three of the checks above are downstream of *arrival times*, and
+ * arrival times on a lossy line are not a measurement of the client at all —
+ * TCP holds a stalled stream and then delivers the whole backlog at once, so
+ * the server sees a second of silence followed by a second's worth of packets
+ * in one frame. That shape is indistinguishable from a burst-fire speed hack
+ * for exactly as long as you only look at one second of it.
+ *
+ * So the rule everywhere below is the same: never judge a burst, judge the
+ * *sustained rate*. A stall followed by catch-up nets out to real time within a
+ * second or two; a speed hack never does.
+ * ──────────────────────────────────────────────────────────────────────────*/
+
+/**
+ * Packets forgiven in one second on top of the steady-state ceiling.
+ *
+ * The client sends at SNAPSHOT_RATE plus one flush per shot. After a stall,
+ * everything it queued during the stall arrives at once — so the allowance is
+ * roughly a second of held-back traffic, which is the longest stall TCP will
+ * hand over in one piece before the socket dies anyway.
+ */
+export const CHEAT_RATE_BURST = 60;
+/**
+ * Sustained excess, in packets, before the rate check says anything.
+ *
+ * Counted as a leaky bucket rather than per second: the burst above drains at
+ * the rate an honest client empties it, so a stall's backlog leaves the bucket
+ * near zero and a client genuinely sending twice as many packets as it should
+ * fills it in about four seconds.
+ */
+export const CHEAT_RATE_SUSTAINED = 240;
+
+/**
+ * How long a backlog may sit past the queue cap before it counts as speed.
+ *
+ * A client catching up from a stall drains its backlog through the credit
+ * bucket in a couple of seconds. A speed hack never drains: it produces more
+ * steps than the clock hands out, forever, so the overflow is continuous. Three
+ * seconds of *unbroken* overflow separates the two cleanly, and a single frame
+ * where the queue came back under the cap resets it.
+ */
+export const CHEAT_SPEED_SUSTAIN = 3.0;       // s
+/** …and how often a still-overflowing connection is counted again after that. */
+export const CHEAT_SPEED_REPEAT = 2.0;        // s
+
+/**
+ * How long the reported and measured pings must disagree before it is a flag.
+ *
+ * Both numbers are medians of eight round trips, timed at opposite ends, and on
+ * a jittery line they wander apart for a few seconds at a time all evening. A
+ * client faking its latency does not wander: it is wrong in the same direction
+ * continuously, because the number it reports is a constant it made up.
+ */
+export const CHEAT_LAG_STREAK = 12;           // consecutive measured round trips
+/**
+ * Never more than one lag flag per this many seconds, however bad it gets.
+ *
+ * This is the number that decides how long a client faking its latency takes to
+ * reach a kick, and it is deliberately slow: about two minutes of unbroken,
+ * one-directional lying. That is acceptable because the exploit buys *nothing*
+ * — the rewind comes off the server's own measurement whatever the client says
+ * — so this flag is evidence for the report queue rather than a defence, and
+ * evidence is worth being sure about.
+ */
+export const CHEAT_LAG_COOLDOWN = 3.0;        // s
+/**
+ * How much of the line's own measured jitter is added to the tolerance.
+ *
+ * Jitter is the spread of the server's own RTT window — the honest disagreement
+ * between two medians is bounded by it, so a line that swings by 200 ms gets
+ * 200 ms of slack and a stable one gets none. This is the single change that
+ * stopped mobile connections tripping the check.
+ */
+export const CHEAT_LAG_JITTER_MULT = 1.5;
+
+/**
+ * How long the client's own view may be out of date *at the client*.
+ *
+ * This is the term the aim gate was missing, and it is where its false
+ * positives came from. Everything else in the gate is measured on the server's
+ * clock — how stale the streamed view is *here* — and on an ordered socket that
+ * is almost always zero, because the client flushes its inputs immediately
+ * before the shoot packet and both arrive together. The uncertainty that
+ * actually exists is on the other end: the view rides an input generated on a
+ * simulation tick, the trigger is pulled on a *frame*, and above 60 fps there
+ * are frames with no tick in them. So the mouse has moved for up to one tick
+ * that no packet describes, and at 144 fps that happens on more than half of
+ * all shots.
+ *
+ * Multiplied by the client's own measured turn rate, this is "how far the
+ * crosshair could have travelled since the last thing we were told about it".
+ * Standing still it is worth nothing at all, which is exactly the case a silent
+ * aim presents.
+ */
+export const AIM_SAMPLE_GAP = TICK_DT * 1.5;  // s
+/**
+ * Extra aim tolerance per second of measured round trip and jitter.
+ *
+ * A distant client's shot was aimed further in the past than a local one's, and
+ * an unstable one's could have been aimed anywhere inside its jitter. Half a
+ * radian at half a second of ping is generous and still nowhere near the angles
+ * silent aim asks for — that wants a hundred and eighty degrees, and no
+ * connection on earth is bad enough to buy three.
+ */
+export const AIM_TOLERANCE_RTT_MULT = 0.5;    // rad per second of RTT
 
 /* ── Player body ──────────────────────────────────────────────────────────── */
 
@@ -478,12 +664,170 @@ export const MODES = {
     scoreLimit: 300, timeLimit: MATCH_TIME + 60, objectives: true,
     blurb: 'Hold A, B and C. Every captured point ticks score for your team.',
   },
+  perks: {
+    id: 'perks', name: 'Perks', short: 'PERKS', teams: false,
+    scoreLimit: 30, timeLimit: MATCH_TIME, perks: true,
+    blurb: 'Pick what kind of player you are before the match starts. Every choice is a '
+      + 'trade — outrun everybody on half the health, or take twice the punishment and '
+      + 'never catch anyone.',
+  },
   range: {
     id: 'range', name: 'Practice Range', short: 'RANGE', teams: false,
     scoreLimit: 0, timeLimit: 0, practice: true,
     blurb: 'No clock, no pressure. Targets, bots on demand and a live accuracy readout.',
   },
 };
+
+/* ── Perks ────────────────────────────────────────────────────────────────────
+ *
+ * A body is not a fixed thing in this mode. Before the match you pick what kind
+ * of player you are, and every one of the seven answers is a trade: something
+ * you are better at than anybody has ever been, paid for with something you are
+ * worse at than anybody should accept.
+ *
+ * ── Why they are all trades ────────────────────────────────────────────────
+ *
+ * The first version of this list had a "balanced" option with no upside and no
+ * downside, on the theory that somebody who did not want to think about it
+ * should be able to opt out. Nobody picked it, because it is not an option —
+ * it is the absence of one, and a mode built on choices whose safe answer is
+ * "don't choose" has no choices in it. Every entry below now has an edge sharp
+ * enough that somebody would build a match around it, and a cost steep enough
+ * that somebody else would refuse it. Trooper, the default, is the mildest pair
+ * of the two and still a real pick: more rounds, in the gun, sooner.
+ *
+ * ── What a perk may and may not touch ──────────────────────────────────────
+ *
+ * Every field is a plain multiplier, and that is a rule rather than a
+ * convention: the modes this game already has all decide *what weapon* you
+ * carry, and this one decides *what you are*, so the numbers have to be applied
+ * in the same places on both sides of the wire or prediction stops agreeing
+ * with authority within a second of moving.
+ *
+ * Three of them — `speed`, `jump`, `hopKeep` and `airMax` — therefore go into
+ * `movement.step`, which is shared code that runs identically on the client and
+ * the server. Everything else is decided by the server alone and only ever
+ * *reported* to the client. Nothing here is ever read out of a packet.
+ *
+ * ── Reading the numbers ────────────────────────────────────────────────────
+ *
+ *   health      multiplies MAX_HEALTH. 0.5 really is fifty hit points.
+ *   damage      what you deal. `taken` is what you receive.
+ *   speed       ground and air target speed, straight into `step`.
+ *   jump        take-off velocity.
+ *   hopKeep     the fraction of speed a chained bunny hop retains. The base is
+ *               0.985, so a hop bleeds 1.5% — at 1.0 it bleeds nothing and hops
+ *               compound until the air cap stops them, which is what makes
+ *               Runner feel like a different game rather than a faster one.
+ *   airMax      multiplies the ceiling those hops compound toward.
+ *   reload      time, so under 1 is faster.
+ *   mag         how many rounds the magazine holds. With reserves unlimited
+ *               (INFINITE_AMMO) this is the only ammunition number that decides
+ *               anything: what costs you a fight is not running out, it is
+ *               being the one who has to reload.
+ *   reserve     spare ammunition, which does nothing at all while INFINITE_AMMO
+ *               is on and is kept because an operator who turns it off should
+ *               get the perk the card promised rather than a dead field.
+ *   spread      the cone, so under 1 is more accurate.
+ *   regenRate / regenDelay
+ *               how fast health comes back and how long after being shot it
+ *               starts. A `regenRate` of 0 is no regeneration at all.
+ *   fallDamage  0 removes it outright.
+ *   killRefill  a kill puts a full magazine in the gun.
+ * ──────────────────────────────────────────────────────────────────────────*/
+
+/** Every field a perk may set, and what it means when it is left out. */
+const PERK_BASE = {
+  health: 1, damage: 1, taken: 1, speed: 1, jump: 1,
+  hopKeep: HOP_SPEED_KEEP, airMax: 1, reload: 1, mag: 1, reserve: 1, spread: 1,
+  regenRate: 1, regenDelay: 1, fallDamage: 1, killRefill: false,
+};
+
+const perk = (o) => ({ ...PERK_BASE, ...o });
+
+/**
+ * Every multiplier at 1: nothing gained, nothing waived, nothing refilled.
+ *
+ * This is what a player has in every mode that is not Perks, and it exists so
+ * the damage, movement and regeneration paths can multiply unconditionally
+ * rather than branching on the mode in half a dozen places on the hot path. It
+ * is deliberately *not* `PERKS[DEFAULT_PERK]` — Trooper is a real pick with a
+ * real cost, and handing it to everybody in Team Deathmatch would quietly take
+ * five per cent of everyone's health away.
+ */
+export const NEUTRAL_PERK = perk({ id: 'none', name: 'None', color: 0x8b95a6, tagline: '', good: [], bad: [] });
+
+export const PERKS = {
+  trooper: perk({
+    id: 'trooper', name: 'Trooper', color: 0x4fa3ff,
+    tagline: 'Nothing exotic. Rounds back in the gun sooner, and a steadier one.',
+    good: ['Reloads a fifth faster', 'A tenth tighter cone', 'Half again as much spare ammunition'],
+    bad: ['Five per cent less health'],
+    reload: 0.78, spread: 0.9, reserve: 1.5, health: 0.95,
+  }),
+  runner: perk({
+    id: 'runner', name: 'Runner', color: 0x3ee08a,
+    tagline: 'A hop costs you nothing. Getting hit costs you everything.',
+    good: ['Bunny hops bleed no speed at all', 'Faster on foot, and jumps higher'],
+    bad: ['Half the health of everybody else'],
+    speed: 1.22, jump: 1.1, hopKeep: 1, airMax: 1.35, health: 0.5,
+  }),
+  juggernaut: perk({
+    id: 'juggernaut', name: 'Juggernaut', color: 0xe0873a,
+    tagline: 'Slow is the price. Being hard to kill is what you buy with it.',
+    good: ['Nearly twice the health', 'Takes fifteen per cent less damage'],
+    bad: ['Noticeably slower on foot', 'Reloads slowly, and jumps badly'],
+    health: 1.9, taken: 0.85, speed: 0.78, reload: 1.3, jump: 0.92,
+  }),
+  marksman: perk({
+    id: 'marksman', name: 'Marksman', color: 0xb46cff,
+    tagline: 'One shot, if you can hold still long enough to take it.',
+    good: ['A third more damage', 'Little under half the spread'],
+    bad: ['A quarter less health', 'Slower on foot'],
+    damage: 1.32, spread: 0.55, health: 0.72, speed: 0.9,
+  }),
+  medic: perk({
+    id: 'medic', name: 'Medic', color: 0x3ed8d0,
+    tagline: 'You do not win the fight. You are simply still there afterwards.',
+    good: ['Heals more than twice as fast', 'Starts healing almost immediately',
+      'A little more health to begin with'],
+    bad: ['Deals under a fifth less damage'],
+    regenRate: 2.3, regenDelay: 0.35, health: 1.15, damage: 0.82,
+  }),
+  berserker: perk({
+    id: 'berserker', name: 'Berserker', color: 0xff4f5a,
+    tagline: 'Everything, all at once, for exactly as long as it lasts.',
+    good: ['Forty per cent more damage', 'Faster, and takes no fall damage'],
+    bad: ['Takes forty per cent more damage', 'Never regenerates a single point'],
+    damage: 1.4, speed: 1.12, fallDamage: 0, taken: 1.4, regenRate: 0,
+  }),
+  scavenger: perk({
+    id: 'scavenger', name: 'Scavenger', color: 0xd8c23a,
+    tagline: 'Never the one who has to reload.',
+    good: ['Magazines hold three quarters again as many rounds',
+      'A kill reloads the gun outright', 'More than twice the spare ammunition'],
+    bad: ['Deals a little less damage', 'A tenth less health', 'Reloads slowly'],
+    mag: 1.75, killRefill: true, reserve: 2.2, reload: 1.2, damage: 0.88, health: 0.9,
+  }),
+};
+
+export const PERK_IDS = Object.keys(PERKS);
+/**
+ * What a player who has not chosen is playing as.
+ *
+ * There has to be one — somebody joins mid-match, somebody closes the picker,
+ * a bot fills a seat — and it is the mildest of the seven rather than the
+ * strongest or the strangest, so an unchosen perk is never an advantage and
+ * never a punishment for not having read the list yet.
+ */
+export const DEFAULT_PERK = 'trooper';
+export const getPerk = (id) => PERKS[id] ?? PERKS[DEFAULT_PERK];
+/** The lightweight listing the menu and the API hand out. */
+export const perkList = () => PERK_IDS.map((id) => {
+  const p = PERKS[id];
+  return { id, name: p.name, tagline: p.tagline, color: p.color, good: p.good, bad: p.bad };
+});
+
 
 /** The ladder Gun Game climbs — one rung per kill, knife last. */
 export const GUN_GAME_LADDER = [
@@ -1985,6 +2329,7 @@ export const C2S = {
   ACK: 'ak',
   RESPAWN: 'rs',
   CLASS: 'cl',
+  PERK: 'pk',         // choosing what kind of player you are, in the Perks mode
   TEAM: 'tm',
   PLAY: 'pl',         // a spectator asking to enter the match
   VOTE: 'vo',         // map vote during the intermission

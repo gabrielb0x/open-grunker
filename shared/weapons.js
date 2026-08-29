@@ -116,8 +116,16 @@ export const drawStamp = (w, now, grace) =>
  * settle. It grows the cone (bloom) up to a per-weapon ceiling, which is what
  * makes tapping strictly better than holding at range — and the first round out
  * of a settled weapon is the most accurate one it will ever fire.
+ *
+ * `mult` is the last term applied and it belongs to the player rather than to
+ * the weapon — a Perks-mode Marksman shoots a tighter cone out of the same
+ * rifle. It multiplies the finished number rather than any of the parts, so a
+ * perk narrows movement, bloom and stance in the same proportion instead of
+ * quietly rewriting which of them dominates.
  */
-export function spreadFor(w, { moving = false, airborne = false, ads = false, crouching = false, burst = 0 } = {}) {
+export function spreadFor(w, {
+  moving = false, airborne = false, ads = false, crouching = false, burst = 0, mult = 1,
+} = {}) {
   let s = ads ? w.spreadAds : w.spread;
   if (moving) s += w.spreadMove;
   if (airborne) s += w.spreadAir;
@@ -129,7 +137,7 @@ export function spreadFor(w, { moving = false, airborne = false, ads = false, cr
   }
   // A weapon that has been resting fires its first round dead straight.
   if (burst <= 0 && w.firstShotAccuracy) s *= w.firstShotAccuracy;
-  return s;
+  return s * mult;
 }
 
 /**

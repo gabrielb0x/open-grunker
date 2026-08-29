@@ -110,6 +110,52 @@ function lerpAngle(a, b, t) {
 }
 
 /**
+ * Catmull-Rom through four samples, evaluated at `t` inside the middle span.
+ *
+ * Straight-line interpolation between snapshots is correct and, for a body
+ * thirty metres away, invisible. Put the camera *inside* one of those bodies —
+ * which is exactly what the kill cam's replay does — and it stops being
+ * invisible: velocity is discontinuous at every snapshot boundary, so thirty
+ * times a second the whole screen changes direction at once. It reads as a
+ * vibration, and no amount of smoothing applied afterwards removes it, because
+ * the kink is in the data and not in the filter.
+ *
+ * A cubic through the neighbours on either side is continuous in the first
+ * derivative, so the camera arrives at each snapshot already moving the way it
+ * leaves it. This is the single change that makes the replay look like footage
+ * rather than like a slideshow being scrubbed.
+ *
+ * The classic uniform form, which assumes the four samples are evenly spaced.
+ * They are: the server broadcasts on a fixed interval, and the two ends of the
+ * buffer duplicate their neighbour rather than reaching past it, which is what
+ * keeps the curve from overshooting at the edges.
+ */
+function catmull(p0, p1, p2, p3, t) {
+  const t2 = t * t, t3 = t2 * t;
+  return 0.5 * ((2 * p1)
+    + (-p0 + p2) * t
+    + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
+    + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
+}
+
+/**
+ * The same, for angles.
+ *
+ * Every control point is unwrapped onto the branch nearest `p1` first: a yaw
+ * that crosses ±π between two samples would otherwise send the cubic the long
+ * way round the circle, and the camera with it.
+ */
+function catmullAngle(p0, p1, p2, p3, t) {
+  const near = (a, ref) => {
+    let d = a - ref;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    return ref + d;
+  };
+  return catmull(near(p0, p1), p1, near(p2, p1), near(p3, near(p2, p1)), t);
+}
+
+/**
  * Builds one low-poly operator. Silhouette first: helmet, plate carrier and
  * boots are what a player reads at forty metres, long before any detail.
  */
@@ -386,7 +432,9 @@ function buildNametag() {
   return { sprite, cnv, tex, last: '' };
 }
 
-function drawNametag(tag, { name, level, health, teamColor, clan, clanVerified, verified, friendly }) {
+function drawNametag(tag, {
+  name, level, health, maxHealth = K.MAX_HEALTH, teamColor, clan, clanVerified, verified, friendly,
+}) {
   const key = `${name}|${clan}|${clanVerified ? 1 : 0}|${level}|${Math.round(health / 4)}`
     + `|${teamColor}|${verified ? 1 : 0}|${checkReady ? 1 : 0}`;
   if (tag.last === key) return;
@@ -439,7 +487,11 @@ function drawNametag(tag, { name, level, health, teamColor, clan, clanVerified, 
   g.fillStyle = '#f5a623';
   g.fillText(`LVL ${level}`, W / 2, 72);
 
-  const pct = Math.max(0, Math.min(1, health / K.MAX_HEALTH));
+  // Against *their* ceiling. In the Perks mode a Juggernaut has nearly twice
+  // everybody else's health and a Runner half of it, and a bar drawn against
+  // the constant would show the Runner permanently on fifty per cent and the
+  // Juggernaut permanently full — which is exactly backwards as a threat read.
+  const pct = Math.max(0, Math.min(1, health / Math.max(1, maxHealth)));
   const barW = 236, barX = (W - barW) / 2;
   g.fillStyle = 'rgba(0,0,0,.78)';
   roundRect(g, barX, 94, barW, 15, 4);
@@ -704,25 +756,76 @@ export class EntityManager {
   }
 
   /**
+   * The index of the frame `t` falls just after, plus the fraction into the
+   * span that follows it — the raw form of `_frames`, for callers that want to
+   * reach past the immediate pair.
+   *
+   * Returns -1 for a moment outside the buffer, so the caller can clamp rather
+   * than extrapolate.
+   */
+  _span(t) {
+    const buf = this.buffer;
+    if (!buf.length || t <= buf[0].t || t >= buf[buf.length - 1].t) return [-1, 0];
+    let lo = 0, hi = buf.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (buf[mid].t <= t) lo = mid; else hi = mid;
+    }
+    const gap = buf[hi].t - buf[lo].t;
+    return [lo, gap > 0 ? Math.max(0, Math.min(1, (t - buf[lo].t) / gap)) : 0];
+  }
+
+  /**
    * One player's interpolated state at a moment in the buffer, or null.
    *
    * Read by the kill cam, which needs the killer's eye and view angles at the
    * moment being replayed and must not wait for `update` to have run — the
    * camera is placed before the bodies are, every frame.
+   *
+   * `smooth` puts a cubic through the two snapshots either side of the pair
+   * instead of a straight line between the pair itself. It is off by default
+   * and on for the replay, and the reason is where the camera is standing: a
+   * straight line between snapshots is invisible on a body across the map and
+   * unmissable when the camera is *inside* that body, because the direction of
+   * travel changes thirty times a second. See `catmull`.
    */
-  sampleAt(id, t) {
+  sampleAt(id, t, smooth = false) {
     if (!this.buffer.length) return null;
     const [older, newer, alpha] = this._frames(t);
     const a = older.entries.get(id);
     if (!a) return null;
     const b = newer.entries.get(id) ?? a;
     const crouched = (b[6] & 12) !== 0;
-    return {
+    const base = {
       x: lerp(a[1], b[1], alpha), y: lerp(a[2], b[2], alpha), z: lerp(a[3], b[3], alpha),
       yaw: lerpAngle(a[4], b[4], alpha), pitch: lerp(a[5], b[5], alpha),
       height: crouched ? K.PLAYER_CROUCH_HEIGHT : K.PLAYER_HEIGHT,
       alive: (b[6] & 1) !== 0,
     };
+    if (!smooth) return base;
+
+    const [i, u] = this._span(t);
+    if (i < 0) return base;                       // clamped at an end: no curve to fit
+    const buf = this.buffer;
+    // The outer two control points fall back on their neighbour at the ends of
+    // the buffer, which is what stops the curve from flying off where it has
+    // nothing to aim at. A player who joined mid-window has no entry in one of
+    // the four frames; the same fallback covers that too.
+    const p1 = buf[i].entries.get(id);
+    const p2 = buf[i + 1]?.entries.get(id) ?? p1;
+    if (!p1) return base;
+    const p0 = (i > 0 ? buf[i - 1].entries.get(id) : null) ?? p1;
+    const p3 = (i + 2 < buf.length ? buf[i + 2].entries.get(id) : null) ?? p2;
+
+    base.x = catmull(p0[1], p1[1], p2[1], p3[1], u);
+    base.y = catmull(p0[2], p1[2], p2[2], p3[2], u);
+    base.z = catmull(p0[3], p1[3], p2[3], p3[3], u);
+    base.yaw = catmullAngle(p0[4], p1[4], p2[4], p3[4], u);
+    // Pitch is clamped rather than wrapped: a cubic through four samples near
+    // the vertical can overshoot past straight up, and a camera that rolls over
+    // the top for one frame is worse than one that is a degree behind.
+    base.pitch = Math.max(-1.55, Math.min(1.55, catmull(p0[5], p1[5], p2[5], p3[5], u)));
+    return base;
   }
 
   /**
@@ -754,6 +857,22 @@ export class EntityManager {
     const { camera, world, nowSec = 0 } = view;
 
     const [older, newer, alpha] = this._frames(renderTime);
+    /*
+     * The replay gets the cubic; live play keeps the straight line.
+     *
+     * Not because live play would not also look better with it — it would —
+     * but because the two are being asked different questions. Live play is
+     * interpolating *toward the present* on data that is still arriving, where
+     * a curve fitted through a future sample would be guessing; the replay is
+     * reading a window that is entirely in the past and completely known, which
+     * is the one case where fitting a curve is free of that risk. And it is the
+     * case that needs it: during a replay the camera is standing inside one of
+     * these bodies and drifting slowly around another, so the thirty-hertz kink
+     * that nobody can see at forty metres is the whole picture.
+     */
+    const smooth = this.replaying;
+    const [spanIdx, spanU] = smooth ? this._span(renderTime) : [-1, 0];
+    const buf = this.buffer;
 
     if (camera) {
       camera.getWorldDirection(this._fwd);
@@ -805,9 +924,24 @@ export class EntityManager {
        */
       if (e.faded) this._resetPose(e);
 
-      e.pos.set(lerp(a[1], b[1], alpha), lerp(a[2], b[2], alpha), lerp(a[3], b[3], alpha));
-      e.yaw = lerpAngle(a[4], b[4], alpha);
-      e.pitch = lerp(a[5], b[5], alpha);
+      const p1 = spanIdx >= 0 ? buf[spanIdx].entries.get(e.id) : null;
+      if (p1) {
+        // The outer control points fall back on their neighbour at the ends of
+        // the buffer and for anybody missing from a frame, which is what keeps
+        // the curve from being fitted to a body that was not there.
+        const p2 = buf[spanIdx + 1]?.entries.get(e.id) ?? p1;
+        const p0 = (spanIdx > 0 ? buf[spanIdx - 1].entries.get(e.id) : null) ?? p1;
+        const p3 = (spanIdx + 2 < buf.length ? buf[spanIdx + 2].entries.get(e.id) : null) ?? p2;
+        e.pos.set(catmull(p0[1], p1[1], p2[1], p3[1], spanU),
+          catmull(p0[2], p1[2], p2[2], p3[2], spanU),
+          catmull(p0[3], p1[3], p2[3], p3[3], spanU));
+        e.yaw = catmullAngle(p0[4], p1[4], p2[4], p3[4], spanU);
+        e.pitch = Math.max(-1.55, Math.min(1.55, catmull(p0[5], p1[5], p2[5], p3[5], spanU)));
+      } else {
+        e.pos.set(lerp(a[1], b[1], alpha), lerp(a[2], b[2], alpha), lerp(a[3], b[3], alpha));
+        e.yaw = lerpAngle(a[4], b[4], alpha);
+        e.pitch = lerp(a[5], b[5], alpha);
+      }
       e.health = b[7];
       e.speed = lerp(a[9] ?? 0, b[9] ?? 0, alpha);
 
@@ -1000,6 +1134,9 @@ export class EntityManager {
       name: e.profile.name,
       level: e.profile.level ?? 1,
       health: e.health,
+      // The perk rides on the profile in the one mode that has them, so this is
+      // the constant everywhere else without a branch either side of the wire.
+      maxHealth: K.MAX_HEALTH * (e.profile.perk ? K.getPerk(e.profile.perk).health : 1),
       teamColor: e.teamColor,
       clan: e.profile.clan,
       clanVerified: !!e.profile.clanVerified,

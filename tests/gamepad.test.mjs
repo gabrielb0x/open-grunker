@@ -102,6 +102,30 @@ export default async function run() {
   input.pollPad(0.016, true);
   check('releasing it clears the held set', !input.down.has('Pad2'));
 
+  /*
+   * A press is a press, whichever hand it came from.
+   *
+   * `_press` only fires the *discrete* actions — reload, weapon slots, chat —
+   * and everything held is polled instead, so a held action like `jump`
+   * produced no event at all from a pad. Anything listening for the edge rather
+   * than the state therefore never heard from a controller, and the kill cam's
+   * skip is exactly that: the jump binding, read as a `keydown`. Dead, holding
+   * a pad, A did nothing and the only way past the card was the mouse.
+   */
+  const edges = [];
+  input.on('keydown', (code) => edges.push(code));
+  pad.buttons[0] = { pressed: true, value: 1 };
+  input.pollPad(0.016, true);
+  const jumped = edges.includes(keys.binds.jump[keys.PAD_SLOT]);
+  input.pollPad(0.016, true);
+  const once = edges.filter((c) => c === 'Pad0').length === 1;
+  pad.buttons[0] = { pressed: false, value: 0 };
+  input.pollPad(0.016, true);
+  check('a held action still reports its press, so a pad can skip the kill cam',
+    jumped && once, `edges: ${edges.join(', ') || 'none'}`);
+  check('and the button the cam names is the one that does it',
+    keys.padLabel('jump') === 'A', keys.padLabel('jump'));
+
   // The triggers are analogue: half-pressed is not pressed.
   pad.buttons[7] = { pressed: false, value: 0.2 };
   input.pollPad(0.016, true);

@@ -84,6 +84,23 @@ export class Player {
     this.team = K.TEAM.NONE;
 
     this.classId = o.classId ?? 'triggerman';
+    /**
+     * What kind of player this is, in the Perks mode.
+     *
+     * Set on every player in every mode — the room simply never reads it
+     * outside the one that has `perks` on it — because a field that only exists
+     * sometimes is a null check at every call site, and this one is read on the
+     * damage path.
+     */
+    this.perkId = K.PERK_IDS.includes(o.perkId) ? o.perkId : K.DEFAULT_PERK;
+    /** A perk chosen mid-fight, waiting for the respawn that will apply it. */
+    this.pendingPerk = null;
+    /**
+     * Whether this player has actually chosen, as opposed to being handed the
+     * default. The room asks so it knows whether to put the picker in front of
+     * them, and it is per *match*: a new match asks again.
+     */
+    this.perkChosen = false;
     this.state = createState(0, 0, 0, 0);
     this.health = K.MAX_HEALTH;
     this.alive = false;
@@ -153,8 +170,8 @@ export class Player {
      * The view this client has actually been streaming, newest last.
      *
      * A shot's claimed angles are checked against this rather than believed.
-     * Two entries is all the check needs — the freshest view and the one before
-     * it, which together give the turn rate the tolerance opens with.
+     * The freshest view and the one before it give the turn rate the tolerance
+     * opens with.
      */
     this.viewYaw = 0;
     this.viewPitch = 0;
@@ -360,11 +377,66 @@ export class Player {
   get weapon() { return this.weapons[this.slot]; }
   get weaponDef() { return this.weapons[this.slot].def; }
 
-  /** Movement multiplier from the equipped weapon (and ADS). */
+  /* ── The perk ──────────────────────────────────────────────────────────────
+   *
+   * Everything below is a *read*: the perk is a table of multipliers in
+   * shared/constants.js and these are the four places the rest of the server
+   * asks it a question. Nothing is stored pre-multiplied, so a perk swap on a
+   * respawn takes effect by simply being a different table — there is no
+   * derived state to rebuild and none to forget to rebuild.
+   *
+   * `perkOn` is what gates it. The perk exists on every player in every mode so
+   * the damage path has no null check; the mode is what decides whether anybody
+   * is allowed to be anything but ordinary, and the room sets this flag once.
+   * ────────────────────────────────────────────────────────────────────────*/
+
+  /** True while the room this player is in actually runs perks. */
+  get perkOn() { return !!this._perkOn; }
+
+  set perkOn(on) { this._perkOn = !!on; }
+
+  /** The perk's multiplier table, or the neutral one when the mode is off. */
+  get perk() { return this._perkOn ? K.getPerk(this.perkId) : K.NEUTRAL_PERK; }
+
+  /** This player's own ceiling, which is not everybody's. */
+  get maxHealth() { return Math.round(K.MAX_HEALTH * this.perk.health); }
+
+  /**
+   * How many rounds one of this player's magazines holds.
+   *
+   * Asked rather than stored, for the same reason `maxHealth` is: a perk swap
+   * on a respawn then takes effect by being a different table, with no derived
+   * number anywhere to rebuild. Every place that used to read `def.magSize` to
+   * decide whether a gun is *full* goes through here — the ones that read it to
+   * decide how much of a bar to draw do not, because that is a proportion.
+   */
+  magOf(w) {
+    return Math.max(1, Math.round((w?.def?.magSize ?? 0) * this.perk.mag));
+  }
+
+  /** Movement multiplier from the equipped weapon, ADS, and the perk. */
   speedMult(ads) {
     const d = this.weaponDef;
-    const base = d.moveMult ?? 1;
+    const base = (d.moveMult ?? 1) * this.perk.speed;
     return ads ? base * (d.adsMoveMult ?? 0.6) : base;
+  }
+
+  /**
+   * The physics overrides this player's perk asks for, as `step` opts.
+   *
+   * Handed to `step` on both sides of the wire — the client is told its own
+   * perk and builds the same object — so a Runner's hops compound identically
+   * in prediction and in authority. Every field falls back to its constant when
+   * the mode is off, which is what keeps every other mode bit-for-bit unchanged.
+   */
+  moveOpts(ads) {
+    const p = this.perk;
+    return {
+      speedMult: this.speedMult(ads),
+      jumpMult: p.jump,
+      hopKeep: p.hopKeep,
+      airMax: p.airMax,
+    };
   }
 
   /* ── What the server measures for itself ───────────────────────────────── */
@@ -412,6 +484,31 @@ export class Player {
     this.rtt = sorted[sorted.length >> 1];
   }
 
+  /**
+   * How much this line is swinging by: the full spread of the RTT window.
+   *
+   * Peak-to-peak rather than a standard deviation, and deliberately so. What it
+   * is used for is a *tolerance* — how far apart two medians of this connection
+   * are allowed to drift before the disagreement means something — and the
+   * honest answer to that is bounded by the worst sample in the window, not by
+   * the average distance from the mean. A σ would let two or three genuinely
+   * awful round trips sit inside a gate they should have opened.
+   *
+   * Zero until there is a window to measure, which is the correct answer: with
+   * one sample there is no jitter, and every caller already refuses to act
+   * before the window is full.
+   */
+  rttJitter() {
+    const s = this.rttSamples;
+    if (s.length < 2) return 0;
+    let lo = s[0], hi = s[0];
+    for (let i = 1; i < s.length; i++) {
+      if (s[i] < lo) lo = s[i];
+      if (s[i] > hi) hi = s[i];
+    }
+    return hi - lo;
+  }
+
   /** Marks this connection as still being played by a person. */
   noteActivity(nowMs = Date.now()) {
     this.lastActiveAt = nowMs;
@@ -425,16 +522,20 @@ export class Player {
 
   spawnAt(x, y, z, yaw, now) {
     this.state = createState(x, y, z, yaw);
-    this.health = K.MAX_HEALTH;
+    this.health = this.maxHealth;
     this.alive = true;
     this.protectedUntil = now + K.SPAWN_PROTECTION;
     this.lastDamageAt = now;
     this.lastCombatAt = -999;
     this.damagedBy.clear();
     this.histCount = 0;
+    const spare = this.perk.reserve;
     for (const w of this.weapons) {
-      w.ammo = w.def.magSize ?? 0;
-      w.reserve = K.INFINITE_AMMO ? -1 : (w.def.reserve ?? 0);
+      w.ammo = this.magOf(w);
+      // The perk multiplies what you *carry*, never what the magazine holds:
+      // a Scavenger reloads twice as often as anybody, they simply never stop
+      // being able to.
+      w.reserve = K.INFINITE_AMMO ? -1 : Math.round((w.def.reserve ?? 0) * spare);
       w.reloading = false;
       w.burst = 0;
     }
@@ -449,13 +550,21 @@ export class Player {
     this.score.streak = 0;
   }
 
-  /** @returns {{dead:boolean, damage:number}} */
+  /**
+   * @param {number} amount raw damage, before this body's own perk is applied
+   * @returns {{dead:boolean, damage:number}}
+   */
   applyDamage(amount, now, attackerId = 0) {
     // God mode is checked here rather than at each of the half-dozen call
     // sites, so a bullet, a rocket, a nuke, a fall and the kill plane are all
     // covered by one rule and a new source of damage cannot forget it.
     if (this.god) return { dead: false, damage: 0 };
     if (!this.alive || now < this.protectedUntil) return { dead: false, damage: 0 };
+    // How much a hit costs *this* body. Applied here rather than at the point
+    // the shot is resolved, so it covers a bullet, a rocket, a nuke and a fall
+    // by the same rule — and so the attacker never has to know what the person
+    // they are shooting at chose to be.
+    amount = Math.max(1, Math.round(amount * this.perk.taken));
     const dealt = Math.min(this.health, amount);
     this.health -= dealt;
     this.lastDamageAt = now;
@@ -468,9 +577,15 @@ export class Player {
   }
 
   regen(now, dt) {
-    if (!this.alive || this.health >= K.MAX_HEALTH) return;
-    if (now - this.lastDamageAt < K.REGEN_DELAY) return;
-    this.health = Math.min(K.MAX_HEALTH, this.health + K.REGEN_RATE * dt);
+    const p = this.perk;
+    // A perk may switch regeneration off outright, which is the Berserker's
+    // whole downside — checked before the clock so nothing about the timing of
+    // the last hit can ever hand them a point back.
+    if (!(p.regenRate > 0)) return;
+    const ceiling = this.maxHealth;
+    if (!this.alive || this.health >= ceiling) return;
+    if (now - this.lastDamageAt < K.REGEN_DELAY * p.regenDelay) return;
+    this.health = Math.min(ceiling, this.health + K.REGEN_RATE * p.regenRate * dt);
   }
 
   /* ── Lag-compensation history ──────────────────────────────────────────── */
@@ -537,6 +652,10 @@ export class Player {
       id: this.id, name: this.name, team: this.team, classId: this.classId,
       skin: this.skin, cos: this.cos, bot: this.isBot, ...this.tags,
       kills: this.score.kills, deaths: this.score.deaths, score: this.score.score,
+      // Only where it means something. Everybody carries a perk internally so
+      // the damage path has no null check; putting one on the wire in Team
+      // Deathmatch would be telling every client about a choice nobody made.
+      ...(this.perkOn ? { perk: this.perkId } : {}),
     };
   }
 
@@ -553,6 +672,7 @@ export class Player {
       ping: Math.round(this.rtt * 1000),
       rung: this.ggRung,
       captures: sc.captures,
+      ...(this.perkOn ? { perk: this.perkId } : {}),
     };
   }
 }

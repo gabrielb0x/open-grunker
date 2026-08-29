@@ -124,12 +124,31 @@ export class Game {
     this.reserve = [-1, -1, -1];               // -1 = unlimited
     this.reloading = false;
     this.reloadEnd = 0;
+    /** How long the server said this reload takes. The bar divides by it. */
+    this.reloadTime = 0;
     this.lastShotAt = -99;
     this.lastMeleeAt = -99;
     this.pumpUntil = 0;
     this.burst = 0;
     this.alive = false;
     this.health = K.MAX_HEALTH;
+    /**
+     * This body's own ceiling, which is not everybody's in the Perks mode.
+     *
+     * Seeded from the constant and replaced by whatever the server says on the
+     * handshake and on every spawn. Every bar that draws health draws it
+     * against this rather than against `K.MAX_HEALTH`, so a Runner on fifty of
+     * fifty is full rather than looking half dead.
+     */
+    this.maxHealth = K.MAX_HEALTH;
+    /** The perk this client has been told it has, or null outside the mode. */
+    this.perkId = null;
+    /** Its multiplier table — the neutral one until a server says otherwise. */
+    this.perkMods = K.NEUTRAL_PERK;
+    /** The catalogue the room sent, for the picker. */
+    this.perkList = null;
+    /** Has this player chosen yet this match? Drives whether the picker opens. */
+    this.perkChosen = true;
     this.respawnAt = 0;
     /**
      * Set when the player presses Escape while dead.
@@ -264,6 +283,9 @@ export class Game {
       onClassChange: (id) => this.requestClass(id),
       // Picking a class in the menu arms it for the seat we are about to take.
       onClassPreview: (id) => { this.classId = id; if (this.net.connected) this.net.setClass(id); },
+      // A request, exactly like the class one: the room answers with `perkSet`
+      // or `perkQueued`, and `setPerk` below only ever runs off that answer.
+      onPerkChange: (id) => { if (this.net.connected) this.net.setPerk(id); },
       /*
        * Something was equipped in the wardrobe.
        *
@@ -561,8 +583,8 @@ export class Game {
    */
   get interfaceOwnsPad() {
     return this.hud.chatOpen || this.hud.matchEndOpen || this.hud.reportCardOpen
-      || this.menu.classModalOpen || this.menu.playerCardOpen || this.menu.visible
-      || this.scoreboardPinned || this.inGameMenuOpen
+      || this.menu.classModalOpen || this.menu.perkModalOpen || this.menu.playerCardOpen
+      || this.menu.visible || this.scoreboardPinned || this.inGameMenuOpen
       || !$('pause').classList.contains('hidden');
   }
 
@@ -656,9 +678,19 @@ export class Game {
       );
 
       this.setClass(msg.you.classId ?? this.classId);
-      this.ammo[0] = msg.you.ammo ?? this.weapons[0].magSize;
+      this.ammo[0] = msg.you.ammo ?? this.magOf(this.weapons[0]);
       this.reserve[0] = msg.you.reserve ?? -1;
       this.health = msg.you.health ?? K.MAX_HEALTH;
+      this.maxHealth = msg.you.maxHealth ?? K.MAX_HEALTH;
+      /*
+       * The Perks mode, and everything this client needs to play it.
+       *
+       * `msg.perks` is null in every other mode, which is what turns the whole
+       * feature off here: no picker, no chip on the HUD, and `perkMods` stays
+       * the neutral table so the prediction below is byte-for-byte what it was.
+       */
+      this.setPerk(msg.perks ? msg.perks.perk : null, msg.perks?.list ?? null);
+      this.perkChosen = !msg.perks || !!msg.perks.chosen;
 
       this.renderTime = 0;
       $('loading').classList.add('hidden');
@@ -682,6 +714,9 @@ export class Game {
       }
 
       this.enterMatch();
+      // A Perks match nobody has chosen for yet: the picker is the first thing
+      // this player sees, before the mouse is taken for the game.
+      if (this.perkList && !this.perkChosen) this.openPerkPicker();
       // Dropping into a match that is already over goes straight to its board.
       if (this.matchPhase === 'intermission') {
         this.matchEndAt = performance.now() / 1000 + (msg.match?.nextIn ?? K.INTERMISSION_TIME);
@@ -705,6 +740,10 @@ export class Game {
       this.prevKeys = 0;
       this.alive = true;
       this.health = msg.health;
+      if (typeof msg.maxHealth === 'number') this.maxHealth = msg.maxHealth;
+      // A queued perk lands on the respawn, so the spawn packet is where this
+      // client finds out it is now somebody else.
+      if (msg.perk) this.setPerk(msg.perk);
       this.deathCam = null;
       // A spawn always closes the cam, whether it was skipped or ran out: a
       // player who is back in the match must not still be watching a replay.
@@ -715,10 +754,10 @@ export class Game {
       this.smooth.set(0, 0, 0);
       if (msg.classId && msg.classId !== this.classId) this.setClass(msg.classId);
       for (let i = 0; i < this.weapons.length; i++) {
-        this.ammo[i] = this.weapons[i].magSize ?? 0;
+        this.ammo[i] = this.magOf(this.weapons[i]);
         this.reserve[i] = -1;
       }
-      this.ammo[0] = msg.ammo ?? this.weapons[0].magSize ?? 0;
+      this.ammo[0] = msg.ammo ?? this.magOf(this.weapons[0]);
       this.reserve[0] = msg.reserve ?? -1;
       this.slot = 0;
       this.reloading = false;
@@ -837,6 +876,8 @@ export class Game {
       if (msg.reloading) {
         this.reloading = true;
         this.reloadEnd = performance.now() / 1000 + msg.reloading;
+        // Kept so the bar has something to divide by — see `reloadFrac`.
+        this.reloadTime = msg.reloading;
         this.burst = 0;
         this.viewmodel.reload(msg.reloading, wasEmpty);
         this.scheduleReloadSounds(msg.reloading, wasEmpty);
@@ -889,7 +930,7 @@ export class Game {
       // Doing the same here keeps the prediction and the HUD from disagreeing
       // with it for the slots no AMMO packet covers.
       if (this.godMode) {
-        for (let i = 0; i < this.weapons.length; i++) this.ammo[i] = this.weapons[i].magSize ?? 0;
+        for (let i = 0; i < this.weapons.length; i++) this.ammo[i] = this.magOf(this.weapons[i]);
         this.reloading = false;
       }
       if (msg.allowed === false) this.hud.toast('God mode is an administrator tool', 'error');
@@ -1121,6 +1162,32 @@ export class Game {
         this.hud.toast('In combat — the new class lands on your next respawn', '');
       } else if (msg.phase === 'classLocked') {
         this.hud.toast('Gun Game picks your weapon — earn the next one', '');
+      } else if (msg.phase === 'perkPick') {
+        /*
+         * A fresh match in the Perks mode. The choice is per match, so the
+         * picker comes back up rather than the last one being reselected
+         * silently — see `startMatch` in the room.
+         *
+         * It is only *opened* here when this client is already in a match. On
+         * the way in, `wake()` starts a match before the handshake is written,
+         * so this frame arrives before WELCOME does — a picker opened at that
+         * moment would be over a screen that has no map on it yet, and the
+         * `enterMatch` that follows would take the mouse straight back off it.
+         * WELCOME opens it instead, off the `chosen` flag this leaves behind.
+         */
+        this.setPerk(msg.perk, msg.list ?? null);
+        this.perkChosen = false;
+        if (this.state === 'playing') this.openPerkPicker();
+      } else if (msg.phase === 'perkSet') {
+        this.setPerk(msg.perk);
+        this.perkChosen = true;
+        if (typeof msg.health === 'number') this.maxHealth = msg.health;
+        if (msg.immediate) this.hud.toast(`Playing as ${K.getPerk(msg.perk).name}`, 'good');
+      } else if (msg.phase === 'perkQueued') {
+        this.perkChosen = true;
+        this.hud.toast('In combat — the new perk lands on your next respawn', '');
+      } else if (msg.phase === 'perkLocked') {
+        this.hud.toast('Perks are only a thing in the Perks mode', '');
       } else if (msg.phase === 'spectate') {
         this.specFollowId = msg.targetId;
         this.specName = msg.name ?? null;
@@ -1789,7 +1856,7 @@ export class Game {
     this.local.height = y[7];
 
     for (const inp of this.pending) {
-      step(this.local, inp, this.world, K.TICK_DT, { speedMult: this.speedMultFor(inp.keys), fly: this.godMode });
+      step(this.local, inp, this.world, K.TICK_DT, this.moveOptsFor(inp.keys));
     }
 
     // Any residual error is absorbed visually instead of snapping the camera.
@@ -1809,7 +1876,45 @@ export class Game {
   speedMultFor(keys) {
     const def = this.weapons[this.slot];
     const ads = (keys & KEY.ADS) !== 0;
-    return (def.moveMult ?? 1) * (ads ? (def.adsMoveMult ?? 0.6) : 1);
+    return (def.moveMult ?? 1) * this.perkMods.speed * (ads ? (def.adsMoveMult ?? 0.6) : 1);
+  }
+
+  /**
+   * The `step` options this body moves under — the client's half of the perk.
+   *
+   * It has to produce the identical object the server builds in
+   * `Player.moveOpts`, because prediction and authority run the *same* function
+   * on it. That is why the perk is only ever set from a server packet
+   * (`setPerk`, below) and never chosen locally: a client that decided for
+   * itself that it was a Runner would predict a body the room refuses to
+   * simulate, and spend the whole match being corrected.
+   */
+  moveOptsFor(keys) {
+    const p = this.perkMods;
+    return {
+      speedMult: this.speedMultFor(keys),
+      jumpMult: p.jump,
+      hopKeep: p.hopKeep,
+      airMax: p.airMax,
+      fly: this.godMode,
+    };
+  }
+
+  /**
+   * Adopts a perk the server has told this client it has, or clears it.
+   *
+   * `null` is the ordinary case — every mode but one — and it puts the neutral
+   * table back, which is what keeps every other mode's movement identical to
+   * what it was before perks existed. `list` arrives with the handshake and
+   * with a fresh match; it is the *server's* catalogue rather than this
+   * client's copy of the constants, so a room running different numbers
+   * describes its own.
+   */
+  setPerk(perkId, list = null) {
+    if (list) this.perkList = list;
+    this.perkId = perkId ?? null;
+    this.perkMods = perkId ? K.getPerk(perkId) : K.NEUTRAL_PERK;
+    this.hud.setPerk(perkId ? K.getPerk(perkId) : null);
   }
 
   /* ── Input wiring ──────────────────────────────────────────────────────── */
@@ -1870,12 +1975,17 @@ export class Game {
     inp.on('classMenu', () => {
       if (this.state !== 'playing') return;
       this.input.unlock();
-      this.menu.openClassModal();
+      // One key, two pickers. In the Perks mode the weapon is not the choice
+      // that matters — what kind of player you are is — so the key that has
+      // always meant "change what I am" opens the one that does.
+      if (this.perkList) this.openPerkPicker();
+      else this.menu.openClassModal();
     });
 
     inp.on('escape', () => {
       if (this.state !== 'playing') return;
       if (this.menu.classModalOpen) { this.menu.closeClassModal(); this.input.lock(); return; }
+      if (this.menu.perkModalOpen) { this.menu.closePerkModal(); this.input.lock(); return; }
       if (this.menu.authModalOpen) {
         $('authModal').classList.add('hidden');
         if (!this.menu.visible) this.input.lock();
@@ -1925,6 +2035,7 @@ export class Game {
 
     inp.on('unlock', () => {
       if (this.state === 'playing' && !this.hud.chatOpen && !this.menu.classModalOpen
+          && !this.menu.perkModalOpen
           && !this.inGameMenuOpen && !this.hud.matchEndOpen && !this.scoreboardPinned
           && !this.hud.reportCardOpen && !this.menu.playerCardOpen
           && $('pause').classList.contains('hidden')) {
@@ -1958,6 +2069,20 @@ export class Game {
    * per death, and re-sending it every frame for the half-second a slow
    * connection takes to answer would be a flood for no reason.
    */
+  /**
+   * Puts the perk picker up, with the room's own catalogue in it.
+   *
+   * Called at the start of every Perks match and from the class key. It takes
+   * the mouse, because a grid of cards is not something a locked pointer can
+   * click — and the same escape/backdrop handling every other modal has puts
+   * it back.
+   */
+  openPerkPicker() {
+    if (!this.perkList) return;
+    this.input.unlock();
+    this.menu.openPerkModal(this.perkList, this.perkId);
+  }
+
   requestRespawn() {
     const now = performance.now() / 1000;
     if (this.alive || now < this.respawnAt) return;
@@ -2064,7 +2189,8 @@ export class Game {
     // cursor behind a camera nobody is driving.
     if (this.state !== 'playing') return;
     if (this.banned || this.hud.matchEndOpen || this.hud.chatOpen || this.scoreboardPinned) return;
-    if (this.menu.visible || this.menu.classModalOpen || this.menu.authModalOpen) return;
+    if (this.menu.visible || this.menu.classModalOpen || this.menu.perkModalOpen
+        || this.menu.authModalOpen) return;
     if (this.menu.playerCardOpen || this.hud.reportCardOpen) return;
     this.input.lock();
   }
@@ -2147,7 +2273,7 @@ export class Game {
     // rebuilt here.
     if (this.myId) this.entities.setClass(this.myId, classId, undefined, this.cos);
     for (let i = 0; i < this.weapons.length; i++) {
-      this.ammo[i] = this.weapons[i].magSize ?? 0;
+      this.ammo[i] = this.magOf(this.weapons[i]);
       this.reserve[i] = -1;
     }
     this.slot = 0;
@@ -2239,13 +2365,17 @@ export class Game {
     const ads = this.input.ads;
     this.net.shoot(this.input.yaw, this.input.pitch, ads, seq, Math.round(burst));
 
-    // Local prediction of the exact rays the server will test.
+    // Local prediction of the exact rays the server will test — including the
+    // perk's own cone multiplier, which is in the server's call too. The two
+    // sides derive pellet directions from the same seed and the same cone, and
+    // a cone they disagreed about would draw a tracer where nothing was fired.
     const spread = spreadFor(w, {
       moving: Math.hypot(this.local.vx, this.local.vz) > 1.5,
       airborne: !this.local.onGround,
       ads,
       crouching: this.local.crouching,
       burst,
+      mult: this.perkMods.spread,
     });
     const dirs = shotDirections(this.input.yaw, this.input.pitch, spread, shotSeed(this.myId, seq), w.pellets ?? 1);
     const muzzle = this.muzzleWorld(ads);
@@ -2378,11 +2508,20 @@ export class Game {
     sfx.shot({ ...this.weapons[2].sound, gain: 0.35 }, null, null);
   }
 
+  /**
+   * How many rounds this body's magazine holds — the perk's, not the weapon's.
+   *
+   * The same question `Player.magOf` answers on the server, asked the same way,
+   * so the client never thinks a Scavenger's gun is full at thirty when the
+   * room is holding fifty-two in it.
+   */
+  magOf(w) { return Math.max(1, Math.round((w?.magSize ?? 0) * this.perkMods.mag)); }
+
   tryReload() {
     if (!this.alive || this.reloading) return;
     const w = this.weapon;
     // Reserves are unlimited (-1); only a full magazine blocks a reload.
-    if (w.melee || this.ammo[this.slot] >= w.magSize || this.reserve[this.slot] === 0) return;
+    if (w.melee || this.ammo[this.slot] >= this.magOf(w) || this.reserve[this.slot] === 0) return;
     this.net.reload();
   }
 
@@ -2807,7 +2946,7 @@ export class Game {
 
     const wasGrounded = this.local.onGround;
     const wasSliding = this.local.sliding;
-    step(this.local, inp, this.world, K.TICK_DT, { speedMult: this.speedMultFor(keys), fly: this.godMode });
+    step(this.local, inp, this.world, K.TICK_DT, this.moveOptsFor(keys));
 
     // Local-only feedback the server doesn't need to tell us about.
     if (this.local.landed) {
@@ -2879,13 +3018,14 @@ export class Game {
       const shot = this.killCam.update(dt, this.entities, this.deathAt, this.world);
       if (shot) {
         cam.position.set(shot.from.x, shot.from.y, shot.from.z);
-        // The replay hands back the killer's own yaw and pitch and they are set
-        // straight onto the camera: `lookAt` cannot express a view pointing
-        // straight up, and "cannot look straight up" is not a property a
-        // first-person camera is allowed to have. The orbit hands back a point
-        // instead, because an orbit has no view angles of its own.
+        // Angles, not a look-at. `lookAt` cannot express a view pointing
+        // straight up — and "cannot look straight up" is not a property a
+        // first-person camera is allowed to have — and being a hard set, it cut
+        // the orientation on the frame the replay handed over to the orbit
+        // while the position eased across. The cam aims itself now; the
+        // fallback is kept for the frame a map swap leaves it with neither.
         if (shot.rot) cam.rotation.set(shot.rot.pitch, shot.rot.yaw, 0, 'YXZ');
-        else cam.lookAt(shot.at.x, shot.at.y, shot.at.z);
+        else if (shot.at) cam.lookAt(shot.at.x, shot.at.y, shot.at.z);
         return;
       }
     }
@@ -3067,7 +3207,8 @@ export class Game {
       // whole of its authority over the match: it never moves the server's
       // timer, it only declines to spend it.
       const busy = this.respawnHeld || this.inGameMenuOpen || this.hud.chatOpen
-        || this.menu.classModalOpen || this.menu.visible || this.hud.matchEndOpen
+        || this.menu.classModalOpen || this.menu.perkModalOpen || this.menu.visible
+        || this.hud.matchEndOpen
         || this.scoreboardPinned || !!this.afkNotice || this.killCam.holding
         || !$('pause').classList.contains('hidden');
 
@@ -3103,16 +3244,23 @@ export class Game {
       ads: this.input.ads,
       crouching: this.local.crouching,
       burst: this.currentBurst(nowSec),
+      mult: this.perkMods.spread,
     });
 
     this.hud.update({
       health: this.health,
+      maxHealth: this.maxHealth,
       ammo: this.ammo[this.slot],
       reserve: this.reserve[this.slot],
       weapon: w,
       slot: this.slot,
       reloading: this.reloading,
-      reloadFrac: this.reloading ? clamp(1 - (this.reloadEnd - nowSec) / Math.max(0.05, w.reloadTime ?? 1), 0, 1) : 0,
+      // Against the length the *server* gave this reload, not the weapon's own:
+      // a perk stretches or shortens it, and a bar measured off the weapon
+      // would fill early for a Trooper and stall for a Juggernaut.
+      reloadFrac: this.reloading
+        ? clamp(1 - (this.reloadEnd - nowSec) / Math.max(0.05, this.reloadTime || w.reloadTime || 1), 0, 1)
+        : 0,
       godMode: this.godMode,
       spread,
       ads: this.input.ads,
