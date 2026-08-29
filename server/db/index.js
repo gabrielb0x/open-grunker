@@ -17,6 +17,12 @@ import {
   levelFromXp, xpForLevel, REPORT_STATUSES, CLAN_ROLES, streakReward, FIRST_WIN_BONUS,
   SIGNUP_REWARD, levelUpReward, normaliseCard, normalisePrivacy,
 } from '../../shared/constants.js';
+import {
+  ITEMS, ITEM_IDS, SLOT, RARITY, CASES, DEFAULT_EQUIP, FREE_ITEMS,
+  itemId, getItem, rollCase, scrapValue,
+  MARKET_FEE, MARKET_MIN_PRICE, MARKET_MAX_PRICE, MARKET_MAX_LISTINGS,
+  TRADE_MAX_ITEMS, TRADE_MAX_OPEN, TRADE_TTL_SEC,
+} from '../../shared/cosmetics.js';
 
 const logger = log.child('db');
 
@@ -148,6 +154,7 @@ function migrate() {
 
   regradeLevels();
   grantSignupSkins();
+  migrateCosmetics();
 }
 
 /**
@@ -213,6 +220,91 @@ function grantSignupSkins() {
     granted++;
   }
   if (granted) logger.info(`migrated: granted the sign-up finish to ${granted} existing account(s)`);
+}
+
+/**
+ * Brings a pre-V2 account's wardrobe up to the item model.
+ *
+ * Before V2 an account held a flat list of finish ids and equipped one per
+ * class. That list is not throwable: somebody paid GR for those. So each
+ * legacy id is minted as a real inventory unit on all three weapon slots — a
+ * player who bought Gold Rush bought the look, and V2 charging them twice more
+ * for the same look on the sidearm and the knife would be a robbery dressed up
+ * as a feature — and the class they had it equipped on keeps it equipped.
+ *
+ * `migrated_cosmetics` on the loadout row is the marker. It runs once per
+ * account and never again, so a player who later sells the sidearm copy does
+ * not have it minted back on the next boot.
+ */
+function migrateCosmetics() {
+  const l = cols('loadouts');
+  if (!l.has('equip')) db.exec("ALTER TABLE loadouts ADD COLUMN equip TEXT NOT NULL DEFAULT '{}'");
+  if (!l.has('primaries')) db.exec("ALTER TABLE loadouts ADD COLUMN primaries TEXT NOT NULL DEFAULT '{}'");
+  if (!l.has('migrated_cosmetics')) {
+    db.exec('ALTER TABLE loadouts ADD COLUMN migrated_cosmetics INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!cols('users').has('trade_banned_until')) {
+    db.exec('ALTER TABLE users ADD COLUMN trade_banned_until INTEGER NOT NULL DEFAULT 0');
+  }
+
+  const rows = db.prepare(
+    'SELECT user_id, skins, owned, class_id FROM loadouts WHERE migrated_cosmetics = 0').all();
+  if (!rows.length) return;
+
+  const mint = db.prepare(
+    `INSERT INTO inventory (id, user_id, item_id, acquired_at, source, origin, serial, locked)
+     VALUES (?,?,?,?,'migrate','v1 wardrobe',?,0)`);
+  const mark = db.prepare(
+    'UPDATE loadouts SET equip = ?, primaries = ?, migrated_cosmetics = 1 WHERE user_id = ?');
+  // Prepared here rather than reaching for `nextSerial`: this runs during
+  // migrate(), long before the cosmetics section of this file has been
+  // evaluated, and its statements are still in the temporal dead zone.
+  const counted = db.prepare('SELECT COUNT(*) AS n FROM inventory WHERE item_id = ?');
+  const serialOf = (id) => int(counted.get(id)?.n ?? 0) + 1;
+  const stamp = Math.floor(Date.now() / 1000);
+  let units = 0;
+
+  db.exec('BEGIN');
+  try {
+    for (const row of rows) {
+      let owned = [];
+      let skins = {};
+      try { owned = JSON.parse(row.owned ?? '[]'); } catch { owned = []; }
+      try { skins = JSON.parse(row.skins ?? '{}'); } catch { skins = {}; }
+      if (!Array.isArray(owned)) owned = [];
+      if (!skins || typeof skins !== 'object') skins = {};
+
+      for (const key of owned) {
+        for (const slot of [SLOT.PRIMARY, SLOT.SECONDARY, SLOT.KNIFE]) {
+          const id = itemId(slot, key);
+          const item = getItem(id);
+          // Skip anything that is not sold any more, and anything free: a free
+          // item needs no row to be owned.
+          if (!item || item.default || item.earned) continue;
+          mint.run(newId(), row.user_id, id, stamp, serialOf(id));
+          units++;
+        }
+      }
+
+      // What they had on, kept on. A finish they no longer qualify for falls
+      // back on its own the first time the loadout is read.
+      const primaries = {};
+      for (const [classId, key] of Object.entries(skins)) {
+        const id = itemId(SLOT.PRIMARY, key);
+        if (getItem(id)) primaries[classId] = id;
+      }
+      const equip = { ...DEFAULT_EQUIP };
+      const first = primaries[row.class_id] ?? Object.values(primaries)[0];
+      if (first) equip[SLOT.PRIMARY] = first;
+      mark.run(JSON.stringify(equip), JSON.stringify(primaries), row.user_id);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    logger.error(`cosmetics migration failed, wardrobes left untouched: ${err.message}`);
+    return;
+  }
+  logger.info(`migrated: ${rows.length} wardrobe(s) to the V2 item model, ${units} unit(s) minted`);
 }
 
 /** Column names of one table, as a set. */
@@ -421,7 +513,8 @@ const S = {
 
   loadoutByUser: db.prepare('SELECT * FROM loadouts WHERE user_id = ?'),
   saveLoadout: db.prepare(
-    `UPDATE loadouts SET class_id = ?, skins = ?, owned = ?, settings = ?, keybinds = ?, updated_at = ?
+    `UPDATE loadouts SET class_id = ?, skins = ?, owned = ?, settings = ?, keybinds = ?,
+            equip = ?, primaries = ?, updated_at = ?
      WHERE user_id = ?`),
 
   insertSession: db.prepare(
@@ -999,10 +1092,11 @@ export const loadouts = {
     if (!row) { S.insertLoadout.run(userId, now()); row = S.loadoutByUser.get(userId); }
     return row;
   },
-  save(userId, { classId, skins, owned, settings, keybinds }) {
+  save(userId, { classId, skins, owned, settings, keybinds, equip, primaries }) {
     S.saveLoadout.run(
       classId, JSON.stringify(skins ?? {}), JSON.stringify(owned ?? []),
-      JSON.stringify(settings ?? {}), JSON.stringify(keybinds ?? {}), now(), userId,
+      JSON.stringify(settings ?? {}), JSON.stringify(keybinds ?? {}),
+      JSON.stringify(equip ?? {}), JSON.stringify(primaries ?? {}), now(), userId,
     );
   },
 };
@@ -2194,6 +2288,8 @@ export function maintain() {
   // An invitation nobody accepted is not a standing offer.
   const lapsed = clans.pruneInvites();
   if (lapsed) logger.info(`dropped ${lapsed} lapsed clan invite(s)`);
+  const timedOut = trades.prune();
+  if (timedOut) logger.info(`expired ${timedOut} unanswered trade offer(s)`);
   // Telemetry is the one table that grows without anybody doing anything, so it
   // is also the one with a hard horizon — and the operator's, not this file's.
   const keep = Math.max(1, config.metrics?.keepDays ?? METRICS_KEEP_DAYS) * 86400;
@@ -2201,6 +2297,685 @@ export function maintain() {
   const olds = events.prune(keep);
   if (samples || olds) logger.info(`pruned ${samples} metric sample(s) and ${olds} event(s)`);
 }
+
+/* ── Cosmetics: inventory, cases, the market and trades ──────────────────── */
+
+/**
+ * The economy, in one place.
+ *
+ * Everything below moves ownership of an inventory *unit*, and every one of
+ * them obeys the same three rules, which is why they are written together
+ * rather than scattered through the API:
+ *
+ *   1. A locked unit does not move. Locked means staked in an open trade or
+ *      standing on the market, and every mover re-checks it inside the same
+ *      transaction it moves in — not before, where a second request could slip
+ *      between the check and the write.
+ *   2. GR and units move in one transaction or neither moves. A market
+ *      purchase that debits the buyer and then fails to hand over the item is
+ *      the single worst bug this file could have, so there is exactly one
+ *      helper that does both and everything routes through it.
+ *   3. Nothing here trusts an item id. `getItem` is the only thing that turns
+ *      a string into an item, and it returns null rather than inventing one.
+ */
+
+/** How many of an item have ever been minted, so the next one can be numbered. */
+const S_SERIAL = db.prepare('SELECT COUNT(*) AS n FROM inventory WHERE item_id = ?');
+function nextSerial(id) {
+  return int(S_SERIAL.get(id)?.n ?? 0) + 1;
+}
+
+const INV = {
+  mint: db.prepare(
+    `INSERT INTO inventory (id, user_id, item_id, acquired_at, source, origin, serial, locked)
+     VALUES (?,?,?,?,?,?,?,0)`),
+  unit: db.prepare('SELECT * FROM inventory WHERE id = ?'),
+  byUser: db.prepare('SELECT * FROM inventory WHERE user_id = ? ORDER BY acquired_at DESC, rowid DESC'),
+  countUser: db.prepare('SELECT COUNT(*) AS n FROM inventory WHERE user_id = ?'),
+  drop: db.prepare('DELETE FROM inventory WHERE id = ?'),
+  give: db.prepare('UPDATE inventory SET user_id = ?, source = ?, origin = ?, locked = 0 WHERE id = ?'),
+  lock: db.prepare('UPDATE inventory SET locked = ? WHERE id = ?'),
+  spend: db.prepare('UPDATE users SET gr = gr - ? WHERE id = ? AND gr >= ?'),
+  credit: db.prepare('UPDATE users SET gr = gr + ? WHERE id = ?'),
+  gr: db.prepare('SELECT gr, trade_banned_until FROM users WHERE id = ?'),
+};
+
+/** Runs `fn` inside one transaction, rolling the whole thing back if it throws. */
+function tx(fn) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const out = fn();
+    db.exec('COMMIT');
+    return out;
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch { /* the failure already ended it */ }
+    throw err;
+  }
+}
+
+/**
+ * Takes `amount` GR off an account, or fails.
+ *
+ * The `AND gr >= ?` in the statement is what makes this safe: two concurrent
+ * purchases cannot both read a balance of 500 and both spend it, because the
+ * second UPDATE matches no row and reports zero changes.
+ */
+function debit(userId, amount) {
+  if (amount <= 0) return true;
+  const res = INV.spend.run(Math.round(amount), userId, Math.round(amount));
+  return int(res.changes ?? 0) > 0;
+}
+
+/** An error the API turns into a 400 with its own message rather than a 500. */
+export class EconomyError extends Error {
+  constructor(message, code = 'economy') {
+    super(message);
+    this.name = 'EconomyError';
+    this.code = code;
+    this.expose = true;
+  }
+}
+
+const fail = (msg, code) => { throw new EconomyError(msg, code); };
+
+export const inventory = {
+  /**
+   * Puts one item in an account's inventory and returns the unit.
+   *
+   * `source` and `origin` are the provenance every unit carries for the rest
+   * of its life — which case it fell out of, who sold it, which admin granted
+   * it — and the admin panel reads nothing else to answer "where did this come
+   * from".
+   */
+  mint(userId, itemIdStr, { source = 'grant', origin = null } = {}) {
+    const item = getItem(itemIdStr);
+    if (!item) fail('No such item.', 'item');
+    if (item.default) fail('That item is free — everybody already has it.', 'free');
+    if (item.earned) fail('That item is earned, not granted.', 'earned');
+    const id = newId();
+    INV.mint.run(id, userId, item.id, now(), source, origin, nextSerial(item.id));
+    return INV.unit.get(id);
+  },
+
+  /** One unit by id, or null. */
+  unit(id) { return INV.unit.get(id) ?? null; },
+
+  /** Everything an account holds, newest first, with the catalogue entry attached. */
+  list(userId) {
+    return INV.byUser.all(userId).map((u) => ({
+      unitId: u.id, itemId: u.item_id, serial: int(u.serial), locked: !!int(u.locked),
+      acquiredAt: int(u.acquired_at), source: u.source, origin: u.origin,
+    }));
+  },
+
+  /** How many units an account holds. */
+  count(userId) { return int(INV.countUser.get(userId)?.n ?? 0); },
+
+  /**
+   * The item ids an account can equip.
+   *
+   * Deduplicated: holding four Gold Rush units does not put four cards in the
+   * loadout screen, and the loadout only ever stores an item id — which unit
+   * is worn is a question nothing in the game asks.
+   */
+  ownedIds(userId) {
+    const seen = new Set(FREE_ITEMS);
+    for (const row of INV.byUser.all(userId)) seen.add(row.item_id);
+    return [...seen];
+  },
+
+  /**
+   * Hands a unit back to the game for GR.
+   *
+   * Deliberately a bad deal — SCRAP_RATE is a fifth of catalogue — because
+   * this is the floor under the market rather than a way to play it. Anybody
+   * who wants what an item is worth sells it to another player.
+   */
+  scrap(userId, unitId) {
+    return tx(() => {
+      const unit = INV.unit.get(unitId);
+      if (!unit || unit.user_id !== userId) fail('You do not own that.', 'owner');
+      if (int(unit.locked)) fail('That item is staked in a trade or listed on the market.', 'locked');
+      const item = getItem(unit.item_id);
+      if (!item) fail('No such item.', 'item');
+      const paid = scrapValue(item);
+      INV.drop.run(unitId);
+      INV.credit.run(paid, userId);
+      return { gr: paid, itemId: item.id };
+    });
+  },
+};
+
+/* ── Cases ───────────────────────────────────────────────────────────────── */
+
+const CO = {
+  log: db.prepare(
+    `INSERT INTO case_openings (id, user_id, case_id, item_id, unit_id, price, at)
+     VALUES (?,?,?,?,?,?,?)`),
+  recent: db.prepare(
+    `SELECT o.*, u.username FROM case_openings o LEFT JOIN users u ON u.id = o.user_id
+     ORDER BY o.at DESC, o.rowid DESC LIMIT ?`),
+  byUser: db.prepare('SELECT * FROM case_openings WHERE user_id = ? ORDER BY at DESC LIMIT ?'),
+  tally: db.prepare(
+    `SELECT case_id, COUNT(*) AS opens, SUM(price) AS spent FROM case_openings GROUP BY case_id`),
+};
+
+export const cases = {
+  /**
+   * Opens one case: charges for it, rolls it, mints the result and writes the
+   * audit row — all inside one transaction.
+   *
+   * The roll happens *inside* the transaction and after the debit, so a player
+   * cannot learn what they were going to get and then arrange not to pay for
+   * it. `random` is the caller's, which is how the server passes a CSPRNG and
+   * the tests pass a fixed sequence.
+   */
+  open(userId, caseId, random) {
+    const box = CASES[caseId];
+    if (!box) fail('No such case.', 'case');
+    return tx(() => {
+      if (!debit(userId, box.price)) fail('Not enough GR.', 'funds');
+      const item = rollCase(caseId, random);
+      if (!item) fail('That case is empty.', 'case');
+      const unitId = newId();
+      INV.mint.run(unitId, userId, item.id, now(), 'case', box.id, nextSerial(item.id));
+      CO.log.run(newId(), userId, box.id, item.id, unitId, box.price, now());
+      return { unitId, itemId: item.id, caseId: box.id, price: box.price };
+    });
+  },
+
+  /** The latest openings across the whole instance — the live drop feed. */
+  recent(limit = 30) {
+    return CO.recent.all(Math.min(200, Math.max(1, limit | 0))).map((r) => ({
+      id: r.id, user: r.username, userId: r.user_id, caseId: r.case_id,
+      itemId: r.item_id, at: int(r.at),
+    }));
+  },
+
+  /** One account's opening history. */
+  forUser(userId, limit = 50) {
+    return CO.byUser.all(userId, Math.min(200, Math.max(1, limit | 0))).map((r) => ({
+      id: r.id, caseId: r.case_id, itemId: r.item_id, at: int(r.at), price: int(r.price),
+    }));
+  },
+
+  /**
+   * Opens and GR spent per case, plus the realised rarity split.
+   *
+   * This is the number the admin panel puts next to the published odds. If the
+   * two ever disagree by more than sampling noise, the roll is wrong and this
+   * is how anybody would find out.
+   */
+  stats() {
+    const byCase = CO.tally.all().map((r) => ({
+      caseId: r.case_id, opens: int(r.opens), spent: int(r.spent ?? 0),
+    }));
+    const rows = db.prepare('SELECT item_id, COUNT(*) AS n FROM case_openings GROUP BY item_id').all();
+    const rarity = {};
+    let total = 0;
+    for (const r of rows) {
+      const item = getItem(r.item_id);
+      if (!item) continue;
+      rarity[item.rarity] = (rarity[item.rarity] ?? 0) + int(r.n);
+      total += int(r.n);
+    }
+    return { byCase, rarity, total };
+  },
+};
+
+/* ── The market ──────────────────────────────────────────────────────────── */
+
+const MKT = {
+  list: db.prepare(
+    `INSERT INTO market_listings (id, seller_id, unit_id, item_id, price, listed_at, net)
+     VALUES (?,?,?,?,?,?,0)`),
+  byId: db.prepare('SELECT * FROM market_listings WHERE id = ?'),
+  openBySeller: db.prepare(
+    `SELECT * FROM market_listings WHERE seller_id = ? AND sold_at IS NULL AND cancelled_at IS NULL
+     ORDER BY listed_at DESC`),
+  countOpen: db.prepare(
+    'SELECT COUNT(*) AS n FROM market_listings WHERE seller_id = ? AND sold_at IS NULL AND cancelled_at IS NULL'),
+  sell: db.prepare('UPDATE market_listings SET sold_at = ?, buyer_id = ?, net = ? WHERE id = ? AND sold_at IS NULL AND cancelled_at IS NULL'),
+  cancel: db.prepare('UPDATE market_listings SET cancelled_at = ? WHERE id = ? AND sold_at IS NULL AND cancelled_at IS NULL'),
+  cheapest: db.prepare(
+    `SELECT item_id, MIN(price) AS low, COUNT(*) AS n FROM market_listings
+     WHERE sold_at IS NULL AND cancelled_at IS NULL GROUP BY item_id`),
+  history: db.prepare(
+    `SELECT price, sold_at FROM market_listings WHERE item_id = ? AND sold_at IS NOT NULL
+     ORDER BY sold_at DESC LIMIT ?`),
+};
+
+export const market = {
+  /**
+   * Puts a unit up for sale. The unit is locked in the same transaction, so it
+   * cannot be equipped away, scrapped or staked in a trade while it is listed.
+   */
+  list(userId, unitId, price) {
+    const p = Math.round(Number(price) || 0);
+    if (!Number.isFinite(p) || p < MARKET_MIN_PRICE) fail(`The floor is ${MARKET_MIN_PRICE} GR.`, 'price');
+    if (p > MARKET_MAX_PRICE) fail('That is more than anything is worth.', 'price');
+    return tx(() => {
+      const ban = INV.gr.get(userId);
+      if (int(ban?.trade_banned_until ?? 0) > now()) fail('Your account cannot trade right now.', 'banned');
+      if (int(MKT.countOpen.get(userId)?.n ?? 0) >= MARKET_MAX_LISTINGS) {
+        fail(`You may have ${MARKET_MAX_LISTINGS} listings standing at once.`, 'limit');
+      }
+      const unit = INV.unit.get(unitId);
+      if (!unit || unit.user_id !== userId) fail('You do not own that.', 'owner');
+      if (int(unit.locked)) fail('That item is already staked somewhere.', 'locked');
+      const item = getItem(unit.item_id);
+      if (!item) fail('No such item.', 'item');
+      if (!item.tradable) fail('That item cannot be sold.', 'bound');
+      const id = newId();
+      MKT.list.run(id, userId, unitId, item.id, p, now());
+      INV.lock.run(1, unitId);
+      return { id, itemId: item.id, price: p };
+    });
+  },
+
+  /** Takes a listing back down and unlocks the unit. */
+  cancel(userId, listingId) {
+    return tx(() => {
+      const row = MKT.byId.get(listingId);
+      if (!row || row.seller_id !== userId) fail('That is not your listing.', 'owner');
+      if (row.sold_at) fail('That one has already sold.', 'sold');
+      if (row.cancelled_at) fail('That listing is already down.', 'gone');
+      MKT.cancel.run(now(), listingId);
+      INV.lock.run(0, row.unit_id);
+      return { id: listingId };
+    });
+  },
+
+  /**
+   * Buys a listing.
+   *
+   * Both sides move here or neither does: the buyer is debited, the seller is
+   * credited the price less MARKET_FEE, and the unit changes hands. The fee is
+   * the only GR this economy destroys, which is what keeps the total in
+   * circulation from climbing forever.
+   */
+  buy(userId, listingId) {
+    return tx(() => {
+      const row = MKT.byId.get(listingId);
+      if (!row) fail('No such listing.', 'listing');
+      if (row.sold_at || row.cancelled_at) fail('That listing is gone.', 'gone');
+      if (row.seller_id === userId) fail('You cannot buy your own listing.', 'self');
+      const ban = INV.gr.get(userId);
+      if (int(ban?.trade_banned_until ?? 0) > now()) fail('Your account cannot trade right now.', 'banned');
+      const price = int(row.price);
+      if (!debit(userId, price)) fail('Not enough GR.', 'funds');
+      const net = Math.max(0, price - Math.round(price * MARKET_FEE));
+      // `sold_at IS NULL` is in the UPDATE, so two buyers racing for the last
+      // copy cannot both win it: the loser's statement changes nothing.
+      const res = MKT.sell.run(now(), userId, net, listingId);
+      if (int(res.changes ?? 0) === 0) fail('Somebody bought that first.', 'gone');
+      INV.give.run(userId, 'market', row.seller_id, row.unit_id);
+      INV.credit.run(net, row.seller_id);
+      return { itemId: row.item_id, price, net, sellerId: row.seller_id };
+    });
+  },
+
+  /**
+   * The board, one row per item rather than one per listing.
+   *
+   * Nobody browsing wants forty identical Gold Rush listings; they want the
+   * cheapest one and how many there are behind it. The individual listings are
+   * fetched only once an item is opened.
+   */
+  board({ slot = null, rarity = null, q = '', sort = 'price', limit = 120 } = {}) {
+    const cheap = new Map();
+    for (const row of MKT.cheapest.all()) cheap.set(row.item_id, { low: int(row.low), n: int(row.n) });
+    const needle = String(q ?? '').trim().toLowerCase();
+    const rows = [...cheap.entries()].map(([id, agg]) => {
+      const item = getItem(id);
+      return item ? { item, ...agg } : null;
+    }).filter(Boolean)
+      .filter((r) => (!slot || r.item.slot === slot)
+        && (!rarity || r.item.rarity === rarity)
+        && (!needle || r.item.name.toLowerCase().includes(needle)));
+    const dir = sort === 'priceDesc' ? -1 : 1;
+    rows.sort((a, b) => (sort === 'rarity'
+      ? (RARITY[b.item.rarity].tier - RARITY[a.item.rarity].tier) || (a.low - b.low)
+      : (a.low - b.low) * dir));
+    return rows.slice(0, Math.min(300, Math.max(1, limit | 0))).map((r) => ({
+      itemId: r.item.id, low: r.low, count: r.n,
+    }));
+  },
+
+  /** Every standing listing for one item, cheapest first. */
+  forItem(itemIdStr, limit = 60) {
+    return db.prepare(
+      `SELECT l.id, l.price, l.listed_at, l.seller_id, u.username AS seller, i.serial
+       FROM market_listings l
+       LEFT JOIN users u ON u.id = l.seller_id
+       LEFT JOIN inventory i ON i.id = l.unit_id
+       WHERE l.item_id = ? AND l.sold_at IS NULL AND l.cancelled_at IS NULL
+       ORDER BY l.price ASC LIMIT ?`).all(itemIdStr, Math.min(200, Math.max(1, limit | 0)))
+      .map((r) => ({
+        id: r.id, price: int(r.price), listedAt: int(r.listed_at),
+        seller: r.seller, sellerId: r.seller_id, serial: int(r.serial ?? 0),
+      }));
+  },
+
+  /** What one item has actually been selling for. */
+  history(itemIdStr, limit = 40) {
+    const rows = MKT.history.all(itemIdStr, Math.min(200, Math.max(1, limit | 0)));
+    const prices = rows.map((r) => int(r.price));
+    const avg = prices.length ? Math.round(prices.reduce((a, b) => a + b, 0) / prices.length) : 0;
+    return {
+      sales: rows.map((r) => ({ price: int(r.price), at: int(r.sold_at) })),
+      average: avg, count: prices.length,
+    };
+  },
+
+  /** One account's listings, standing and settled. */
+  mine(userId) {
+    return MKT.openBySeller.all(userId).map((r) => ({
+      id: r.id, itemId: r.item_id, price: int(r.price), listedAt: int(r.listed_at),
+    }));
+  },
+
+  /** Instance-wide totals, for the admin panel. */
+  stats() {
+    const open = db.prepare(
+      'SELECT COUNT(*) AS n, IFNULL(SUM(price),0) AS v FROM market_listings WHERE sold_at IS NULL AND cancelled_at IS NULL').get();
+    const sold = db.prepare(
+      'SELECT COUNT(*) AS n, IFNULL(SUM(price),0) AS v, IFNULL(SUM(price - net),0) AS fee FROM market_listings WHERE sold_at IS NOT NULL').get();
+    return {
+      openListings: int(open?.n ?? 0), openValue: int(open?.v ?? 0),
+      sales: int(sold?.n ?? 0), volume: int(sold?.v ?? 0), feesBurned: int(sold?.fee ?? 0),
+    };
+  },
+
+  /** The newest listings across the instance, for moderation. */
+  recent(limit = 60) {
+    return db.prepare(
+      `SELECT l.*, u.username AS seller, b.username AS buyer
+       FROM market_listings l
+       LEFT JOIN users u ON u.id = l.seller_id
+       LEFT JOIN users b ON b.id = l.buyer_id
+       ORDER BY l.listed_at DESC LIMIT ?`).all(Math.min(200, Math.max(1, limit | 0)))
+      .map((r) => ({
+        id: r.id, itemId: r.item_id, price: int(r.price), seller: r.seller, buyer: r.buyer,
+        listedAt: int(r.listed_at), soldAt: r.sold_at ? int(r.sold_at) : null,
+        cancelled: !!r.cancelled_at,
+      }));
+  },
+};
+
+/* ── Trades ──────────────────────────────────────────────────────────────── */
+
+const TR = {
+  create: db.prepare(
+    `INSERT INTO trades (id, from_id, to_id, status, note, from_gr, to_gr, created_at, updated_at, expires_at)
+     VALUES (?,?,?,'open',?,?,?,?,?,?)`),
+  addItem: db.prepare('INSERT INTO trade_items (trade_id, unit_id, item_id, side) VALUES (?,?,?,?)'),
+  byId: db.prepare('SELECT * FROM trades WHERE id = ?'),
+  items: db.prepare('SELECT * FROM trade_items WHERE trade_id = ?'),
+  setStatus: db.prepare("UPDATE trades SET status = ?, updated_at = ? WHERE id = ? AND status = 'open'"),
+  openFor: db.prepare(
+    `SELECT * FROM trades WHERE (from_id = ? OR to_id = ?) AND status = 'open' ORDER BY created_at DESC`),
+  historyFor: db.prepare(
+    `SELECT * FROM trades WHERE (from_id = ? OR to_id = ?) AND status != 'open'
+     ORDER BY updated_at DESC LIMIT ?`),
+  countOpenFrom: db.prepare("SELECT COUNT(*) AS n FROM trades WHERE from_id = ? AND status = 'open'"),
+  stale: db.prepare("SELECT id FROM trades WHERE status = 'open' AND expires_at < ?"),
+};
+
+/** Attaches both sides' items to a trade row. */
+function hydrateTrade(row) {
+  if (!row) return null;
+  const items = TR.items.all(row.id);
+  return {
+    id: row.id, fromId: row.from_id, toId: row.to_id, status: row.status,
+    note: row.note ?? '', fromGr: int(row.from_gr), toGr: int(row.to_gr),
+    createdAt: int(row.created_at), updatedAt: int(row.updated_at), expiresAt: int(row.expires_at),
+    fromItems: items.filter((i) => i.side === 'from').map((i) => i.item_id),
+    toItems: items.filter((i) => i.side === 'to').map((i) => i.item_id),
+  };
+}
+
+export const trades = {
+  /**
+   * Opens an offer.
+   *
+   * Both sides' units are locked the moment the offer exists, which is the
+   * only thing that makes an offer meaningful: without it a player could stake
+   * the same knife in ten offers and honour one. Locking the *recipient's*
+   * units too is the less obvious half — an offer they have not seen yet
+   * would otherwise be void the second they sold what was being asked for.
+   */
+  create(fromId, toId, { fromUnits = [], toUnits = [], fromGr = 0, toGr = 0, note = '' } = {}) {
+    if (fromId === toId) fail('You cannot trade with yourself.', 'self');
+    const give = Math.max(0, Math.round(Number(fromGr) || 0));
+    const ask = Math.max(0, Math.round(Number(toGr) || 0));
+    if (fromUnits.length > TRADE_MAX_ITEMS || toUnits.length > TRADE_MAX_ITEMS) {
+      fail(`At most ${TRADE_MAX_ITEMS} items a side.`, 'limit');
+    }
+    if (!fromUnits.length && !toUnits.length && !give && !ask) fail('An empty offer is not an offer.', 'empty');
+
+    return tx(() => {
+      for (const id of [fromId, toId]) {
+        const u = INV.gr.get(id);
+        if (!u) fail('No such account.', 'user');
+        if (int(u.trade_banned_until ?? 0) > now()) fail('One of you cannot trade right now.', 'banned');
+      }
+      if (int(TR.countOpenFrom.get(fromId)?.n ?? 0) >= TRADE_MAX_OPEN) {
+        fail(`You may have ${TRADE_MAX_OPEN} offers open at once.`, 'limit');
+      }
+      // GR offered is checked but not held: an offer is not an escrow, and a
+      // sender who spends it before it is accepted simply has the acceptance
+      // fail. Holding it would let anybody freeze a rival's wallet by opening
+      // ten offers they never intend to honour.
+      if (give > int(INV.gr.get(fromId)?.gr ?? 0)) fail('You do not have that much GR.', 'funds');
+
+      const id = newId();
+      const at = now();
+      TR.create.run(id, fromId, toId, String(note ?? '').slice(0, 200), give, ask, at, at, at + TRADE_TTL_SEC);
+
+      const stake = (units, owner, side) => {
+        for (const unitId of units) {
+          const unit = INV.unit.get(unitId);
+          if (!unit || unit.user_id !== owner) fail('Somebody does not own what is being offered.', 'owner');
+          if (int(unit.locked)) fail('One of those items is already staked elsewhere.', 'locked');
+          const item = getItem(unit.item_id);
+          if (!item?.tradable) fail(`${item?.name ?? 'That item'} cannot be traded.`, 'bound');
+          TR.addItem.run(id, unitId, unit.item_id, side);
+          INV.lock.run(1, unitId);
+        }
+      };
+      stake(fromUnits, fromId, 'from');
+      stake(toUnits, toId, 'to');
+      return hydrateTrade(TR.byId.get(id));
+    });
+  },
+
+  /** One offer, or null, with both sides attached. */
+  get(id) { return hydrateTrade(TR.byId.get(id)); },
+
+  /** Ends an offer without moving anything, and unlocks both sides. */
+  close(id, status) {
+    return tx(() => {
+      const row = TR.byId.get(id);
+      if (!row) fail('No such offer.', 'trade');
+      if (row.status !== 'open') fail('That offer is already settled.', 'settled');
+      TR.setStatus.run(status, now(), id);
+      for (const item of TR.items.all(id)) INV.lock.run(0, item.unit_id);
+      return hydrateTrade(TR.byId.get(id));
+    });
+  },
+
+  /**
+   * Accepts an offer: every unit and both GR figures move, or nothing does.
+   *
+   * Ownership is re-checked here rather than trusted from `create`, because
+   * an admin could have revoked an item, an account could have been deleted,
+   * or the offer could be a week old. If any of it no longer holds the offer
+   * is closed as `declined` rather than half-applied.
+   */
+  accept(id, byId) {
+    return tx(() => {
+      const row = TR.byId.get(id);
+      if (!row) fail('No such offer.', 'trade');
+      if (row.status !== 'open') fail('That offer is already settled.', 'settled');
+      if (row.to_id !== byId) fail('That offer is not yours to accept.', 'owner');
+      if (int(row.expires_at) < now()) fail('That offer has expired.', 'expired');
+      for (const uid of [row.from_id, row.to_id]) {
+        if (int(INV.gr.get(uid)?.trade_banned_until ?? 0) > now()) fail('One of you cannot trade right now.', 'banned');
+      }
+
+      const items = TR.items.all(id);
+      for (const it of items) {
+        const unit = INV.unit.get(it.unit_id);
+        const owner = it.side === 'from' ? row.from_id : row.to_id;
+        if (!unit || unit.user_id !== owner) fail('One of those items has moved since the offer was made.', 'stale');
+      }
+
+      const give = int(row.from_gr);
+      const ask = int(row.to_gr);
+      if (give && !debit(row.from_id, give)) fail('The sender no longer has the GR they offered.', 'funds');
+      if (ask && !debit(row.to_id, ask)) fail('You do not have that much GR.', 'funds');
+      if (give) INV.credit.run(give, row.to_id);
+      if (ask) INV.credit.run(ask, row.from_id);
+
+      for (const it of items) {
+        const to = it.side === 'from' ? row.to_id : row.from_id;
+        const from = it.side === 'from' ? row.from_id : row.to_id;
+        INV.give.run(to, 'trade', from, it.unit_id);
+      }
+      TR.setStatus.run('accepted', now(), id);
+      return hydrateTrade(TR.byId.get(id));
+    });
+  },
+
+  /** Offers one account is a party to, still open. */
+  openFor(userId) { return TR.openFor.all(userId, userId).map(hydrateTrade); },
+
+  /** Offers one account is a party to, settled. */
+  historyFor(userId, limit = 40) {
+    return TR.historyFor.all(userId, userId, Math.min(200, Math.max(1, limit | 0))).map(hydrateTrade);
+  },
+
+  /** Times out offers nobody answered. Called from maintain(). */
+  prune() {
+    const stale = TR.stale.all(now());
+    for (const row of stale) {
+      try { trades.close(row.id, 'expired'); } catch { /* somebody settled it first */ }
+    }
+    return stale.length;
+  },
+
+  /** The newest offers across the instance, for moderation. */
+  recent(limit = 60) {
+    return db.prepare(
+      `SELECT t.*, f.username AS from_name, s.username AS to_name
+       FROM trades t
+       LEFT JOIN users f ON f.id = t.from_id
+       LEFT JOIN users s ON s.id = t.to_id
+       ORDER BY t.created_at DESC LIMIT ?`).all(Math.min(200, Math.max(1, limit | 0)))
+      .map((r) => ({ ...hydrateTrade(r), from: r.from_name, to: r.to_name }));
+  },
+
+  /** Instance-wide totals, for the admin panel. */
+  stats() {
+    const rows = db.prepare('SELECT status, COUNT(*) AS n FROM trades GROUP BY status').all();
+    const byStatus = {};
+    for (const r of rows) byStatus[r.status] = int(r.n);
+    const moved = db.prepare(
+      "SELECT COUNT(*) AS n FROM trade_items ti JOIN trades t ON t.id = ti.trade_id WHERE t.status = 'accepted'").get();
+    return { byStatus, itemsMoved: int(moved?.n ?? 0) };
+  },
+};
+
+/* ── Moderation ──────────────────────────────────────────────────────────── */
+
+export const cosmeticsAdmin = {
+  /**
+   * Stops an account trading, listing or buying on the market.
+   *
+   * Everything they already have standing is taken down in the same breath —
+   * leaving a banned account's listings up would let somebody keep selling
+   * through a ban, which is most of what a trade ban exists to stop.
+   */
+  setTradeBan(userId, until) {
+    return tx(() => {
+      db.prepare('UPDATE users SET trade_banned_until = ? WHERE id = ?').run(Math.round(until) || 0, userId);
+      if ((Math.round(until) || 0) === 0) return { until: 0, withdrawn: 0 };
+      let withdrawn = 0;
+      for (const row of MKT.openBySeller.all(userId)) {
+        MKT.cancel.run(now(), row.id);
+        INV.lock.run(0, row.unit_id);
+        withdrawn++;
+      }
+      for (const t of TR.openFor.all(userId, userId)) {
+        TR.setStatus.run('cancelled', now(), t.id);
+        for (const it of TR.items.all(t.id)) INV.lock.run(0, it.unit_id);
+      }
+      return { until: Math.round(until) || 0, withdrawn };
+    });
+  },
+
+  /** Takes a unit off an account for good — a mis-grant, a bug, a refund. */
+  revoke(unitId) {
+    return tx(() => {
+      const unit = INV.unit.get(unitId);
+      if (!unit) fail('No such item.', 'unit');
+      // Anything the unit is staked in dies with it, or the trade would settle
+      // against a row that no longer exists.
+      for (const t of TR.openFor.all(unit.user_id, unit.user_id)) {
+        if (TR.items.all(t.id).some((i) => i.unit_id === unitId)) {
+          TR.setStatus.run('cancelled', now(), t.id);
+          for (const it of TR.items.all(t.id)) INV.lock.run(0, it.unit_id);
+        }
+      }
+      for (const row of MKT.openBySeller.all(unit.user_id)) {
+        if (row.unit_id === unitId) { MKT.cancel.run(now(), row.id); }
+      }
+      INV.drop.run(unitId);
+      return { itemId: unit.item_id, userId: unit.user_id };
+    });
+  },
+
+  /** Everything one account holds, with provenance, for the moderation view. */
+  inventoryOf(userId) {
+    return INV.byUser.all(userId).map((u) => ({
+      unitId: u.id, itemId: u.item_id, serial: int(u.serial), locked: !!int(u.locked),
+      acquiredAt: int(u.acquired_at), source: u.source, origin: u.origin,
+    }));
+  },
+
+  /**
+   * The economy at a glance.
+   *
+   * `held` is what exists, `byRarity` is what shape it is, and the market and
+   * case figures sit beside them — which together answer the only question
+   * moderation ever really asks of an item economy: is anything being minted
+   * faster than it is being spent.
+   */
+  summary() {
+    const held = int(db.prepare('SELECT COUNT(*) AS n FROM inventory').get()?.n ?? 0);
+    const rows = db.prepare('SELECT item_id, COUNT(*) AS n FROM inventory GROUP BY item_id').all();
+    const byRarity = {};
+    const bySlot = {};
+    for (const r of rows) {
+      const item = getItem(r.item_id);
+      if (!item) continue;
+      byRarity[item.rarity] = (byRarity[item.rarity] ?? 0) + int(r.n);
+      bySlot[item.slot] = (bySlot[item.slot] ?? 0) + int(r.n);
+    }
+    const top = rows.map((r) => ({ itemId: r.item_id, held: int(r.n) }))
+      .sort((a, b) => b.held - a.held).slice(0, 25);
+    const banned = int(db.prepare(
+      'SELECT COUNT(*) AS n FROM users WHERE trade_banned_until > ?').get(now())?.n ?? 0);
+    return {
+      held, byRarity, bySlot, top, tradeBanned: banned,
+      cases: cases.stats(), market: market.stats(), trades: trades.stats(),
+      // Items that exist but nobody has ever had — the part of the catalogue
+      // that is not reaching anybody.
+      unseen: ITEM_IDS.filter((id) => !ITEMS[id].default && !rows.some((r) => r.item_id === id)).length,
+    };
+  },
+};
 
 export function close() {
   try { db.close(); } catch { /* already closed */ }
@@ -2210,4 +2985,5 @@ export default {
   db, users, stats, loadouts, sessions, matches, mastery, challenges, ipBans, chatBans, audit,
   reportBans, emailTokens, totp, milestones, ipIntel, reports, friends, clans, normaliseIp,
   summary, maintain, close, metrics, events, analytics,
+  inventory, cases, market, trades, cosmeticsAdmin, EconomyError,
 };

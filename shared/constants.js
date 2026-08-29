@@ -1543,9 +1543,10 @@ export function progressionLadder(rules = {}) {
     },
     {
       level: 1,
-      title: 'WEAPON SKINS',
-      desc: `Bought with ${CURRENCY}, which match score pays out at ${GR_PER_SCORE} points each. `
-        + 'Skins are paint: none of them changes a weapon.',
+      title: 'SKINS, CASES AND THE MARKET',
+      desc: `Nine slots to dress — three weapons, gloves, headwear, face, outfit, pack `
+        + `and a charm. Bought outright with ${CURRENCY}, pulled out of a case, or `
+        + 'bought off another player. None of it changes a weapon.',
     },
     {
       level: chatLevel,

@@ -5,8 +5,10 @@
  * bearer token that is also set as an HttpOnly cookie, so the game client can
  * use either transport.
  */
+import { randomInt } from 'node:crypto';
 import * as K from '../../shared/constants.js';
-import { CLASSES, SKINS, CLASS_IDS, loadoutFor, RARITY } from '../../shared/weapons.js';
+import { CLASSES, CLASS_IDS, DEFAULT_CLASS, loadoutFor } from '../../shared/weapons.js';
+import * as COS from '../../shared/cosmetics.js';
 import { mapList } from '../../shared/maps.js';
 import { GAME_VERSION } from '../../shared/patchnotes.js';
 import { Router, ApiError } from './router.js';
@@ -286,23 +288,24 @@ function challengePayload(db, userId) {
   };
 }
 
+/**
+ * A uniform [0,1) from the OS entropy pool.
+ *
+ * Case rolls run on this rather than Math.random. Math.random is seeded once
+ * per process and its internal state is recoverable from a long enough run of
+ * outputs — which, in the one place in this game where predicting the next
+ * number is worth real GR, is not a theoretical objection.
+ *
+ * 32 bits, not 48: `randomInt` refuses a range wider than 2^48-1, and a drop
+ * table with a hundred and nineteen items in it has no use for more than four
+ * billion distinct outcomes anyway.
+ */
+const cryptoRandom = () => randomInt(0, 2 ** 32) / 2 ** 32;
+
 function safeJson(text, fallback) {
   try { return JSON.parse(text); } catch { return fallback; }
 }
 
-/** Has this player met the condition on an earned (never sold) finish? */
-function skinUnlocked(db, user, skin, classId) {
-  const u = skin.unlock;
-  if (!u) return true;
-  if (u.type === 'level') return user.level >= u.value;
-  if (u.type === 'mastery') {
-    const weaponId = CLASSES[classId]?.primary?.id;
-    if (!weaponId) return false;
-    const kills = db.mastery.forUser(user.id)[weaponId]?.kills ?? 0;
-    return K.masteryFor(kills).tier >= u.value;
-  }
-  return false;
-}
 
 /**
  * The address rules for sign-up. An address is mandatory when verification is
@@ -473,7 +476,7 @@ export function createApi({ db, hub }) {
     protocol: K.PROTOCOL_VERSION,
     modes: Object.values(K.MODES),
     maps: mapList(),
-    rarities: Object.values(RARITY),
+    rarities: Object.values(COS.RARITY),
     masteryTiers: K.MASTERY_TIERS,
     classes: CLASS_IDS.map((id) => ({
       id, name: CLASSES[id].name, tagline: CLASSES[id].tagline,
@@ -486,7 +489,13 @@ export function createApi({ db, hub }) {
         moveMult: CLASSES[id].primary.moveMult,
       },
     })),
-    skins: Object.values(SKINS),
+    // The catalogue itself is a static module the browser imports; what
+    // travels here is the shape of it, for anything that only needs the
+    // headline figures (the admin panel, a status page, a bot).
+    slots: Object.values(COS.SLOT_META),
+    cases: COS.CASE_IDS.map((id) => ({ ...COS.CASES[id], odds: COS.caseOdds(id), pool: COS.casePool(id).length })),
+    itemCount: COS.ITEM_IDS.length,
+    marketFee: COS.MARKET_FEE,
     currency: K.CURRENCY,
     build: GAME_VERSION,
     scoring: K.SCORE,
@@ -685,6 +694,10 @@ export function createApi({ db, hub }) {
       verification: verificationState(user),
       mastery: masteryPayload(db, user.id),
       challenges: challengePayload(db, user.id),
+      // The wardrobe rides along on the session restore rather than being a
+      // second round trip: the loadout screen is one click from the menu and
+      // the renderer needs it before the first frame either way.
+      wardrobe: wardrobeOf(user),
     });
   });
 
@@ -1399,17 +1412,120 @@ export function createApi({ db, hub }) {
     ok(ctx.res, { sort, entries });
   });
 
-  /* ── Loadout & shop ────────────────────────────────────────────────────── */
+  /* ── Loadout, wardrobe, cases, market & trades ─────────────────────────── */
+
+  /**
+   * The cosmetics catalogue itself is not served from here.
+   *
+   * It is a static module the browser imports directly (`/shared/cosmetics.js`),
+   * which means the client and the server are reading the same 227 definitions
+   * out of the same file rather than a copy of them serialised over HTTP. What
+   * these routes carry is only what the server actually knows and the client
+   * cannot: who owns what, what it is selling for, and who is offering what to
+   * whom.
+   */
+
+  /**
+   * What an account may equip, in the form `canEquip` wants.
+   *
+   * The mastery tier is per weapon, so it has to be resolved against the slot
+   * being filled: the Masterwork finish on a sniper is earned by mastering the
+   * sniper, and putting it on the knife is earned by mastering the knife.
+   */
+  const equipCtx = (user, weaponId) => ({
+    authed: true,
+    level: user.level ?? 0,
+    masteryTier: weaponId
+      ? K.masteryFor(db.mastery.forUser(user.id)[weaponId]?.kills ?? 0).tier
+      : 0,
+  });
+
+  /** The weapon a gun slot is finishing, for one class. */
+  const weaponForSlot = (slot, classId) => {
+    const [primary, secondary, knife] = loadoutFor(classId);
+    return slot === COS.SLOT.PRIMARY ? primary.id
+      : slot === COS.SLOT.SECONDARY ? secondary.id
+        : slot === COS.SLOT.KNIFE ? knife.id : null;
+  };
+
+  /**
+   * Reads one account's whole wardrobe: what it holds, what it has on, and
+   * what it may put on.
+   *
+   * `equippable` is computed here rather than left to the browser because it
+   * is the same answer the save path enforces — a card the client draws as
+   * available always is, and a card it greys out could not have been saved
+   * anyway. One rule, one place.
+   */
+  function wardrobeOf(user) {
+    const l = db.loadouts.get(user.id);
+    const classId = CLASSES[l.class_id] ? l.class_id : DEFAULT_CLASS;
+    const owned = db.inventory.ownedIds(user.id);
+    const primaries = sanitisePrimaries(safeJson(l.primaries, {}), owned, user);
+    const stored = safeJson(l.equip, {});
+    // The per-class primary wins over the flat one: the flat slot is what the
+    // renderer reads, and it has to agree with the class actually selected.
+    const equip = COS.sanitiseEquip(
+      { ...stored, [COS.SLOT.PRIMARY]: primaries[classId] ?? stored[COS.SLOT.PRIMARY] },
+      owned,
+      equipCtx(user, weaponForSlot(COS.SLOT.PRIMARY, classId)),
+    );
+    const equippable = [];
+    for (const slot of COS.SLOT_IDS) {
+      const ctx = equipCtx(user, weaponForSlot(slot, classId));
+      for (const item of COS.itemsInSlot(slot)) {
+        if (COS.canEquip(item.id, owned, ctx)) equippable.push(item.id);
+      }
+    }
+    return {
+      classId, equip, primaries, owned, equippable,
+      units: db.inventory.list(user.id),
+      gr: user.gr,
+      tradeBannedUntil: Number(user.trade_banned_until ?? 0),
+    };
+  }
+
+  /** Per-class primaries, cleaned against what the account owns and has earned. */
+  function sanitisePrimaries(raw, owned, user) {
+    const out = {};
+    if (!raw || typeof raw !== 'object') return out;
+    for (const [classId, id] of Object.entries(raw)) {
+      if (!CLASSES[classId]) continue;
+      const item = COS.getItem(id);
+      if (!item || item.slot !== COS.SLOT.PRIMARY) continue;
+      if (!COS.canEquip(id, owned, equipCtx(user, CLASSES[classId].primary.id))) continue;
+      out[classId] = id;
+    }
+    return out;
+  }
+
+  /**
+   * Turns an EconomyError into the 400 it deserves, and anything else into a 500.
+   *
+   * `await fn(ctx)` rather than `return fn(ctx)`: every route this wraps is
+   * async, and a synchronous try/catch around a call that only *returns* a
+   * promise catches nothing at all — every "you do not own that" would have
+   * reached the client as a 500 with no message.
+   */
+  const economic = (fn) => async (ctx) => {
+    try {
+      return await fn(ctx);
+    } catch (err) {
+      if (err?.name === 'EconomyError') throw new ApiError(400, err.code ?? 'economy', err.message);
+      throw err;
+    }
+  };
 
   r.get('/loadout', (ctx) => {
     const user = requireAuth(ctx);
     const l = db.loadouts.get(user.id);
     ok(ctx.res, {
       loadout: {
-        classId: l.class_id, skins: safeJson(l.skins, {}),
-        owned: safeJson(l.owned, []), settings: safeJson(l.settings, {}),
-        keybinds: safeJson(l.keybinds, {}),
+        classId: l.class_id, settings: safeJson(l.settings, {}), keybinds: safeJson(l.keybinds, {}),
+        // Kept for a client that has not reloaded across the V2 boundary yet.
+        skins: safeJson(l.skins, {}), owned: safeJson(l.owned, []),
       },
+      wardrobe: wardrobeOf(user),
     });
   });
 
@@ -1420,19 +1536,28 @@ export function createApi({ db, hub }) {
     limit(ctx, 'loadout', 120);
     const body = await readJson(ctx.req);
     const cur = db.loadouts.get(user.id);
-    const owned = safeJson(cur.owned, []);
+    const owned = db.inventory.ownedIds(user.id);
 
     const classId = typeof body.classId === 'string' && CLASSES[body.classId] ? body.classId : cur.class_id;
-    const skins = {};
-    if (body.skins && typeof body.skins === 'object') {
-      for (const [cls, skin] of Object.entries(body.skins)) {
-        if (!CLASSES[cls] || typeof skin !== 'string' || !SKINS[skin]) continue;
-        const def = SKINS[skin];
-        if (def.price > 0 && !owned.includes(skin)) continue;           // not purchased
-        if (def.price < 0 && !skinUnlocked(db, user, def, cls)) continue;  // not earned
-        skins[cls] = skin;
-      }
+
+    // The per-class primary map is merged rather than replaced: a client that
+    // only ever sends the class it is looking at must not wipe the eight it is
+    // not.
+    const primaries = sanitisePrimaries(
+      { ...safeJson(cur.primaries, {}), ...(body.primaries ?? {}) }, owned, user);
+
+    const equip = COS.sanitiseEquip(
+      { ...safeJson(cur.equip, {}), ...(body.equip ?? {}) },
+      owned,
+      equipCtx(user, weaponForSlot(COS.SLOT.PRIMARY, classId)),
+    );
+    // Equipping a primary is the same act as choosing it for this class.
+    if (body.equip?.[COS.SLOT.PRIMARY] && equip[COS.SLOT.PRIMARY]) {
+      primaries[classId] = equip[COS.SLOT.PRIMARY];
+    } else if (primaries[classId]) {
+      equip[COS.SLOT.PRIMARY] = primaries[classId];
     }
+
     const clip = (value, fallback, max) => {
       if (!value || typeof value !== 'object') return fallback;
       const text = JSON.stringify(value);
@@ -1441,39 +1566,236 @@ export function createApi({ db, hub }) {
     const settings = clip(body.settings, safeJson(cur.settings, {}), 8000);
     const keybinds = clip(body.keybinds, safeJson(cur.keybinds, {}), 4000);
 
-    db.loadouts.save(user.id, { classId, skins, owned, settings, keybinds });
-    ok(ctx.res, { loadout: { classId, skins, owned, settings, keybinds } });
+    db.loadouts.save(user.id, {
+      classId, equip, primaries, settings, keybinds,
+      skins: safeJson(cur.skins, {}), owned: safeJson(cur.owned, []),
+    });
+    ok(ctx.res, { loadout: { classId, settings, keybinds }, wardrobe: wardrobeOf(user) });
   });
 
-  r.post('/shop/buy', async (ctx) => {
+  /* ── The wardrobe ──────────────────────────────────────────────────────── */
+
+  r.get('/wardrobe', (ctx) => {
+    const user = requireAuth(ctx);
+    ok(ctx.res, { wardrobe: wardrobeOf(user) });
+  });
+
+  /**
+   * Buys one item outright, at catalogue price.
+   *
+   * The shop is deliberately the *expensive* way to get anything: a case is
+   * cheaper per item and the market is cheaper still, and this exists so that
+   * somebody who wants one specific finish can simply have it rather than
+   * grinding a drop table for it. It is also the price anchor the whole market
+   * floats under — nothing sensibly sells above catalogue when catalogue is
+   * always in stock.
+   */
+  r.post('/shop/buy', economic(async (ctx) => {
     const user = requireAuth(ctx);
     limit(ctx, 'shop', 60);
-    const { skinId } = await readJson(ctx.req);
-    const skin = SKINS[skinId];
-    if (!skin) throw new ApiError(404, 'no_such_skin', 'unknown skin');
-    const l = db.loadouts.get(user.id);
-    const owned = safeJson(l.owned, []);
-    if (owned.includes(skin.id) || skin.price === 0) throw new ApiError(409, 'already_owned', 'you already have that');
-    if (skin.price < 0) {
-      throw new ApiError(403, 'not_for_sale', skin.hint ?? 'this finish has to be earned, not bought');
+    const body = await readJson(ctx.req);
+    // `skinId` is what a pre-V2 client sends; it names a finish rather than an
+    // item, and the primary is the slot it always meant.
+    const id = typeof body.itemId === 'string' ? body.itemId
+      : typeof body.skinId === 'string' ? COS.itemId(COS.SLOT.PRIMARY, body.skinId) : null;
+    const item = COS.getItem(id);
+    if (!item) throw new ApiError(404, 'no_such_item', 'unknown item');
+    if (item.default) throw new ApiError(409, 'already_owned', 'that one is free');
+    if (item.earned) throw new ApiError(403, 'not_for_sale', item.hint ?? 'that one has to be earned');
+    if (user.gr < item.price) {
+      throw new ApiError(402, 'insufficient_gr', `costs ${item.price} GR, you have ${user.gr}`);
     }
-    if (user.gr < skin.price) {
-      throw new ApiError(402, 'insufficient_gr', `costs ${skin.price} GR, you have ${user.gr}`);
-    }
-
-    db.users.addProgress(user.id, 0, -skin.price);
-    owned.push(skin.id);
-    db.loadouts.save(user.id, {
-      classId: l.class_id, skins: safeJson(l.skins, {}), owned,
-      settings: safeJson(l.settings, {}), keybinds: safeJson(l.keybinds, {}),
-    });
+    db.users.addProgress(user.id, 0, -item.price);
+    const unit = db.inventory.mint(user.id, item.id, { source: 'shop', origin: 'catalogue' });
     const fresh = db.users.byId(user.id);
     event('shop.buy', {
-      userId: user.id, name: user.username, value: skin.price,
-      detail: { skin: skin.id, rarity: skin.rarity, balance: fresh.gr },
+      userId: user.id, name: user.username, value: item.price,
+      detail: { item: item.id, rarity: item.rarity, balance: fresh.gr },
     });
-    ok(ctx.res, { owned, gr: fresh.gr });
+    ok(ctx.res, { unitId: unit.id, itemId: item.id, gr: fresh.gr, wardrobe: wardrobeOf(fresh) });
+  }));
+
+  /** Hands a duplicate back to the game for a fifth of what it is worth. */
+  r.post('/wardrobe/scrap', economic(async (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'scrap', 60);
+    const { unitId } = await readJson(ctx.req);
+    const res = db.inventory.scrap(user.id, String(unitId ?? ''));
+    const fresh = db.users.byId(user.id);
+    event('cosmetics.scrap', {
+      userId: user.id, name: user.username, value: res.gr, detail: { item: res.itemId },
+    });
+    ok(ctx.res, { ...res, gr: fresh.gr, wardrobe: wardrobeOf(fresh) });
+  }));
+
+  /* ── Cases ─────────────────────────────────────────────────────────────── */
+
+  /**
+   * Opens a case.
+   *
+   * The roll uses `randomInt` from node:crypto rather than Math.random, which
+   * is not superstition: Math.random is seeded per process and its state is
+   * recoverable from a long enough run of outputs, and this is the one call in
+   * the game where knowing the next number is worth real money.
+   */
+  r.post('/cases/open', economic(async (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'case', 40);
+    const { caseId } = await readJson(ctx.req);
+    const box = COS.CASES[caseId];
+    if (!box) throw new ApiError(404, 'no_such_case', 'unknown case');
+    const res = db.cases.open(user.id, box.id, cryptoRandom);
+    const fresh = db.users.byId(user.id);
+    const item = COS.getItem(res.itemId);
+    event('cosmetics.case', {
+      userId: user.id, name: user.username, value: box.price,
+      detail: { case: box.id, item: res.itemId, rarity: item?.rarity, balance: fresh.gr },
+    });
+    ok(ctx.res, { ...res, rarity: item?.rarity, gr: fresh.gr, wardrobe: wardrobeOf(fresh) });
+  }));
+
+  /** The live drop feed: what everybody has just pulled. */
+  r.get('/cases/recent', (ctx) => {
+    ok(ctx.res, { drops: db.cases.recent(Number(ctx.query.get('limit')) || 24) });
   });
+
+  /** One account's own opening history. */
+  r.get('/cases/history', (ctx) => {
+    const user = requireAuth(ctx);
+    ok(ctx.res, { openings: db.cases.forUser(user.id, Number(ctx.query.get('limit')) || 50) });
+  });
+
+  /* ── The market ────────────────────────────────────────────────────────── */
+
+  r.get('/market', (ctx) => {
+    const q = ctx.query;
+    ok(ctx.res, {
+      board: db.market.board({
+        slot: q.get('slot') || null,
+        rarity: q.get('rarity') || null,
+        q: q.get('q') || '',
+        sort: q.get('sort') || 'price',
+        limit: Number(q.get('limit')) || 120,
+      }),
+      fee: COS.MARKET_FEE,
+    });
+  });
+
+  /** Every standing listing for one item, plus what it has actually sold for. */
+  r.get('/market/item', (ctx) => {
+    const id = ctx.query.get('id') ?? '';
+    if (!COS.getItem(id)) throw new ApiError(404, 'no_such_item', 'unknown item');
+    ok(ctx.res, { itemId: id, listings: db.market.forItem(id), history: db.market.history(id) });
+  });
+
+  r.get('/market/mine', (ctx) => {
+    const user = requireAuth(ctx);
+    ok(ctx.res, { listings: db.market.mine(user.id) });
+  });
+
+  r.post('/market/list', economic(async (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'market', 60);
+    const { unitId, price } = await readJson(ctx.req);
+    const res = db.market.list(user.id, String(unitId ?? ''), price);
+    event('market.list', {
+      userId: user.id, name: user.username, value: res.price, detail: { item: res.itemId },
+    });
+    ok(ctx.res, { ...res, wardrobe: wardrobeOf(db.users.byId(user.id)) });
+  }));
+
+  r.post('/market/cancel', economic(async (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'market', 60);
+    const { listingId } = await readJson(ctx.req);
+    const res = db.market.cancel(user.id, String(listingId ?? ''));
+    ok(ctx.res, { ...res, wardrobe: wardrobeOf(db.users.byId(user.id)) });
+  }));
+
+  r.post('/market/buy', economic(async (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'market', 60);
+    const { listingId } = await readJson(ctx.req);
+    const res = db.market.buy(user.id, String(listingId ?? ''));
+    const fresh = db.users.byId(user.id);
+    event('market.buy', {
+      userId: user.id, name: user.username, value: res.price,
+      detail: { item: res.itemId, seller: res.sellerId, net: res.net },
+    });
+    ok(ctx.res, { ...res, gr: fresh.gr, wardrobe: wardrobeOf(fresh) });
+  }));
+
+  /* ── Trades ────────────────────────────────────────────────────────────── */
+
+  /**
+   * A trade is between friends only.
+   *
+   * Not a limitation — a defence. Every scam an item economy has ever had
+   * starts with an offer from a stranger, and the friend list is a barrier the
+   * player already controls and already understands. Anybody who wants to deal
+   * with a stranger has the market, where nobody can be talked into anything.
+   */
+  r.get('/trades', (ctx) => {
+    const user = requireAuth(ctx);
+    const decorate = (t) => ({
+      ...t,
+      from: db.users.byId(t.fromId)?.username ?? null,
+      to: db.users.byId(t.toId)?.username ?? null,
+      incoming: t.toId === user.id,
+    });
+    ok(ctx.res, {
+      open: db.trades.openFor(user.id).map(decorate),
+      history: db.trades.historyFor(user.id).map(decorate),
+    });
+  });
+
+  r.post('/trades', economic(async (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'trade', 30);
+    const body = await readJson(ctx.req);
+    const target = db.users.byId(String(body.to ?? '')) ?? db.users.byName(String(body.to ?? ''));
+    if (!target) throw new ApiError(404, 'no_such_user', 'no account by that name');
+    if (!db.friends.are(user.id, target.id)) {
+      throw new ApiError(403, 'not_friends', 'you can only trade with friends — use the market otherwise');
+    }
+    const t = db.trades.create(user.id, target.id, {
+      fromUnits: Array.isArray(body.give) ? body.give.map(String).slice(0, COS.TRADE_MAX_ITEMS) : [],
+      toUnits: Array.isArray(body.want) ? body.want.map(String).slice(0, COS.TRADE_MAX_ITEMS) : [],
+      fromGr: body.giveGr, toGr: body.wantGr, note: body.note,
+    });
+    event('trade.offer', {
+      userId: user.id, name: user.username,
+      detail: { to: target.username, items: t.fromItems.length + t.toItems.length },
+    });
+    ok(ctx.res, { trade: t });
+  }));
+
+  r.post('/trades/accept', economic(async (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'trade', 30);
+    const { id } = await readJson(ctx.req);
+    const t = db.trades.accept(String(id ?? ''), user.id);
+    event('trade.accept', {
+      userId: user.id, name: user.username,
+      detail: { trade: t.id, items: t.fromItems.length + t.toItems.length },
+    });
+    ok(ctx.res, { trade: t, wardrobe: wardrobeOf(db.users.byId(user.id)) });
+  }));
+
+  r.post('/trades/close', economic(async (ctx) => {
+    const user = requireAuth(ctx);
+    limit(ctx, 'trade', 30);
+    const { id } = await readJson(ctx.req);
+    const t = db.trades.get(String(id ?? ''));
+    if (!t) throw new ApiError(404, 'no_such_trade', 'no such offer');
+    // The sender withdraws, the recipient declines. Same door, different word,
+    // and the history says which happened.
+    if (t.fromId !== user.id && t.toId !== user.id) {
+      throw new ApiError(403, 'not_yours', 'that offer is not yours');
+    }
+    const closed = db.trades.close(t.id, t.fromId === user.id ? 'cancelled' : 'declined');
+    ok(ctx.res, { trade: closed, wardrobe: wardrobeOf(db.users.byId(user.id)) });
+  }));
 
   /* ── Clans ─────────────────────────────────────────────────────────────── */
 

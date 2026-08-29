@@ -16,6 +16,7 @@ import { hashPassword } from '../util/auth.js';
 import * as avatars from '../util/avatar.js';
 import { getMap } from '../../shared/maps.js';
 import { getClass } from '../../shared/weapons.js';
+import * as COS from '../../shared/cosmetics.js';
 import { clanAvatars } from '../util/avatar.js';
 import config from '../config.js';
 import log, { recent as recentLogs } from '../util/log.js';
@@ -1111,6 +1112,159 @@ export function createAdminApi({ db, hub, telemetry = null, banPayload = null })
    * sampler's vocabulary — a new series added to telemetry.js appears here on
    * the next restart without touching the client.
    */
+  /* ── Cosmetics ─────────────────────────────────────────────────────────── */
+
+  /**
+   * Moderating an item economy.
+   *
+   * Two things make this different from moderating chat. The first is that
+   * everything here is *reversible but expensive*: a revoked item is somebody's
+   * money, and a trade ban stops somebody spending theirs. The second is that
+   * the interesting failure is not one bad actor but a leak — an item minting
+   * faster than it is being spent, or a case whose realised drops do not match
+   * its published odds. So the summary route deliberately reports the shape of
+   * the whole economy first, and the per-account views second.
+   */
+
+  /** Catalogue and economy at a glance. */
+  r.get('/admin/cosmetics', (ctx) => {
+    requireAdmin(ctx);
+    const summary = db.cosmeticsAdmin.summary();
+    ok(ctx.res, {
+      summary,
+      /*
+       * The published odds beside the realised ones.
+       *
+       * This is the whole reason `case_openings` is kept forever. If a case
+       * says 0.25% mythic and has paid out 3% across ten thousand opens, the
+       * roll is wrong — and this is the only place anybody would find out.
+       */
+      cases: COS.CASE_IDS.map((id) => {
+        const opened = summary.cases.byCase.find((c) => c.caseId === id);
+        return {
+          id, name: COS.CASES[id].name, price: COS.CASES[id].price,
+          pool: COS.casePool(id).length,
+          odds: COS.caseOdds(id),
+          opens: opened?.opens ?? 0, spent: opened?.spent ?? 0,
+        };
+      }),
+      catalogue: {
+        items: COS.ITEM_IDS.length,
+        bySlot: Object.fromEntries(COS.SLOT_IDS.map((s) => [s, COS.itemsInSlot(s).length])),
+        byRarity: Object.fromEntries(COS.RARITY_ORDER.map((rr) =>
+          [rr, COS.ITEM_IDS.filter((id) => COS.ITEMS[id].rarity === rr).length])),
+        animated: COS.ITEM_IDS.filter((id) => COS.ITEMS[id].anim).length,
+      },
+      rarities: COS.RARITY,
+    });
+  });
+
+  /** The whole catalogue, for the item picker in the grant form. */
+  r.get('/admin/cosmetics/items', (ctx) => {
+    requireAdmin(ctx);
+    const q = String(ctx.query.get('q') ?? '').toLowerCase();
+    const slot = ctx.query.get('slot') ?? '';
+    const items = COS.ITEM_IDS.map((id) => COS.ITEMS[id])
+      .filter((i) => (!slot || i.slot === slot) && (!q || i.name.toLowerCase().includes(q)
+        || i.id.toLowerCase().includes(q)))
+      .slice(0, 300)
+      .map((i) => ({
+        id: i.id, name: i.name, slot: i.slot, rarity: i.rarity,
+        price: i.price, anim: i.anim, tradable: i.tradable,
+      }));
+    ok(ctx.res, { items });
+  });
+
+  /** One account's inventory, with where every unit came from. */
+  r.get('/admin/cosmetics/inventory/:id', (ctx) => {
+    requireAdmin(ctx);
+    const user = findUser(ctx);
+    ok(ctx.res, {
+      user: { id: user.id, username: user.username, gr: Number(user.gr ?? 0) },
+      tradeBannedUntil: Number(user.trade_banned_until ?? 0),
+      units: db.cosmeticsAdmin.inventoryOf(user.id).map((u) => ({
+        ...u, name: COS.getItem(u.itemId)?.name ?? u.itemId,
+        rarity: COS.getItem(u.itemId)?.rarity ?? 'common',
+        worth: COS.priceOf(COS.getItem(u.itemId)),
+      })),
+      openings: db.cases.forUser(user.id, 40),
+    });
+  });
+
+  /** Puts an item into an account. */
+  r.post('/admin/cosmetics/grant', async (ctx) => {
+    requireAdmin(ctx);
+    const { user: who, itemId, note } = await readJson(ctx.req);
+    const user = db.users.byId(String(who ?? '')) ?? db.users.byName(String(who ?? ''));
+    if (!user) throw new ApiError(404, 'not_found', 'no such account');
+    const item = COS.getItem(itemId);
+    if (!item) throw new ApiError(404, 'not_found', 'no such item');
+    let unit;
+    try {
+      unit = db.inventory.mint(user.id, item.id, {
+        source: 'grant', origin: String(note ?? 'admin').slice(0, 60),
+      });
+    } catch (err) {
+      throw new ApiError(400, err.code ?? 'refused', err.message);
+    }
+    audit('cosmetics.grant', user.username, `${item.id} #${unit.serial}`);
+    ok(ctx.res, { unitId: unit.id, itemId: item.id, serial: Number(unit.serial) });
+  });
+
+  /**
+   * Takes a unit off an account.
+   *
+   * Anything the unit was staked in — an open trade, a standing listing — is
+   * cancelled with it, because a trade that settles against a row that no
+   * longer exists is a trade that silently gives one side nothing.
+   */
+  r.post('/admin/cosmetics/revoke', async (ctx) => {
+    requireAdmin(ctx);
+    const { unitId } = await readJson(ctx.req);
+    let gone;
+    try {
+      gone = db.cosmeticsAdmin.revoke(String(unitId ?? ''));
+    } catch (err) {
+      throw new ApiError(400, err.code ?? 'refused', err.message);
+    }
+    const owner = db.users.byId(gone.userId);
+    audit('cosmetics.revoke', owner?.username ?? gone.userId, gone.itemId);
+    ok(ctx.res, gone);
+  });
+
+  /** Bars an account from trading and the market, and clears what it has out. */
+  r.post('/admin/cosmetics/trade-ban', async (ctx) => {
+    requireAdmin(ctx);
+    const { user: who, days } = await readJson(ctx.req);
+    const user = db.users.byId(String(who ?? '')) ?? db.users.byName(String(who ?? ''));
+    if (!user) throw new ApiError(404, 'not_found', 'no such account');
+    const n = Number(days) || 0;
+    // 0 lifts it, -1 is permanent, anything else is that many days.
+    const until = n === 0 ? 0
+      : n < 0 ? Math.floor(Date.now() / 1000) + 100 * 365 * 86400
+        : Math.floor(Date.now() / 1000) + Math.min(3650, n) * 86400;
+    const res = db.cosmeticsAdmin.setTradeBan(user.id, until);
+    audit('cosmetics.tradeban', user.username, until ? `until ${until}` : 'lifted');
+    ok(ctx.res, res);
+  });
+
+  /** The economy's moving parts: recent opens, listings and offers. */
+  r.get('/admin/cosmetics/activity', (ctx) => {
+    requireAdmin(ctx);
+    const limit = num(ctx.query.get('limit'), 1, 200, 40);
+    const name = (id) => COS.getItem(id)?.name ?? id;
+    ok(ctx.res, {
+      drops: db.cases.recent(limit).map((d) => ({ ...d, name: name(d.itemId),
+        rarity: COS.getItem(d.itemId)?.rarity ?? 'common' })),
+      listings: db.market.recent(limit).map((l) => ({ ...l, name: name(l.itemId) })),
+      trades: db.trades.recent(limit).map((t) => ({
+        ...t,
+        fromItems: t.fromItems.map(name),
+        toItems: t.toItems.map(name),
+      })),
+    });
+  });
+
   r.get('/admin/stats/series', (ctx) => {
     requireAdmin(ctx);
     ok(ctx.res, {

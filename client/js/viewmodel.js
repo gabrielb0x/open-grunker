@@ -29,7 +29,11 @@
  * animation a player watches more than any other.
  */
 import * as THREE from 'three';
-import { SKINS, gloveColor } from '/shared/weapons.js';
+import { getItem, SLOT, DEFAULT_EQUIP } from '/shared/cosmetics.js';
+import { buildWearable } from './wearables.js';
+
+/** Where a weapon's trigger hand goes, and therefore where a charm hangs. */
+const gripAtOf = (model) => model.grip ?? [0, -0.16, 0.08];
 import { buildWeaponMesh, collapseStatic, skinnedBoxGeometry } from './gunskin.js';
 import { settings } from './settings.js';
 
@@ -305,10 +309,19 @@ export class ViewModel {
 
   /* ── Building ──────────────────────────────────────────────────────────── */
 
-  /** Rebuilds the gun mesh, and the hands that hold it, for a weapon definition. */
-  setWeapon(def, skinId = 'default') {
+  /**
+   * Rebuilds the gun mesh, and the hands that hold it, for a weapon definition.
+   *
+   * @param {object} def   the weapon
+   * @param {string} slot  which of the three gun slots this is, so the right
+   *                       finish is fetched — a sidearm and a rifle no longer
+   *                       share one.
+   * @param {object} cos   the worn loadout, `{ <slot>: <itemId> }`
+   */
+  setWeapon(def, slot = SLOT.PRIMARY, cos = null) {
     this.def = def;
-    this.skinId = skinId;
+    this.gunSlot = slot;
+    this.cos = cos ?? this.cos ?? { ...DEFAULT_EQUIP };
     this.builtLeftHanded = !!settings.leftHanded;
     this._clear(this.gun);
     if (this.gunB) { this._clear(this.gunB); this.root.remove(this.gunB); this.gunB = null; }
@@ -317,10 +330,21 @@ export class ViewModel {
     for (const k of Object.keys(this.tagged)) this.tagged[k].length = 0;
     this.tagHome.clear();
 
-    const skin = SKINS[skinId] ?? SKINS.default;
+    const worn = this.cos;
+    const skin = getItem(worn[slot])?.finish ?? null;
     const model = def.model ?? {};
     const scale = model.scale ?? 1;
-    const glove = gloveColor(skin);
+    /*
+     * The gloves are their own item now.
+     *
+     * They used to be a colour the *finish* decided, which meant changing your
+     * rifle's paint changed what your hands were wearing — and meant nobody
+     * could have black gloves on a gold gun. `gloves` is a slot; the finish's
+     * old glove colour is the fallback only when the slot is empty, so nothing
+     * looked different the day this shipped.
+     */
+    const hands = getItem(worn[SLOT.GLOVES])?.wear ?? null;
+    const glove = hands?.color ?? skin?.glove ?? 0x2b3038;
 
     // Everything but the moving parts is welded into one mesh per material —
     // about forty draw calls a frame back, on the one object that is on screen
@@ -334,9 +358,25 @@ export class ViewModel {
     this.gun.add(primary);
     this.gun.scale.setScalar(scale);
 
+    /*
+     * The charm, hung off the grip.
+     *
+     * Only on the primary, and only in the corner of the eye: it is the one
+     * cosmetic in the game whose entire job is to be visible to its owner,
+     * and it is deliberately small enough that it is never between the
+     * crosshair and anything.
+     */
+    const charmItem = getItem(worn[SLOT.CHARM]);
+    if (charmItem && !charmItem.default) {
+      const charm = buildWearable(charmItem.id);
+      charm.group.position.set(
+        gripAtOf(model)[0] - 0.055, gripAtOf(model)[1] - 0.02, gripAtOf(model)[2] + 0.02);
+      this.gun.add(charm.group);
+    }
+
     /* Hands, placed on this weapon's own grips. */
     const hand = settings.leftHanded ? -1 : 1;
-    const gripAt = model.grip ?? [0, -0.16, 0.08];
+    const gripAt = gripAtOf(model);
     const mainPose = model.gripAxis === 'z' ? 'clamp' : 'wrap';
     this.armMain = buildArm({ pose: mainPose, side: hand, glove });
     this.armMain.position.set(gripAt[0] * scale * hand, gripAt[1] * scale, gripAt[2] * scale);
@@ -785,7 +825,7 @@ export class ViewModel {
     // The hands are mirrored at build time, not per frame, so switching hands
     // has to rebuild them — otherwise the gun swaps sides and the arms do not.
     if (this.def && !!settings.leftHanded !== this.builtLeftHanded) {
-      this.setWeapon(this.def, this.skinId ?? 'default');
+      this.setWeapon(this.def, this.gunSlot ?? SLOT.PRIMARY, this.cos);
     }
   }
 

@@ -1039,144 +1039,15 @@ export const WEAPON_LABEL = {
 /* ── Cosmetics ───────────────────────────────────────────────────────────── */
 
 /**
- * Weapon finishes. Purely cosmetic — a skin never changes a number. Some are
- * bought with GR, others are earned: `unlock` is checked against the player's
- * account rather than their wallet.
+ * Rarity, and the finish catalogue, moved out.
+ *
+ * They live in `shared/cosmetics.js` now, because a finish is one of nine
+ * things a player wears rather than the only one — and because that file has
+ * to be able to import this one for `ZONE`, which rules out the reverse. What
+ * stays here is the part that is genuinely about a weapon: how one *model
+ * part* is finished, which is a question about the gun rather than about the
+ * paint.
  */
-export const RARITY = {
-  common:    { id: 'common',    name: 'Common',    color: 0x8fa0b4 },
-  uncommon:  { id: 'uncommon',  name: 'Uncommon',  color: 0x4ddb7a },
-  rare:      { id: 'rare',      name: 'Rare',      color: 0x4d9bff },
-  epic:      { id: 'epic',      name: 'Epic',      color: 0xb07cff },
-  legendary: { id: 'legendary', name: 'Legendary', color: 0xf5a623 },
-};
-
-export const SKINS = {
-  default: {
-    id: 'default', name: 'Factory', price: 0, rarity: 'common',
-    glove: 0x2b3038, swatch: [0x3b424c, 0x5c3a1f, 0x8d959f],
-    blurb: 'However it left the armoury.',
-  },
-  urban: {
-    id: 'urban', name: 'Urban Grey', price: 150, rarity: 'common',
-    paint: { body: 0x6f767e, wood: 0x4b5158, metal: 0x2a2e34, accent: 0x3a3f46 },
-    pattern: { kind: 'digital', on: ['body', 'wood'], colors: [0x878e96, 0x5b626b, 0x3b4048], scale: 0.05 },
-    glove: 0x4a5058, swatch: [0x878e96, 0x5b626b, 0x3b4048],
-    blurb: 'Pixel camouflage for somewhere with kerbs.',
-  },
-  midnight: {
-    id: 'midnight', name: 'Midnight', price: 250, rarity: 'uncommon',
-    paint: { body: 0x222c50, wood: 0x1c2440, metal: 0x11151f, accent: 0x2c3760 },
-    pattern: { kind: 'fade', on: ['body', 'wood'], colors: [0x33427a, 0x111726], scale: 0.5 },
-    gloss: 0.5, glove: 0x1b2340, swatch: [0x33427a, 0x1e2745, 0x0d1018],
-    blurb: 'Blued to the point of blue.',
-  },
-  arctic: {
-    id: 'arctic', name: 'Arctic', price: 500, rarity: 'uncommon',
-    paint: { body: 0xdfeaf3, wood: 0xb9c8d6, metal: 0x8b98a6, accent: 0xcbd8e4 },
-    pattern: { kind: 'splinter', on: ['body', 'wood'], colors: [0xf2f7fb, 0xc4d3e0, 0x94a4b4], scale: 0.13 },
-    glove: 0xd3e2ee, swatch: [0xf2f7fb, 0xc4d3e0, 0x8b98a6],
-    blurb: 'Splinter pattern, cut for snow.',
-  },
-  desert: {
-    id: 'desert', name: 'Desert Tan', price: 500, rarity: 'uncommon',
-    paint: { body: 0xc2a06a, wood: 0xa5854f, metal: 0x2f3138, accent: 0x8f7443 },
-    pattern: { kind: 'scratch', on: ['body', 'wood'], colors: [0xd6b57e, 0x9a7d49], scale: 0.11 },
-    glove: 0xb99a67, swatch: [0xd6b57e, 0xa5854f, 0x2f3138],
-    blurb: 'Cerakote, sand-blasted, and it shows.',
-  },
-  forest: {
-    id: 'forest', name: 'Woodland', price: 650, rarity: 'uncommon',
-    paint: { body: 0x4a5a38, wood: 0x3a4630, metal: 0x22261d, accent: 0x37432b },
-    pattern: { kind: 'blotch', on: ['body', 'wood'], colors: [0x6a7a46, 0x40502f, 0x2b3520, 0x6d5a34], scale: 0.16 },
-    glove: 0x3d4a2c, swatch: [0x6a7a46, 0x40502f, 0x2b3520],
-    blurb: 'Four tones, hand-sprayed, no two guns alike.',
-  },
-  toxic: {
-    id: 'toxic', name: 'Toxic', price: 800, rarity: 'rare',
-    paint: { body: 0x1e2618, wood: 0x232b1b, metal: 0x161a13, accent: 0x66dd33 },
-    pattern: { kind: 'splatter', on: ['body', 'wood'], colors: [0x1a2016, 0x66dd33, 0xa8ff4d], scale: 0.2 },
-    gloss: 0.8, glow: 0x1f3a0a, glove: 0x66dd33, swatch: [0xa8ff4d, 0x66dd33, 0x1a2016],
-    blurb: 'Whatever was in the drum, it ate the finish.',
-  },
-  crimson: {
-    id: 'crimson', name: 'Crimson', price: 800, rarity: 'rare',
-    paint: { body: 0xa41f2c, wood: 0x241b1f, metal: 0x1a1e23, accent: 0x7c1621 },
-    pattern: { kind: 'stripe', on: ['body'], colors: [0xc02434, 0x8c1926, 0x1a1418], scale: 0.22 },
-    gloss: 1, glove: 0xb01f2e, swatch: [0xc02434, 0x8c1926, 0x14171b],
-    blurb: 'Racing stripes on something that is not a car.',
-  },
-  cobalt: {
-    id: 'cobalt', name: 'Cobalt', price: 900, rarity: 'rare',
-    paint: { body: 0x2b6ed6, wood: 0x1b2b45, metal: 0x161c26, accent: 0xe8eef6 },
-    pattern: { kind: 'stripe', on: ['body'], colors: [0x3179e4, 0x2158ad, 0xe8eef6], scale: 0.22 },
-    gloss: 1, glove: 0x2b6ed6, swatch: [0x3179e4, 0x2158ad, 0xe8eef6],
-    blurb: 'Team colours, whichever team you are on.',
-  },
-  carbon: {
-    id: 'carbon', name: 'Carbon Fibre', price: 1200, rarity: 'epic',
-    paint: { body: 0x1e2229, wood: 0x232830, metal: 0x14171b, accent: 0x323841 },
-    pattern: { kind: 'hex', on: ['body', 'wood', 'accent'], colors: [0x22262c, 0x0e1013, 0x3a4149], scale: 0.045 },
-    gloss: 1.7, glove: 0x14171c, swatch: [0x2c3138, 0x1a1d22, 0x0e1013],
-    blurb: 'Woven, lacquered, and lighter than it looks.',
-  },
-  vapor: {
-    id: 'vapor', name: 'Vaporwave', price: 2000, rarity: 'epic',
-    paint: { body: 0xff5fd2, wood: 0x2a1b4e, metal: 0x1b1233, accent: 0x35f6e8 },
-    pattern: { kind: 'grid', on: ['body', 'wood'], colors: [0xff5fd2, 0x6a2bd8, 0x35f6e8], scale: 0.4 },
-    gloss: 1.5, glow: 0x3a0f4a, glove: 0xff5fd2, swatch: [0xff5fd2, 0x6a2bd8, 0x35f6e8],
-    blurb: 'A sunset, a grid, and no apology.',
-  },
-  gold: {
-    id: 'gold', name: 'Gold Rush', price: 3000, rarity: 'legendary',
-    paint: { body: 0xd4a520, wood: 0x2e2419, metal: 0xb98a17, accent: 0xe0c05a },
-    pattern: { kind: 'scroll', on: ['body', 'metal', 'accent'], colors: [0xf2cf5e, 0xb98a17, 0x6d4f0a], scale: 0.09 },
-    gloss: 2, glove: 0xd4a520, swatch: [0xf2cf5e, 0xd4a520, 0x6d4f0a],
-    blurb: 'Engraved, plated, and utterly impractical.',
-  },
-
-  /*
-   * Earned, never sold.
-   *
-   * `account` is the cheapest unlock in the game and deliberately so: it is the
-   * one finish a guest can look at and own five seconds later, and the only
-   * thing it asks for is the account every other feature here already needs.
-   */
-  enlisted: {
-    id: 'enlisted', name: 'Enlisted', price: -1, rarity: 'uncommon',
-    unlock: { type: 'account' }, hint: 'Create a free account',
-    paint: { body: 0x2f7d64, wood: 0x24503f, metal: 0x1b2a24, accent: 0x3f9c7e },
-    pattern: { kind: 'stencil', on: ['body'], colors: [0x2f7d64, 0x1f5847, 0xd8e6df], scale: 0.13 },
-    glove: 0x2f7d64, swatch: [0x3f9c7e, 0x2f7d64, 0x1b2a24],
-    blurb: 'Issued, stencilled, and signed for.',
-  },
-  veteran: {
-    id: 'veteran', name: 'Veteran', price: -1, rarity: 'rare',
-    unlock: { type: 'level', value: 15 }, hint: 'Reach level 15',
-    paint: { body: 0x3f4a55, wood: 0x2a3038, metal: 0x1c2027, accent: 0x59667a },
-    pattern: { kind: 'scratch', on: ['body', 'wood', 'metal'], colors: [0x505c69, 0x2b323a], scale: 0.08 },
-    gloss: 0.6, glove: 0x3f4a55, swatch: [0x59667a, 0x3f4a55, 0x1c2027],
-    blurb: 'Every scratch on it was earned somewhere.',
-  },
-  master: {
-    id: 'master', name: 'Masterwork', price: -1, rarity: 'epic',
-    unlock: { type: 'mastery', value: 4 }, hint: 'Reach mastery IV with this weapon',
-    paint: { body: 0x7a5cff, wood: 0x241c3d, metal: 0x4a37a8, accent: 0xa791ff },
-    pattern: { kind: 'damascus', on: ['body', 'metal'], colors: [0x9d86ff, 0x4a37a8, 0x1d1633], scale: 0.1 },
-    gloss: 1.4, glow: 0x241452, glove: 0x7a5cff, swatch: [0x9d86ff, 0x7a5cff, 0x1d1633],
-    blurb: 'Folded steel, case-hardened violet.',
-  },
-  legend: {
-    id: 'legend', name: 'Legend', price: -1, rarity: 'legendary',
-    unlock: { type: 'mastery', value: 6 }, hint: 'Reach mastery VI with this weapon',
-    paint: { body: 0x211a16, wood: 0x2a201b, metal: 0x171110, accent: 0xff7043 },
-    pattern: { kind: 'circuit', on: ['body', 'wood', 'metal'], colors: [0x1a1512, 0xff7043, 0xffd08a], scale: 0.14 },
-    gloss: 1.9, glow: 0x3a1204, glove: 0xff7043, swatch: [0xffd08a, 0xff7043, 0x1a1512],
-    blurb: 'Still cooling.',
-  },
-};
-
-export const SKIN_IDS = Object.keys(SKINS);
 
 /**
  * How one model part is finished under one skin.
@@ -1186,7 +1057,7 @@ export const SKIN_IDS = Object.keys(SKINS);
  * keeps a gold rifle's optic glass from turning gold with it.
  *
  * @param {object} part  a `model.parts` entry
- * @param {object} skin  a SKINS entry
+ * @param {object} skin  a finish, out of shared/cosmetics.js
  * @returns {{color:number, pattern:object|null, gloss:number, glow:number}}
  */
 export function paintFor(part, skin) {
@@ -1202,5 +1073,10 @@ export function paintFor(part, skin) {
   };
 }
 
-/** The colour a skin puts on the shooter's gloves, so a finish is worn as well as held. */
+/**
+ * The colour a finish would put on a pair of gloves.
+ *
+ * A fallback now rather than the rule: gloves are their own slot since V2, and
+ * this is only reached when that slot is empty. See `SLOT.GLOVES`.
+ */
 export const gloveColor = (skin) => skin?.glove ?? 0x2b3038;

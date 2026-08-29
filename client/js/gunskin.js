@@ -374,7 +374,521 @@ const PATTERNS = {
     g.globalAlpha = 1;
     void rand;
   },
+  /* ── V2 patterns ──────────────────────────────────────────────────────────
+   *
+   * Same contract as the ones above: draw a `size`×`size` tile that meets
+   * itself at every edge, using nothing but the three or four colours handed
+   * in. `wrapped` is the tool for anything that crosses a boundary; anything
+   * built from full-width bands or a symmetric gradient wraps by construction.
+   */
+
+  /** Hand-brushed tiger stripe: torn horizontal bands, thick and thin. */
+  tiger(g, size, colors, rand) {
+    g.fillStyle = hex(colors[0]);
+    g.fillRect(0, 0, size, size);
+    const r = rng(0x71a3);
+    for (let i = 0; i < 14; i++) {
+      const y = (i / 14) * size + r() * 4;
+      const h = size * (0.02 + r() * 0.05);
+      g.fillStyle = hex(i % 3 === 0 ? colors[2] ?? colors[1] : colors[1]);
+      g.beginPath();
+      // Full width, so the band leaves one edge exactly where it enters the other.
+      g.moveTo(0, y);
+      for (let x = 0; x <= size; x += size / 8) {
+        g.lineTo(x, y + Math.sin((x / size) * Math.PI * 2 + i) * h * 0.8);
+      }
+      for (let x = size; x >= 0; x -= size / 8) {
+        g.lineTo(x, y + h + Math.sin((x / size) * Math.PI * 2 + i) * h * 0.8);
+      }
+      g.closePath();
+      g.fill();
+    }
+    void rand;
+  },
+
+  /** Veined stone: a wash, then pale fractures through it. */
+  marble(g, size, colors, rand) {
+    const grad = g.createLinearGradient(0, 0, size, size);
+    grad.addColorStop(0, hex(colors[0]));
+    grad.addColorStop(0.5, hex(colors[1]));
+    grad.addColorStop(1, hex(colors[0]));
+    g.fillStyle = grad;
+    g.fillRect(0, 0, size, size);
+    wrapped(g, size, () => {
+      const r = rng(0x9a3c);
+      g.strokeStyle = hex(colors[2] ?? colors[1]);
+      g.lineCap = 'round';
+      for (let v = 0; v < 7; v++) {
+        g.globalAlpha = 0.25 + r() * 0.4;
+        g.lineWidth = 0.6 + r() * 2.2;
+        let x = r() * size;
+        let y = r() * size;
+        g.beginPath();
+        g.moveTo(x, y);
+        for (let k = 0; k < 12; k++) {
+          x += (r() - 0.5) * size * 0.3;
+          y += (r() - 0.5) * size * 0.3;
+          g.lineTo(x, y);
+        }
+        g.stroke();
+      }
+      g.globalAlpha = 1;
+    });
+    void rand;
+  },
+
+  /** Nested V bands, symmetric so the tile repeats without a step. */
+  chevron(g, size, colors, rand) {
+    g.fillStyle = hex(colors[0]);
+    g.fillRect(0, 0, size, size);
+    const rows = 6;
+    for (let i = 0; i < rows; i++) {
+      g.fillStyle = hex(i % 2 ? colors[1] : (colors[2] ?? colors[1]));
+      const y = (i / rows) * size;
+      const h = size / rows;
+      g.beginPath();
+      g.moveTo(0, y);
+      g.lineTo(size / 2, y + h * 0.55);
+      g.lineTo(size, y);
+      g.lineTo(size, y + h * 0.42);
+      g.lineTo(size / 2, y + h * 0.97);
+      g.lineTo(0, y + h * 0.42);
+      g.closePath();
+      g.fill();
+    }
+    void rand;
+  },
+
+  /** Overlapping scales, offset row to row. */
+  serpent(g, size, colors, rand) {
+    g.fillStyle = hex(colors[1]);
+    g.fillRect(0, 0, size, size);
+    const cols = 8;
+    const cell = size / cols;
+    for (let y = 0; y <= cols; y++) {
+      for (let x = 0; x <= cols; x++) {
+        const ox = (y % 2 ? cell / 2 : 0);
+        const cx = x * cell + ox;
+        const cy = y * cell;
+        const grad = g.createRadialGradient(cx, cy - cell * 0.2, 0, cx, cy, cell * 0.8);
+        grad.addColorStop(0, hex(colors[2] ?? colors[0]));
+        grad.addColorStop(1, hex(colors[0]));
+        g.fillStyle = grad;
+        g.beginPath();
+        g.arc(cx, cy, cell * 0.56, 0, Math.PI * 2);
+        g.fill();
+        g.strokeStyle = hex(colors[1]);
+        g.lineWidth = 0.8;
+        g.stroke();
+      }
+    }
+    void rand;
+  },
+
+  /** Deep space: a dark wash, coloured clouds, and stars over the top. */
+  nebula(g, size, colors, rand) {
+    g.fillStyle = hex(colors[0]);
+    g.fillRect(0, 0, size, size);
+    wrapped(g, size, () => {
+      const r = rng(0x4b21);
+      for (let i = 0; i < 12; i++) {
+        const x = r() * size;
+        const y = r() * size;
+        const rad = size * (0.12 + r() * 0.3);
+        const grad = g.createRadialGradient(x, y, 0, x, y, rad);
+        const c = hex(i % 2 ? colors[1] : (colors[2] ?? colors[1]));
+        grad.addColorStop(0, c);
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        g.globalAlpha = 0.34;
+        g.fillStyle = grad;
+        g.beginPath();
+        g.arc(x, y, rad, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.globalAlpha = 1;
+      g.fillStyle = '#ffffff';
+      for (let i = 0; i < 40; i++) {
+        const rr = r() * 1.1 + 0.2;
+        g.globalAlpha = 0.4 + r() * 0.6;
+        g.beginPath();
+        g.arc(r() * size, r() * size, rr, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.globalAlpha = 1;
+    });
+    void rand;
+  },
+
+  /** Stars only, on near-black. Reads as depth rather than as a pattern. */
+  starfield(g, size, colors, rand) {
+    g.fillStyle = hex(colors[0]);
+    g.fillRect(0, 0, size, size);
+    wrapped(g, size, () => {
+      const r = rng(0x2f7d);
+      for (let i = 0; i < 70; i++) {
+        const x = r() * size;
+        const y = r() * size;
+        const rr = r() * 1.4 + 0.2;
+        g.globalAlpha = 0.3 + r() * 0.7;
+        g.fillStyle = r() > 0.82 ? hex(colors[1]) : hex(colors[2] ?? 0xffffff);
+        g.beginPath();
+        g.arc(x, y, rr, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.globalAlpha = 1;
+    });
+    void rand;
+  },
+
+  /** Rolling swells, drawn as full-width sine bands so they wrap by construction. */
+  wave(g, size, colors, rand) {
+    g.fillStyle = hex(colors[0]);
+    g.fillRect(0, 0, size, size);
+    for (let i = 0; i < 5; i++) {
+      const base = (i / 5) * size;
+      g.fillStyle = hex(i % 2 ? colors[1] : (colors[2] ?? colors[1]));
+      g.beginPath();
+      g.moveTo(0, base);
+      for (let x = 0; x <= size; x += 2) {
+        g.lineTo(x, base + Math.sin((x / size) * Math.PI * 4 + i) * size * 0.045);
+      }
+      g.lineTo(size, base + size * 0.12);
+      for (let x = size; x >= 0; x -= 2) {
+        g.lineTo(x, base + size * 0.12 + Math.sin((x / size) * Math.PI * 4 + i) * size * 0.045);
+      }
+      g.closePath();
+      g.fill();
+    }
+    void rand;
+  },
+
+  /** Crazed glaze: a flat ground broken by a network of fine cracks. */
+  crackle(g, size, colors, rand) {
+    g.fillStyle = hex(colors[0]);
+    g.fillRect(0, 0, size, size);
+    wrapped(g, size, () => {
+      const r = rng(0x5cc1);
+      for (let i = 0; i < 16; i++) {
+        let x = r() * size;
+        let y = r() * size;
+        let a = r() * Math.PI * 2;
+        g.strokeStyle = hex(r() > 0.6 ? (colors[2] ?? colors[1]) : colors[1]);
+        g.lineWidth = 0.5 + r() * 1.3;
+        g.globalAlpha = 0.5 + r() * 0.5;
+        g.beginPath();
+        g.moveTo(x, y);
+        for (let k = 0; k < 6; k++) {
+          a += (r() - 0.5) * 1.4;
+          x += Math.cos(a) * size * 0.09;
+          y += Math.sin(a) * size * 0.09;
+          g.lineTo(x, y);
+        }
+        g.stroke();
+      }
+      g.globalAlpha = 1;
+    });
+    void rand;
+  },
+
+  /** Contour lines. Concentric rings at wobbled radii, wrapped. */
+  topo(g, size, colors, rand) {
+    g.fillStyle = hex(colors[0]);
+    g.fillRect(0, 0, size, size);
+    wrapped(g, size, () => {
+      const r = rng(0x3ab7);
+      for (let c = 0; c < 4; c++) {
+        const cx = r() * size;
+        const cy = r() * size;
+        g.strokeStyle = hex(c % 2 ? (colors[2] ?? colors[1]) : colors[1]);
+        for (let ring = 1; ring <= 7; ring++) {
+          g.lineWidth = 0.9;
+          g.globalAlpha = 0.65;
+          g.beginPath();
+          const rad = ring * size * 0.045;
+          for (let k = 0; k <= 24; k++) {
+            const a = (k / 24) * Math.PI * 2;
+            const wobble = 1 + Math.sin(a * 3 + ring) * 0.12;
+            const px = cx + Math.cos(a) * rad * wobble;
+            const py = cy + Math.sin(a) * rad * wobble;
+            if (k === 0) g.moveTo(px, py); else g.lineTo(px, py);
+          }
+          g.closePath();
+          g.stroke();
+        }
+      }
+      g.globalAlpha = 1;
+    });
+    void rand;
+  },
+
+  /**
+   * Iridescence — a thin film of oil.
+   *
+   * Two crossed gradients rather than a hue sweep, so it stays seamless: each
+   * is symmetric about the tile's middle and therefore ends where it started.
+   */
+  oil(g, size, colors, rand) {
+    const a = g.createLinearGradient(0, 0, size, 0);
+    a.addColorStop(0, hex(colors[0]));
+    a.addColorStop(0.33, hex(colors[1]));
+    a.addColorStop(0.66, hex(colors[2] ?? colors[1]));
+    a.addColorStop(1, hex(colors[0]));
+    g.fillStyle = a;
+    g.fillRect(0, 0, size, size);
+    const b = g.createLinearGradient(0, 0, 0, size);
+    b.addColorStop(0, 'rgba(255,255,255,0.30)');
+    b.addColorStop(0.5, 'rgba(0,0,0,0.34)');
+    b.addColorStop(1, 'rgba(255,255,255,0.30)');
+    g.fillStyle = b;
+    g.fillRect(0, 0, size, size);
+    void rand;
+  },
+
+  /** Faceted crystal: bright shards over a dark ground. */
+  crystal(g, size, colors, rand) {
+    g.fillStyle = hex(colors[2] ?? colors[1]);
+    g.fillRect(0, 0, size, size);
+    wrapped(g, size, () => {
+      const r = rng(0x7d31);
+      for (let i = 0; i < 22; i++) {
+        const x = r() * size;
+        const y = r() * size;
+        const rad = size * (0.06 + r() * 0.14);
+        g.beginPath();
+        const n = 3 + Math.floor(r() * 3);
+        for (let k = 0; k <= n; k++) {
+          const a = (k / n) * Math.PI * 2 + r() * 0.4;
+          const px = x + Math.cos(a) * rad;
+          const py = y + Math.sin(a) * rad;
+          if (k === 0) g.moveTo(px, py); else g.lineTo(px, py);
+        }
+        g.closePath();
+        g.globalAlpha = 0.35 + r() * 0.5;
+        g.fillStyle = hex(r() > 0.5 ? colors[0] : colors[1]);
+        g.fill();
+      }
+      g.globalAlpha = 1;
+    });
+    void rand;
+  },
+
+  /** Licking flames, rooted at the bottom edge of the tile. */
+  flame(g, size, colors, rand) {
+    g.fillStyle = hex(colors[0]);
+    g.fillRect(0, 0, size, size);
+    const r = rng(0x0f1a);
+    // Tongues are drawn twice, half a tile apart horizontally, so the row
+    // meets itself: nothing here crosses the top or bottom edge.
+    for (const ox of [0, size / 2]) {
+      for (let i = 0; i < 7; i++) {
+        const x = ((i / 7) * size + ox) % size;
+        const h = size * (0.3 + r() * 0.55);
+        const w = size * (0.05 + r() * 0.07);
+        const grad = g.createLinearGradient(0, size, 0, size - h);
+        grad.addColorStop(0, hex(colors[2] ?? colors[1]));
+        grad.addColorStop(0.55, hex(colors[1]));
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = grad;
+        g.beginPath();
+        g.moveTo(x - w, size);
+        g.quadraticCurveTo(x - w * 0.4, size - h * 0.6, x, size - h);
+        g.quadraticCurveTo(x + w * 0.4, size - h * 0.6, x + w, size);
+        g.closePath();
+        g.fill();
+      }
+    }
+    void rand;
+  },
+
+  /** Electrical plasma: soft blobs with hard filaments across them. */
+  plasma(g, size, colors, rand) {
+    g.fillStyle = hex(colors[0]);
+    g.fillRect(0, 0, size, size);
+    wrapped(g, size, () => {
+      const r = rng(0x2be0);
+      for (let i = 0; i < 8; i++) {
+        const x = r() * size;
+        const y = r() * size;
+        const rad = size * (0.1 + r() * 0.22);
+        const grad = g.createRadialGradient(x, y, 0, x, y, rad);
+        grad.addColorStop(0, hex(i % 2 ? colors[1] : (colors[2] ?? colors[1])));
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        g.globalAlpha = 0.6;
+        g.fillStyle = grad;
+        g.beginPath();
+        g.arc(x, y, rad, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.globalAlpha = 1;
+      g.lineWidth = 1;
+      for (let i = 0; i < 9; i++) {
+        g.strokeStyle = hex(colors[2] ?? colors[1]);
+        g.globalAlpha = 0.5 + r() * 0.5;
+        let x = r() * size;
+        let y = r() * size;
+        let a = r() * Math.PI * 2;
+        g.beginPath();
+        g.moveTo(x, y);
+        for (let k = 0; k < 7; k++) {
+          a += (r() - 0.5) * 2;
+          x += Math.cos(a) * size * 0.07;
+          y += Math.sin(a) * size * 0.07;
+          g.lineTo(x, y);
+        }
+        g.stroke();
+      }
+      g.globalAlpha = 1;
+    });
+    void rand;
+  },
+
+  /** A spider's web — for the gloves that are named after one. */
+  web(g, size, colors, rand) {
+    g.fillStyle = hex(colors[0]);
+    g.fillRect(0, 0, size, size);
+    g.strokeStyle = hex(colors[1]);
+    g.lineWidth = 0.9;
+    g.globalAlpha = 0.8;
+    // Anchored at each corner, so the four quarter-webs form whole ones across
+    // the seam when the tile repeats.
+    for (const [cx, cy] of [[0, 0], [size, 0], [0, size], [size, size]]) {
+      for (let spoke = 0; spoke < 7; spoke++) {
+        const a = (spoke / 6) * (Math.PI / 2);
+        g.beginPath();
+        g.moveTo(cx, cy);
+        g.lineTo(cx + Math.cos(a) * size * (cx ? -1 : 1) * 0.7,
+          cy + Math.sin(a) * size * (cy ? -1 : 1) * 0.7);
+        g.stroke();
+      }
+      for (let ring = 1; ring <= 5; ring++) {
+        g.beginPath();
+        g.arc(cx, cy, ring * size * 0.13, 0, Math.PI * 2);
+        g.stroke();
+      }
+    }
+    g.globalAlpha = 1;
+    void rand;
+  },
 };
+
+/* ── Animated finishes ───────────────────────────────────────────────────── */
+
+/**
+ * Motion, driven from one clock.
+ *
+ * An animated finish is the top of the rarity ladder, so it had better not be
+ * the top of the frame budget too. Nothing here is a video, a sprite sheet or
+ * a custom shader: a scrolling finish moves the *shared* texture's offset, and
+ * a breathing one moves the *shared* material's emissive. Both are per finish
+ * rather than per player, which is why forty players in Hellfire cost exactly
+ * what one does — and why they are all in step, which is the look anyway.
+ *
+ * `tickCosmetics` is called once a frame from the render loop and from
+ * nowhere else. If it is never called, an animated finish simply stands still
+ * and everything else is unaffected.
+ */
+const animTextures = [];
+const animMaterials = [];
+/** How many materials may be driven at once. See `animateMaterial`. */
+const ANIM_MATERIAL_CAP = 512;
+
+/** Registers a shared texture to be moved by `kind`. */
+function animateTexture(tex, kind, speed) {
+  if (!kind || tex.userData.animated) return;
+  tex.userData.animated = true;
+  animTextures.push({ tex, kind, speed: speed || 0.3 });
+}
+
+/**
+ * Registers a material to be lit by `kind`.
+ *
+ * The base colour and emissive are captured now, because every frame after
+ * this one is a modulation of them rather than of the previous frame — a
+ * pulse that multiplied its own output would fade to black inside a second.
+ */
+function animateMaterial(mat, kind, speed) {
+  if (!kind || !mat || mat.userData?.animated) return;
+  if (!mat.emissive && !mat.color) return;
+  // Cached materials are shared and bounded by the catalogue; per-body clones
+  // are not, and a long session could otherwise walk a list that only grows.
+  // Past the ceiling a clone simply does not animate, which costs one player's
+  // gun its motion rather than costing everybody frames.
+  if (!mat.userData?.shared && animMaterials.length >= ANIM_MATERIAL_CAP) return;
+  mat.userData = { ...(mat.userData ?? {}), animated: true };
+  animMaterials.push({
+    mat, kind, speed: speed || 1,
+    baseEmissive: mat.emissive ? mat.emissive.clone() : null,
+    baseColor: mat.color ? mat.color.clone() : null,
+    hue: mat.color ? mat.color.getHSL({ h: 0, s: 0, l: 0 }) : null,
+    seed: Math.random() * 100,
+  });
+}
+
+const _hsl = { h: 0, s: 0, l: 0 };
+
+/**
+ * Advances every animated finish in the game.
+ *
+ * @param {number} t seconds since the client started — a monotonic clock, not
+ *                   a delta, so a dropped frame does not lose ground.
+ */
+export function tickCosmetics(t) {
+  for (const a of animTextures) {
+    const o = a.tex.offset;
+    switch (a.kind) {
+      case 'scroll': o.y = -t * a.speed; break;
+      case 'drift': o.x = t * a.speed * 0.35; o.y = t * a.speed * 0.2; break;
+      case 'shimmer': o.x = Math.sin(t * a.speed) * 0.35; break;
+      case 'rainbow': o.x = t * a.speed * 0.5; break;
+      // Pulse and flicker are lighting, not movement: the tile stays put and
+      // the material below does the work.
+      default: break;
+    }
+    a.tex.needsUpdate = false;   // offset is a uniform; the pixels have not changed
+  }
+
+  for (const a of animMaterials) {
+    switch (a.kind) {
+      case 'pulse': {
+        if (!a.baseEmissive) break;
+        const k = 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(t * 2.1 * a.speed + a.seed));
+        a.mat.emissive.copy(a.baseEmissive).multiplyScalar(k * 1.6);
+        break;
+      }
+      case 'flicker': {
+        if (!a.baseEmissive) break;
+        // Three detuned sines rather than a random number: an electrical
+        // flicker is irregular, not noisy, and Math.random() every frame per
+        // material reads as static.
+        const n = Math.sin(t * 13 + a.seed) * 0.5 + Math.sin(t * 29.3 + a.seed * 2) * 0.3
+          + Math.sin(t * 7.1 + a.seed * 3) * 0.2;
+        a.mat.emissive.copy(a.baseEmissive).multiplyScalar(Math.max(0.15, 0.8 + n * 0.9));
+        break;
+      }
+      case 'rainbow': {
+        if (!a.baseColor) break;
+        a.baseColor.getHSL(_hsl);
+        // Saturation is floored so a white-based finish still cycles visibly,
+        // and lightness is left alone so the gun keeps its shading.
+        a.mat.color.setHSL((_hsl.h + t * 0.11 * a.speed) % 1, Math.max(0.45, _hsl.s), _hsl.l);
+        if (a.baseEmissive) {
+          a.mat.emissive.setHSL((_hsl.h + t * 0.11 * a.speed + 0.5) % 1, 0.6, 0.08);
+        }
+        break;
+      }
+      case 'shimmer': {
+        if (!a.baseEmissive) break;
+        const k = 0.5 + 0.5 * Math.sin(t * 1.3 * a.speed + a.seed);
+        a.mat.emissive.copy(a.baseEmissive).multiplyScalar(0.6 + k * 1.4);
+        break;
+      }
+      default: break;
+    }
+  }
+}
+
+/** How many finishes are currently being animated — the perf figure, for tests. */
+export const animatedCount = () => animTextures.length + animMaterials.length;
 
 /* ── Caches ──────────────────────────────────────────────────────────────── */
 
@@ -389,7 +903,7 @@ const geometries = new Map();
  * every zone it touches from the same recipe — Woodland's stock and its
  * receiver are the same camouflage, and drawing it twice would only cost VRAM.
  */
-function patternTexture(skinId, pattern) {
+function patternTexture(skinId, pattern, anim = null) {
   const key = `${skinId}|${pattern.kind}`;
   let tex = textures.get(key);
   if (tex) return tex;
@@ -410,6 +924,8 @@ function patternTexture(skinId, pattern) {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.userData.shared = true;
   textures.set(key, tex);
+  // An animated finish moves this one texture for everybody wearing it.
+  animateTexture(tex, anim, pattern.speed);
   return tex;
 }
 
@@ -466,7 +982,7 @@ export function gunMaterial(part, skin) {
   } else {
     const paint = paintFor(part, skin);
     const finish = FINISH[part.m] ?? FINISH[MAT.POLY];
-    const tex = paint.pattern ? patternTexture(skinId, paint.pattern) : null;
+    const tex = paint.pattern ? patternTexture(skinId, paint.pattern, skin?.anim) : null;
     const emissive = new THREE.Color(finish.emissive);
     if (paint.glow) emissive.lerp(new THREE.Color(paint.glow), 0.75);
     mat = new THREE.MeshPhongMaterial({
@@ -480,6 +996,9 @@ export function gunMaterial(part, skin) {
     });
   }
   mat.userData.shared = true;
+  // Lighting-driven motion — pulse, flicker, rainbow, shimmer — lives on the
+  // material rather than the tile. A finish may register both.
+  if (part.m !== MAT.EMIT) animateMaterial(mat, skin?.anim);
   materials.set(key, mat);
   return mat;
 }
@@ -576,6 +1095,10 @@ export function buildWeaponMesh(def, skin, { fine = true, clone = false, collaps
         // The clone belongs to whoever asked for it, so it must not inherit
         // the cache's "leave me alone" flag — its texture still carries one.
         mat.userData = {};
+        // A clone is a fresh material, so it is not on the animation list the
+        // original is on. Without this the finish everybody else is carrying
+        // would be the one finish in the game that stands still.
+        animateMaterial(mat, skin?.anim);
         clones.set(part.mat, mat);
       }
     }
@@ -683,10 +1206,7 @@ export function collapseStatic(root, keep = null) {
   return root;
 }
 
-/** Every finish the shop can offer, painted once so a card can show the real thing. */
-export function skinSwatchCss(skin) {
-  const c = skin?.swatch ?? [0x3b424c, 0x5c3a1f, 0x8d959f];
-  return `linear-gradient(135deg, ${hex(c[0])} 0%, ${hex(c[1])} 52%, ${hex(c[2] ?? c[0])} 100%)`;
-}
-
-export default { gunMaterial, skinnedBoxGeometry, buildWeaponMesh, collapseStatic, FINISH, skinSwatchCss };
+export default {
+  gunMaterial, skinnedBoxGeometry, buildWeaponMesh, collapseStatic, FINISH,
+  tickCosmetics, animatedCount,
+};

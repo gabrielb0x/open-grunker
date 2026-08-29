@@ -118,6 +118,8 @@ code { font-family: var(--mono); font-size: .92em; color: var(--accent); }
 .btn.primary:hover { color: #1a1207; box-shadow: var(--glow); }
 .btn.danger { background: rgba(255, 93, 93, .08); border-color: rgba(255, 93, 93, .45); color: var(--red); }
 .btn.danger:hover { background: rgba(255, 93, 93, .16); border-color: var(--red); color: var(--red); }
+/* The compact variant, for a button that sits inside a table row. */
+.btn.small { padding: 4px 9px; font-size: 9.5px; letter-spacing: .1em; border-radius: 6px; }
 .btn:disabled { opacity: .34; cursor: default; transform: none; box-shadow: none; }
 .btn:disabled:hover { border-color: var(--line-2); color: var(--text); }
 
@@ -746,3 +748,41 @@ table.list tr.guest.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent)
 .event-row.level .e-kind { color: var(--accent); }
 .event-row.admin .e-kind, .event-row.report .e-kind { color: var(--red); }
 .event-row .e-what { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Cosmetics ───────────────────────────────────────────────────────────
+   The item economy. Rarity is the only colour here and it is spent on a dot
+   and a left edge, the same rule the game's own wardrobe follows, so a
+   moderator and a player are reading the same ladder. */
+.sec-head {
+  margin: 18px 0 8px; font: 800 10px var(--font); letter-spacing: .2em; color: var(--dim);
+}
+.sec-head:first-child { margin-top: 0; }
+.form-row { display: flex; gap: 8px; margin-bottom: 12px; }
+.form-row input { flex: 1; min-width: 0; }
+.subtabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.subtab {
+  padding: 6px 12px; cursor: pointer; font: 800 10px var(--font); letter-spacing: .14em;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px;
+  color: var(--muted);
+}
+.subtab.active { color: var(--bg); background: var(--text); border-color: var(--text); }
+.odds-cell { display: flex; gap: 8px; flex-wrap: wrap; font: 600 10.5px var(--font); }
+.odds-cell span { color: var(--muted); white-space: nowrap; }
+/* Realised beside published. Bold when the two have drifted far enough apart
+   to be worth a second look rather than every time they are not identical —
+   they never will be identical, and a table that is always shouting is a table
+   nobody reads. */
+.odds-cell b { color: var(--text); font-weight: 800; }
+.odds-cell.drift b { color: var(--red); }
+.rar-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+.unit-row {
+  display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto; gap: 10px;
+  align-items: center; padding: 7px 10px; margin-bottom: 4px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+  font: 600 11.5px var(--font);
+}
+.unit-row .src { color: var(--dim); font-size: 10.5px; }
+.unit-row .worth { color: var(--muted); font-variant-numeric: tabular-nums; }
+.unit-row.locked { opacity: .6; }
+.unit-list { max-height: 44vh; overflow-y: auto; margin-bottom: 12px; }
+.cos-warn { color: var(--red); font: 700 11px var(--font); }

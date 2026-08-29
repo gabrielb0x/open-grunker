@@ -7,6 +7,7 @@
 import * as K from '../../shared/constants.js';
 import { createState, eyeY } from '../../shared/movement.js';
 import { getClass, loadoutFor, PISTOL, KNIFE } from '../../shared/weapons.js';
+import { SLOT, DEFAULT_EQUIP } from '../../shared/cosmetics.js';
 import { CheatState } from './anticheat.js';
 
 const HISTORY = 40;                                  // ~0.66 s at 60 Hz
@@ -33,8 +34,18 @@ export class Player {
     this.name = o.name ?? 'Guest';
     this.level = o.level ?? 1;
     this.skin = o.skin ?? 'default';
-    /** Every class's chosen finish, so a class swap swaps the skin with it. */
+    /** Every class's chosen primary finish, so a class swap swaps the finish with it. */
     this.skins = o.skins ?? {};
+    /**
+     * The whole worn loadout: `{ <slot>: <itemId> }` for all nine slots.
+     *
+     * It travels on the profile rather than being looked up per player per
+     * frame, because everybody else's renderer needs it exactly once — when
+     * the body is built — and never again until it changes.
+     */
+    this.cos = o.cos ?? { ...DEFAULT_EQUIP };
+    /** Per-class primary finishes, as item ids. Swapped into `cos` on a class change. */
+    this.primaries = o.primaries ?? {};
     this.verified = !!o.verified;
     this.clan = o.clan ?? null;
     /** Is the clan behind that tag one the developers have verified? Gold, not grey. */
@@ -242,6 +253,9 @@ export class Player {
     if (!force && def.id === this.classId) return false;
     this.classId = def.id;
     this.skin = this.skins?.[def.id] ?? 'default';
+    // The primary finish follows the class, the other eight slots do not.
+    const primary = this.primaries?.[def.id];
+    if (primary) this.cos = { ...this.cos, [SLOT.PRIMARY]: primary };
     this.weapons = loadoutFor(def.id).map((w) => ({
       def: w,
       ammo: w.magSize ?? 0,
@@ -472,7 +486,7 @@ export class Player {
   profile() {
     return {
       id: this.id, name: this.name, team: this.team, classId: this.classId,
-      skin: this.skin, bot: this.isBot, ...this.tags,
+      skin: this.skin, cos: this.cos, bot: this.isBot, ...this.tags,
       kills: this.score.kills, deaths: this.score.deaths, score: this.score.score,
     };
   }

@@ -11,8 +11,10 @@
  */
 import * as THREE from 'three';
 import * as K from '/shared/constants.js';
-import { getClass, loadoutFor, SKINS } from '/shared/weapons.js';
+import { getClass, loadoutFor } from '/shared/weapons.js';
 import { buildWeaponMesh } from './gunskin.js';
+import { buildWearable, outfitColors, gloveColors } from './wearables.js';
+import { getItem, SLOT, DEFAULT_EQUIP } from '/shared/cosmetics.js';
 import { settings } from './settings.js';
 
 const BUFFER_MS = 1200;
@@ -77,7 +79,7 @@ function blobGeometry() {
  */
 const NO_SHADOW_PARTS = new Set([
   'collar', 'pouchL', 'pouchR', 'pouchC', 'roll', 'mask', 'visor',
-  'helmetTop', 'brim', 'nvg', 'kneeL', 'kneeR', 'band', 'band2', 'flash',
+  'kneeL', 'kneeR', 'cuffL', 'cuffR', 'band', 'band2', 'flash',
 ]);
 
 /** The verified check, loaded once and drawn straight into every nametag. */
@@ -98,7 +100,12 @@ function lerpAngle(a, b, t) {
  * Builds one low-poly operator. Silhouette first: helmet, plate carrier and
  * boots are what a player reads at forty metres, long before any detail.
  */
-function buildCharacter(teamColor, classDef, skinIdx = 0, weaponSkin = 'default') {
+/**
+ * @param {object} cos  the worn loadout, `{ <slot>: <itemId> }`. Everything in
+ *   it is optional: a missing slot falls back on what the operator has always
+ *   worn, which is what a guest, a bot and a pre-V2 client all get.
+ */
+function buildCharacter(teamColor, classDef, skinIdx = 0, weaponSkin = 'default', cos = null) {
   const g = new THREE.Group();
 
   /**
@@ -111,6 +118,25 @@ function buildCharacter(teamColor, classDef, skinIdx = 0, weaponSkin = 'default'
    * thirteen, which is thirteen shader-uniform sets per body per frame.
    */
   const mats = new Map();
+  /**
+   * The body's own material factory, handed to every wearable it puts on.
+   *
+   * A hat that made its own materials would not fade with the corpse under it
+   * and would not flash when the body is hit; sharing this one is what keeps a
+   * crown part of the player rather than a decal floating where they were.
+   */
+  const mkMat = (color, opts = {}) => {
+    const key = `${color}|${opts.shininess ?? 8}|${opts.specular ?? 0x14181d}|${opts.emissive ?? -1}|${opts.opacity ?? 1}`;
+    let mat = mats.get(key);
+    if (!mat) {
+      mat = new THREE.MeshPhongMaterial({
+        color, shininess: 8, specular: 0x14181d, ...opts,
+        ...(opts.opacity != null && opts.opacity < 1 ? { transparent: true } : {}),
+      });
+      mats.set(key, mat);
+    }
+    return mat;
+  };
   const mk = (w, h, d, color, opts = {}) => {
     const key = `${color}|${opts.shininess ?? 8}|${opts.specular ?? 0x14181d}|${opts.emissive ?? -1}`;
     let mat = mats.get(key);
@@ -121,11 +147,25 @@ function buildCharacter(teamColor, classDef, skinIdx = 0, weaponSkin = 'default'
     return new THREE.Mesh(boxGeometry(w, h, d), mat);
   };
 
+  const worn = { ...DEFAULT_EQUIP, ...(cos ?? {}) };
   const team = new THREE.Color(teamColor);
-  const fabric = team.clone().multiplyScalar(0.42).lerp(new THREE.Color(0x2f333a), 0.55);
-  const gear = new THREE.Color(0x23272d);
-  const gearLight = new THREE.Color(0x343a42);
-  const pants = new THREE.Color(0x363b40).lerp(team, 0.12);
+
+  /*
+   * The outfit overrides the uniform, but never all of it.
+   *
+   * `fabric`, `gear` and `pants` are what an operator is made of; an outfit
+   * replaces the ones it names and leaves the rest team-coloured. The armband,
+   * the shoulder strap and the class flash are deliberately outside this: they
+   * are how a player tells friend from foe at range, and a cosmetic that could
+   * take them away would be a cosmetic that changes how the game plays.
+   */
+  const fit = outfitColors(worn[SLOT.BODY], teamColor);
+  const fabric = fit?.fabric != null ? new THREE.Color(fit.fabric)
+    : team.clone().multiplyScalar(0.42).lerp(new THREE.Color(0x2f333a), 0.55);
+  const gear = new THREE.Color(fit?.vest ?? 0x23272d);
+  const gearLight = gear.clone().lerp(new THREE.Color(0xffffff), 0.16);
+  const pants = fit?.pants != null ? new THREE.Color(fit.pants)
+    : new THREE.Color(0x363b40).lerp(team, 0.12);
   const rubber = new THREE.Color(0x141619);
   const accent = new THREE.Color(classDef?.color ?? 0xf0a010);
   const strap = team.clone().lerp(new THREE.Color(0xffffff), 0.15);
@@ -150,26 +190,36 @@ function buildCharacter(teamColor, classDef, skinIdx = 0, weaponSkin = 'default'
   band2.position.x = 0.4;
   const flash = mk(0.14, 0.1, 0.02, accent.getHex(), { emissive: accent.clone().multiplyScalar(0.3).getHex() });
   flash.position.set(0.21, 1.36, -0.215);
-  const pack = mk(0.4, 0.44, 0.2, gear.getHex());
-  pack.position.set(0, 1.18, 0.26);
+  // The backpack and bedroll are items now too; what is left here is the strap
+  // that crosses the chest, which every pack shares.
   const roll = mk(0.34, 0.12, 0.14, fabric.getHex());
   roll.position.set(0, 1.42, 0.28);
+  roll.visible = false;
 
   // ── Head: balaclava, face, goggles, helmet ────────────────────────────
   const head = mk(0.38, 0.34, 0.36, SKIN_TONES[skinIdx % SKIN_TONES.length]);
   head.position.y = 1.68;
+  // Kept as parts rather than as items: the pose code and the x-ray pass both
+  // name them, and an empty face slot still needs something over the eyes.
   const mask = mk(0.39, 0.18, 0.37, 0x1b1f25);
   mask.position.set(0, 1.62, 0);
+  mask.visible = getItem(worn[SLOT.FACE])?.wear?.shape === 'balaclava';
   const visor = mk(0.34, 0.1, 0.04, 0x121a24, { shininess: 90, specular: 0x7fbfe0 });
   visor.position.set(0, 1.73, -0.19);
-  const helmet = mk(0.44, 0.22, 0.44, gear.getHex(), { shininess: 26, specular: 0x2e343c });
-  helmet.position.y = 1.9;
-  const helmetTop = mk(0.36, 0.08, 0.36, gear.getHex(), { shininess: 26, specular: 0x2e343c });
-  helmetTop.position.y = 2.0;
-  const brim = mk(0.42, 0.05, 0.14, gearLight.getHex());
-  brim.position.set(0, 1.82, -0.26);
-  const nvg = mk(0.12, 0.08, 0.12, 0x1a1e24);
-  nvg.position.set(0, 1.93, -0.24);
+  visor.visible = false;
+  /*
+   * Headwear and facewear are built by shared/cosmetics.js recipes rather than
+   * spelled out here, because the loadout screen has to draw exactly the same
+   * hat: one builder, two callers, and nothing that can be bought on the
+   * strength of a preview that lies. See client/js/wearables.js.
+   *
+   * The old fixed helmet, brim and NVG are gone as parts and are back as items
+   * — `head:helmet` is what every account already has on, so nobody's operator
+   * changed shape when this shipped.
+   */
+  const headGear = buildWearable(worn[SLOT.HEAD], mkMat);
+  const faceGear = buildWearable(worn[SLOT.FACE], mkMat);
+  const backGear = buildWearable(worn[SLOT.BACK], mkMat);
 
   // ── Limbs ─────────────────────────────────────────────────────────────
   const shoulderL = mk(0.19, 0.19, 0.28, gearLight.getHex());
@@ -181,10 +231,20 @@ function buildCharacter(teamColor, classDef, skinIdx = 0, weaponSkin = 'default'
   armL.position.set(-0.38, 1.14, 0);
   const armR = armL.clone();
   armR.position.x = 0.38;
-  const gloveL = mk(0.15, 0.14, 0.17, gear.getHex());
+  // Gloves are the one worn slot that is a recolour rather than a shape: the
+  // hands are already there, and what changes is what they are wearing.
+  const hands = gloveColors(worn[SLOT.GLOVES]);
+  const gloveL = mk(0.15, 0.14, 0.17, hands?.color ?? gear.getHex(), {
+    shininess: 8 + (hands?.gloss ?? 0) * 50,
+    ...(hands?.glow ? { emissive: hands.glow } : {}),
+  });
   gloveL.position.set(-0.38, 0.87, 0);
   const gloveR = gloveL.clone();
   gloveR.position.x = 0.38;
+  const cuffL = mk(0.16, 0.05, 0.18, hands?.cuff ?? gearLight.getHex());
+  cuffL.position.set(-0.38, 0.95, 0);
+  const cuffR = cuffL.clone();
+  cuffR.position.x = 0.38;
 
   const legL = mk(0.21, 0.74, 0.23, pants.getHex());
   legL.position.set(-0.145, 0.42, 0);
@@ -210,8 +270,19 @@ function buildCharacter(teamColor, classDef, skinIdx = 0, weaponSkin = 'default'
    * snapshot's slot field picks which one is visible — the wire already carried
    * it, nothing was ever drawing it.
    */
-  const skinDef = SKINS[weaponSkin] ?? SKINS.default;
-  const guns = (loadoutFor(classDef?.id) ?? []).map((def) => {
+  /*
+   * Each of the three slots wears its own finish now.
+   *
+   * That is the whole point of V2's split: the rifle can be Gold Rush, the
+   * sidearm Factory and the knife Doppler, and everybody else sees all three
+   * as you switch between them. `weaponSkin` is what a pre-V2 server sends —
+   * one finish for the primary — and it is honoured when no wardrobe arrived.
+   */
+  const gunSlots = [SLOT.PRIMARY, SLOT.SECONDARY, SLOT.KNIFE];
+  const guns = (loadoutFor(classDef?.id) ?? []).map((def, i) => {
+    const fallback = i === 0 && weaponSkin && weaponSkin !== 'default'
+      ? `${SLOT.PRIMARY}:${weaponSkin}` : null;
+    const skinDef = getItem(cos?.[gunSlots[i]] ?? fallback ?? worn[gunSlots[i]])?.finish ?? null;
     // `fine: false` drops the slide serrations, vent slots and tritium dots.
     // Nobody reads those at forty metres, and eight players' worth of them is
     // several hundred draw calls a frame that buy exactly nothing. `clone`
@@ -230,6 +301,13 @@ function buildCharacter(teamColor, classDef, skinIdx = 0, weaponSkin = 'default'
   const gun = guns[0];
   gun.visible = true;
 
+  // A charm hangs off the primary, where the owner put it. It rides the gun,
+  // so it swings with the weapon rather than sitting in the air beside it.
+  const charm = buildWearable(worn[SLOT.CHARM], mkMat);
+  charm.group.position.set(0.02, -0.09, 0.16);
+  charm.group.scale.setScalar(1.6);
+  gun.add(charm.group);
+
   // Cheap contact shadow so bodies sit on the ground even with shadows off.
   const blob = new THREE.Mesh(
     blobGeometry(),
@@ -240,8 +318,8 @@ function buildCharacter(teamColor, classDef, skinIdx = 0, weaponSkin = 'default'
   blob.renderOrder = 1;
 
   const named = {
-    torso, vest, collar, pouchL, pouchR, pouchC, pack, roll, head, mask, visor,
-    helmet, helmetTop, brim, nvg, shoulderL, shoulderR, armL, armR, gloveL, gloveR,
+    torso, vest, collar, pouchL, pouchR, pouchC, roll, head, mask, visor,
+    shoulderL, shoulderR, armL, armR, gloveL, gloveR, cuffL, cuffR,
     legL, legR, kneeL, kneeR, bootL, bootR, band, band2, flash,
   };
   const solid = Object.values(named);
@@ -249,17 +327,33 @@ function buildCharacter(teamColor, classDef, skinIdx = 0, weaponSkin = 'default'
     part.castShadow = !NO_SHADOW_PARTS.has(id);
     g.add(part);
   }
+  // The three worn groups go on last, so they draw over the body they sit on.
+  g.add(headGear.group, faceGear.group, backGear.group);
   g.add(...guns, blob);
+  /** Every mesh a hat, a mask or a pack put on this body. */
+  const wornMeshes = [...headGear.meshes, ...faceGear.meshes, ...backGear.meshes, ...charm.meshes];
 
   g.userData = {
     ...named, gun, guns, blob,
+    /** The worn groups, posed as units — a hat tips with the head, not with each bead. */
+    headGear: headGear.group, faceGear: faceGear.group, backGear: backGear.group,
+    wornMeshes,
     solid,
     /** Parts a damage flash may tint — the ones with no emissive of their own. */
     flashParts: solid.filter((p) => p !== band && p !== band2 && p !== flash),
     /** Every part's rest height, so crouch/slide can offset them as a group. */
     homeY: solid.map((p) => p.position.y).concat([gun.position.y]),
-    /** Every mesh a death fade or an x-ray pass has to reach. */
-    fadeParts: solid.concat(guns.flatMap((w) => w.children)),
+    /**
+     * Every mesh a death fade or an x-ray pass has to reach.
+     *
+     * The worn meshes are in here for a reason that is obvious the first time
+     * they are not: a crown that stayed solid while the body under it faded
+     * would hang in the air over an empty patch of floor.
+     */
+    // Filtered, not assumed: a gun's children now include the charm's own
+    // group, which has no material of its own to fade.
+    fadeParts: solid.concat(wornMeshes, guns.flatMap((w) => w.children))
+      .filter((p) => p.isMesh && p.material),
   };
   return g;
 }
@@ -399,7 +493,7 @@ export class EntityManager {
     const teamColor = this.teamMode
       ? (K.TEAM_COLORS[profile.team] ?? 0xf0a010)
       : 0xdd4b3e;
-    const group = buildCharacter(teamColor, getClass(profile.classId), profile.id, profile.skin);
+    const group = buildCharacter(teamColor, getClass(profile.classId), profile.id, profile.skin, profile.cos);
     const tag = buildNametag();
     group.add(tag.sprite);
     group.visible = false;
@@ -436,12 +530,19 @@ export class EntityManager {
   }
 
   /** Rebuilds a character when its class — or the finish on its weapons — changes. */
-  setClass(id, classId, skin = undefined) {
+  setClass(id, classId, skin = undefined, cos = undefined) {
     const e = this.players.get(id);
     const nextSkin = skin ?? e?.profile?.skin ?? 'default';
-    if (!e || (e.profile.classId === classId && e.profile.skin === nextSkin)) return;
+    const nextCos = cos ?? e?.profile?.cos ?? null;
+    // The wardrobe is compared as a string because it is nine short ids and it
+    // changes about once a match: JSON is cheaper here than nine comparisons
+    // spelled out, and far cheaper than rebuilding a body that did not change.
+    const same = e && e.profile.classId === classId && e.profile.skin === nextSkin
+      && JSON.stringify(e.profile.cos ?? null) === JSON.stringify(nextCos);
+    if (!e || same) return;
     e.profile.classId = classId;
     e.profile.skin = nextSkin;
+    e.profile.cos = nextCos;
     const wasVisible = e.group.visible;
     this.scene.remove(e.group);
     e.group.traverse((o) => {
@@ -452,7 +553,7 @@ export class EntityManager {
         o.material.dispose?.();
       }
     });
-    const group = buildCharacter(e.teamColor, getClass(classId), id, e.profile.skin);
+    const group = buildCharacter(e.teamColor, getClass(classId), id, e.profile.skin, e.profile.cos);
     group.add(e.tag.sprite);
     group.visible = wasVisible;
     group.position.copy(e.group.position);
@@ -670,16 +771,19 @@ export class EntityManager {
     u.armR.rotation.x = 0.95 * limp + Math.sin(t * 7) * 0.12 * (1 - t);
     u.gloveL.rotation.x = u.armL.rotation.x;
     u.gloveR.rotation.x = u.armR.rotation.x;
+    u.cuffL.rotation.x = u.armL.rotation.x;
+    u.cuffR.rotation.x = u.armR.rotation.x;
     u.head.rotation.x = 0.75 * limp;
     u.mask.rotation.x = u.head.rotation.x;
     u.visor.rotation.x = u.head.rotation.x;
-    u.helmet.rotation.x = 0.55 * limp;
-    u.helmetTop.rotation.x = u.helmet.rotation.x;
-    u.brim.rotation.x = u.helmet.rotation.x;
-    u.nvg.rotation.x = u.helmet.rotation.x;
+    // The hat and the mask go down with the head, the pack with the torso.
+    // Rotating the group rather than each piece is what lets a crown with ten
+    // parts cost the same to pose as a helmet with three.
+    u.headGear.rotation.x = 0.55 * limp;
+    u.faceGear.rotation.x = u.head.rotation.x;
     u.torso.rotation.x = 0.3 * limp;
     u.vest.rotation.x = u.torso.rotation.x;
-    u.pack.rotation.x = u.torso.rotation.x;
+    u.backGear.rotation.x = u.torso.rotation.x;
 
     // The weapon is dropped rather than carried down: it leaves the hand, spins
     // a little, and ends up on the floor beside the body.
@@ -713,8 +817,8 @@ export class EntityManager {
       g.position.set(0.3, 1.25, -0.4);
       g.rotation.set(0, 0, 0);
     }
-    for (const key of ['torso', 'vest', 'pack', 'head', 'mask', 'visor', 'helmet',
-      'helmetTop', 'brim', 'nvg', 'armL', 'armR', 'gloveL', 'gloveR']) {
+    for (const key of ['torso', 'vest', 'head', 'mask', 'visor', 'armL', 'armR',
+      'gloveL', 'gloveR', 'cuffL', 'cuffR', 'headGear', 'faceGear', 'backGear']) {
       u[key].rotation.set(0, 0, 0);
     }
     u.blob.material.opacity = 0.3;
@@ -852,10 +956,10 @@ export class EntityManager {
     u.head.rotation.x = -p * 0.7;
     u.mask.rotation.x = u.head.rotation.x;
     u.visor.rotation.x = u.head.rotation.x;
-    u.helmet.rotation.x = -p * 0.5;
-    u.helmetTop.rotation.x = u.helmet.rotation.x;
-    u.brim.rotation.x = u.helmet.rotation.x;
-    u.nvg.rotation.x = u.helmet.rotation.x;
+    u.faceGear.rotation.x = u.head.rotation.x;
+    // Half the head's pitch, not all of it: a hat sits on the skull rather than
+    // being part of it, and one that tracked the pitch exactly reads as welded.
+    u.headGear.rotation.x = -p * 0.5;
 
     /*
      * The knife swing, from the outside.
@@ -879,6 +983,7 @@ export class EntityManager {
     u.armR.rotation.x = -p - 1.35 - slash * 1.5;
     u.armR.rotation.z = slash * 0.9;
     u.gloveR.rotation.x = u.armR.rotation.x;
+    u.cuffR.rotation.x = u.armR.rotation.x;
     for (const g of u.guns) {
       g.rotation.x = -p - slash * 1.6;
       g.rotation.y = 0;
@@ -892,7 +997,7 @@ export class EntityManager {
     e.lean += (targetLean - e.lean) * Math.min(1, dt * 9);
     u.torso.rotation.x = e.lean;
     u.vest.rotation.x = e.lean;
-    u.pack.rotation.x = e.lean;
+    u.backGear.rotation.x = e.lean;
     u.blob.position.y = 0.02;
   }
 }

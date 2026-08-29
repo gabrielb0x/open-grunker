@@ -1328,6 +1328,13 @@ kbd {
 
 .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 14px; }
 .panel-head h3 { margin: 0; font-size: 14px; letter-spacing: .22em; }
+/* A heading for the *second* thing on a page. Without the space above it, a
+   section title sits on top of whatever list it is meant to be introducing and
+   reads as its last row. */
+.panel-head.sub { margin-top: 30px; }
+/* The caption beside a heading is on the same line, so its own bottom margin
+   would push it half a line above the title it belongs to. */
+.panel-head .panel-note { margin: 0; text-align: right; }
 .head-actions { display: flex; gap: 8px; align-items: center; }
 .panel-note { font-size: 12px; color: var(--muted); margin: 0 0 14px; }
 /* A refusal reads as one: the reports line carries the server's own sentence
@@ -1354,6 +1361,17 @@ kbd {
 .btn-primary:focus-visible, .btn-ghost:focus-visible, .btn-danger:focus-visible {
   outline: none; box-shadow: 0 0 0 3px rgba(245,166,35,.35);
 }
+/* A button that cannot be pressed must not press back, lift, or glow. Without
+   this a disabled control answers every hover exactly like a live one, which
+   is worse than no feedback at all. */
+.btn-primary:disabled, .btn-ghost:disabled, .btn-danger:disabled {
+  opacity: .45; cursor: not-allowed; filter: none; transform: none; box-shadow: none;
+}
+.btn-primary:disabled:hover, .btn-ghost:disabled:hover, .btn-danger:disabled:hover {
+  transform: none; box-shadow: none; filter: none;
+  border-color: transparent; color: inherit;
+}
+.btn-ghost:disabled:hover { border-color: var(--line-2); color: var(--text); }
 .btn-danger.wide, .btn-ghost.wide { width: 100%; margin-top: 10px; }
 
 select, input[type=color] {
@@ -2535,7 +2553,7 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
 .cm-act { display: flex; gap: 6px; justify-content: flex-end; }
 .ci-who { font-weight: 600; }
 .ci-who small { color: var(--dim); font-weight: 400; margin-left: 6px; }
-.btn-ghost.sm, .btn-danger.sm {
+.btn-primary.sm, .btn-ghost.sm, .btn-danger.sm {
   padding: 4px 9px; font-size: 10px; letter-spacing: .1em; border-radius: var(--r-xs);
 }
 .btn-ghost.sm.danger { border-color: rgba(229,72,77,.45); color: var(--danger); }
@@ -2850,4 +2868,366 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
   #chatPanel { width: calc(100vw - 40px); bottom: 128px; }
   #hudRight { width: 150px; }
   .mp-btn small { display: none; }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   V2 — the wardrobe: loadout, cases, market, trades
+
+   One visual rule runs through all four pages: **rarity is the only colour
+   that means anything**. Every card sets `--rarity` from the item it holds and
+   spends it on exactly two things — a hairline down the left edge and the glow
+   under a hover — so a wall of a hundred and twenty cards still reads as a
+   ladder rather than as a fruit machine. Nothing else in this block is tinted
+   by rarity: not the text, not the price, not the background.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* — The loadout workbench — */
+
+/* Three columns on a desktop, one on anything narrow. The stage is the widest
+   because it is the only column that is a picture rather than a list. */
+.lo-wrap {
+  display: grid; grid-template-columns: 210px minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: 16px; align-items: start;
+}
+.lo-head {
+  margin: 0 0 10px; font-size: 10px; letter-spacing: .22em; color: var(--dim);
+}
+.lo-classes { position: sticky; top: 0; }
+.lo-class-grid { grid-template-columns: 1fr; gap: 8px; }
+/* The class cards shrink to a rail here: this page is about the finish on the
+   gun, and the full stat block belongs on the class page it came from. */
+.lo-class-grid .class-card { padding: 10px 12px; }
+.lo-class-grid .class-stats, .lo-class-grid p { display: none; }
+.lo-class-grid h4 { font-size: 13px; }
+
+.lo-stage {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: 14px; box-shadow: var(--ring);
+}
+.lo-stage-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.lo-stage-head h4 { margin: 0; font-size: 14px; letter-spacing: .12em; }
+.lo-view {
+  position: relative; margin: 12px 0; aspect-ratio: 4 / 5; border-radius: var(--r);
+  overflow: hidden;
+  /* A stage, not a void: a low pool of light behind the operator so a dark
+     finish still has something to sit against. */
+  background:
+    radial-gradient(120% 80% at 50% 12%, rgba(77,155,255,.14), transparent 62%),
+    linear-gradient(180deg, var(--panel-2), var(--bg-2));
+  border: 1px solid var(--line);
+}
+.lo-view canvas { width: 100%; height: 100%; display: block; cursor: grab; }
+.lo-view canvas:active { cursor: grabbing; }
+.lo-view-empty {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-size: 11px; letter-spacing: .16em; color: var(--dim);
+}
+.lo-view-tools { position: absolute; right: 8px; bottom: 8px; display: flex; gap: 6px; }
+.lo-tool {
+  width: 30px; height: 30px; border-radius: var(--r-xs); cursor: pointer;
+  background: rgba(8,10,14,.7); border: 1px solid var(--line-2); color: var(--text);
+  font-size: 14px; line-height: 1;
+}
+.lo-tool:hover { border-color: var(--accent); color: var(--accent); }
+
+/* The nine slots as a strip under the preview: what is on, at a glance. */
+.lo-equipped { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.lo-chip {
+  display: grid; grid-template-columns: 18px 1fr; grid-template-rows: auto auto;
+  gap: 2px 8px; align-items: center; text-align: left; padding: 7px 9px; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-sm);
+  color: inherit; font: inherit;
+}
+.lo-chip:hover { border-color: var(--line-2); }
+.lo-chip.active { border-color: var(--accent); }
+.lo-chip-sw { grid-row: 1 / 3; width: 18px; height: 26px; border-radius: 4px;
+  border: 1px solid rgba(255,255,255,.1); }
+.lo-chip-slot { font-size: 8.5px; letter-spacing: .18em; color: var(--dim); }
+.lo-chip-item { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.lo-picker { min-width: 0; }
+.lo-slots { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.lo-slot {
+  display: flex; align-items: center; gap: 6px; padding: 7px 11px; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-pill);
+  color: var(--muted); font: inherit; font-size: 11px; letter-spacing: .1em;
+}
+.lo-slot i { font-style: normal; opacity: .8; }
+.lo-slot:hover { color: var(--text); border-color: var(--line-2); }
+.lo-slot.active { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+
+.lo-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.lo-filters input[type="search"], .lo-filters select {
+  flex: 1 1 120px; min-width: 0; padding: 8px 10px; font: inherit; font-size: 12px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-sm);
+  color: var(--text);
+}
+.lo-owned {
+  display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted);
+  letter-spacing: .08em; white-space: nowrap;
+}
+.skin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(158px, 1fr)); gap: 10px; }
+.lo-grid { max-height: 62vh; overflow-y: auto; padding-right: 4px; }
+
+/* Rarity, spent in the two places named at the top of this block. */
+.skin-card { position: relative; --rarity: var(--dim); }
+.skin-card::before {
+  content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 2px;
+  border-radius: 2px; background: var(--rarity); opacity: .85;
+}
+.skin-card:hover { box-shadow: 0 8px 22px -12px var(--rarity); }
+.skin-card.equipped::before { opacity: 1; width: 3px; }
+.card-badge, .anim-pip {
+  position: absolute; top: 5px; font-size: 8px; letter-spacing: .14em; padding: 2px 6px;
+  border-radius: var(--r-pill); background: rgba(8,10,14,.72); color: var(--text);
+  border: 1px solid rgba(255,255,255,.14);
+}
+.card-badge { right: 5px; }
+.anim-pip { left: 5px; color: #ffd166; border-color: rgba(255,209,102,.4); }
+
+/* — Cases —
+   A case card is sold on three things, in this order: what it costs, what it
+   can give you, and how likely each of those is. The card is laid out in that
+   order and nothing else is on it. */
+.case-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(262px, 1fr)); gap: 14px; }
+.case-card {
+  display: flex; flex-direction: column; gap: 12px; padding: 14px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--ring);
+  transition: border-color .14s, transform .14s cubic-bezier(.2,.8,.3,1);
+}
+.case-card:hover { border-color: var(--line-2); transform: translateY(-2px); }
+/* Every margin inside is the flex gap's business, or two spacings fight. */
+.case-card > * { margin: 0; }
+
+.case-lid {
+  /* Its own token, not `--accent`: that one is the interface's orange, and a
+     case that redefined it would repaint anything inside it that used it. */
+  --case-accent: var(--blue);
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 15px 14px; border-radius: var(--r);
+  /* The lid carries the case's own colour, and it is the only thing on the card
+     that does — the odds below stay neutral so the numbers are read rather than
+     decorated. The hairline across the top is the light catching the edge. */
+  background: linear-gradient(160deg,
+    color-mix(in srgb, var(--case-accent) 38%, var(--panel-3)),
+    color-mix(in srgb, var(--case-accent) 8%, var(--panel-2)));
+  border: 1px solid color-mix(in srgb, var(--case-accent) 42%, var(--line));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
+}
+.case-ident { min-width: 0; }
+.case-ident h4 {
+  margin: 0 0 4px; font-size: 14.5px; letter-spacing: .06em; line-height: 1.15;
+}
+.case-ident p {
+  margin: 0; font-size: 10px; letter-spacing: .14em; color: var(--muted);
+}
+.case-price {
+  flex: none; font-size: 17px; font-weight: 700; color: var(--text);
+  font-variant-numeric: tabular-nums; line-height: 1;
+}
+.case-price i {
+  font-style: normal; font-size: 9px; letter-spacing: .16em; color: var(--muted);
+  margin-left: 4px; vertical-align: 2px;
+}
+
+.case-blurb { font-size: 11.5px; line-height: 1.45; color: var(--dim); }
+
+.case-odds { display: grid; gap: 9px; }
+/* The whole drop table as one bar. Six numbers take a moment to read; their
+   proportions do not, and the difference between a case that is mostly common
+   and one that starts at epic is the first thing anybody wants to know. */
+.case-odds .odds-bar {
+  display: flex; gap: 2px; height: 6px; border-radius: var(--r-pill); overflow: hidden;
+}
+.case-odds .odds-bar i { min-width: 2px; border-radius: var(--r-pill); }
+.case-odds .odds { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.case-odds .odds li {
+  display: grid; grid-template-columns: 8px 1fr auto; gap: 8px; align-items: center;
+  font-size: 11px; color: var(--muted);
+}
+.case-odds .odds li i { width: 8px; height: 8px; border-radius: 2px; }
+.case-odds .odds li b {
+  color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.case-card .case-open { margin-top: auto; width: 100%; }
+
+/* The drop feed. One row per pull, and the left edge is the rarity — which is
+   the only thing anybody scans a feed like this for. */
+.drop-feed { display: grid; gap: 5px; }
+.drop-feed .drop {
+  display: grid; grid-template-columns: 26px minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1fr) auto;
+  gap: 12px; align-items: center; padding: 8px 12px; font-size: 11.5px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-sm);
+  border-left: 2px solid var(--rarity, var(--line));
+}
+.drop-feed .drop.hot { box-shadow: inset 12px 0 24px -20px var(--rarity); }
+.drop-sw { width: 26px; height: 17px; border-radius: 3px; border: 1px solid rgba(255,255,255,.1); }
+.drop-who, .drop-what, .drop-case { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drop-who { color: var(--muted); }
+.drop-what { color: var(--text); }
+.drop-case { color: var(--dim); font-size: 10.5px; letter-spacing: .1em; }
+.drop-when {
+  color: var(--dim); font-size: 10px; letter-spacing: .1em; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* — The reel —
+   One strip, translated once. The easing does all the work: almost all of the
+   travel happens in the first second and the last two are the strip crawling
+   the final few cards, which is what makes it feel like it might not land. */
+.case-card-modal { text-align: center; }
+.reel-frame {
+  position: relative; overflow: hidden; margin: 0 0 18px; padding: 12px 0;
+  border-radius: var(--r); border: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--panel-2), var(--bg-2));
+  /* Fade both ends so cards arrive and leave rather than popping. */
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+.reel { display: flex; gap: 12px; will-change: transform; }
+.reel-card {
+  flex: none; width: 120px; padding: 10px; --rarity: var(--dim);
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-sm);
+  border-bottom: 3px solid var(--rarity);
+}
+.reel-card i { display: block; height: 54px; border-radius: var(--r-xs); margin-bottom: 7px; }
+.reel-card span { font-size: 10.5px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reel-mark {
+  position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; z-index: 2;
+  background: var(--accent); box-shadow: 0 0 12px var(--accent); transform: translateX(-1px);
+}
+.case-result { animation: won-in .35s ease-out; }
+@keyframes won-in { from { opacity: 0; transform: translateY(8px); } }
+/*
+ * `case-won`, not `won`.
+ *
+ * `won` is a *state* class three other things in this client already wear —
+ * the in-match scoreboard's rows, the account's match list, and the player
+ * card's. A bare `.won { display: flex }` here reached all three and took their
+ * grids apart, and `.won i` turned the "/" between kills and deaths into a
+ * hundred-pixel block. Anything in this file that is one common English word
+ * belongs to whoever claimed it first; a feature names its own.
+ */
+.case-won {
+  display: flex; gap: 16px; align-items: center; text-align: left; padding: 16px;
+  border-radius: var(--r); background: var(--panel-2);
+  border: 1px solid var(--rarity); box-shadow: 0 0 44px -18px var(--rarity);
+}
+.case-won > i {
+  flex: none; width: 100px; height: 78px; border-radius: var(--r-xs);
+  border: 1px solid rgba(255,255,255,.12);
+}
+.case-won-body { min-width: 0; }
+.case-won h4 { margin: 0 0 4px; font-size: 17px; }
+.case-won-tier { margin: 0 0 6px; font-size: 10px; letter-spacing: .18em; }
+.case-won-blurb { margin: 0 0 4px; font-size: 11.5px; line-height: 1.4; color: var(--dim); }
+.case-won-worth { margin: 0; font-size: 10.5px; color: var(--muted); }
+
+/* — The market — */
+.sub-nav { display: flex; gap: 6px; margin: 0 0 14px; }
+.sub-nav .sub {
+  padding: 7px 14px; cursor: pointer; font: inherit; font-size: 11px; letter-spacing: .14em;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-pill);
+  color: var(--muted);
+}
+.sub-nav .sub.active { color: var(--bg); background: var(--text); border-color: var(--text); }
+.listing-list { display: grid; gap: 6px; }
+.listing {
+  display: flex; align-items: center; gap: 12px; padding: 9px 12px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+.listing-sw { width: 30px; height: 20px; border-radius: 4px; flex: none; border: 1px solid rgba(255,255,255,.1); }
+.listing-name { flex: 1; font-size: 12px; }
+.listing-price { font-size: 13px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.listing-seller { flex: 1; font-size: 11px; color: var(--muted); }
+.listing-serial { font-size: 10px; color: var(--dim); font-family: var(--mono); }
+.listing .btn { margin-left: auto; }
+
+.item-head { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 14px; }
+.item-sw { flex: none; width: 92px; height: 72px; border-radius: var(--r-xs); border: 1px solid rgba(255,255,255,.12); }
+.item-head h3 { margin: 0 0 4px; }
+.item-head p { margin: 0 0 3px; font-size: 10.5px; letter-spacing: .12em; }
+.item-body { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; }
+.item-listings { display: grid; gap: 6px; max-height: 46vh; overflow-y: auto; }
+.item-history h5 { margin: 0 0 8px; font-size: 10px; letter-spacing: .2em; color: var(--dim); }
+.item-history canvas { width: 100%; height: auto; display: block; }
+
+.sell-item { display: flex; gap: 12px; align-items: center; margin: 10px 0 14px; }
+.sell-item h4 { margin: 0 0 3px; }
+.sell-item p { margin: 0; font-size: 10px; letter-spacing: .14em; }
+
+/* — Trades — */
+/* No bottom margin: the section heading below owns the gap between them,
+   and two spacings stacked is how a page ends up with a hole in it. */
+.trade-list { display: grid; gap: 8px; }
+.trade {
+  padding: 12px 14px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+/* An offer waiting on you is the only thing on this page you have to act on,
+   so it is the only thing that is marked. */
+.trade.incoming { border-color: var(--accent); background: rgba(245,166,35,.05); }
+.trade-who { display: flex; align-items: baseline; gap: 8px; font-size: 12px; margin-bottom: 8px; }
+.trade-who span { font-size: 10.5px; color: var(--muted); }
+.trade-status { margin-left: auto; font-size: 9px; letter-spacing: .16em; color: var(--dim); }
+.trade-status.accepted { color: var(--green); }
+.trade-status.declined, .trade-status.cancelled, .trade-status.expired { color: var(--dim); }
+.trade-sides { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.trade-sides > div { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.trade-sw {
+  width: 26px; height: 18px; border-radius: 3px; display: inline-block;
+  border: 1px solid var(--rarity, rgba(255,255,255,.12));
+}
+.trade-arrow { color: var(--dim); }
+.trade-none { font-size: 10.5px; color: var(--dim); font-style: italic; }
+.trade-gr { font-size: 11px; color: var(--accent); margin-left: 6px; }
+.trade-note { margin: 8px 0 0; font-size: 11px; color: var(--muted); }
+.trade-actions { display: flex; gap: 6px; margin-top: 10px; }
+.trade-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 12px 0; }
+.trade-col h5 { margin: 0 0 8px; font-size: 10px; letter-spacing: .2em; color: var(--dim); }
+.trade-pick { display: flex; flex-wrap: wrap; gap: 5px; max-height: 30vh; overflow-y: auto; margin-bottom: 8px; }
+.trade-chip {
+  display: flex; align-items: center; gap: 6px; padding: 5px 9px; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-pill);
+  color: inherit; font: inherit; font-size: 11px;
+}
+.trade-chip i { width: 16px; height: 11px; border-radius: 2px; }
+.trade-chip.on { border-color: var(--accent); background: rgba(245,166,35,.12); }
+
+/* Every modal's footer row: actions grouped at the end, where the eye finishes.
+   A button that is not part of the decision — SKIP, on the reel — takes itself
+   to the other side rather than the row being laid out for it. */
+.modal-actions {
+  display: flex; gap: 10px; justify-content: flex-end; align-items: center;
+  margin-top: 18px;
+}
+#caseSkip { margin-right: auto; }
+
+/* A labelled field in a modal. `#authForm label` did this for the sign-in box
+   and nothing else, so every other modal's labels were bare text. Scoped to
+   the card it lives in for the reason spelled out at `.case-won`. */
+.modal-card .field {
+  display: flex; flex-direction: column; gap: 6px; margin: 0 0 14px;
+  font-size: 9.5px; letter-spacing: .16em; color: var(--muted);
+}
+.modal-card .field small { letter-spacing: 0; text-transform: none; color: var(--dim); }
+.modal-card .field input, .modal-card .field select {
+  padding: 10px 12px; font: inherit; font-size: 14px; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  outline: none; width: 100%;
+}
+.modal-card .field input:focus, .modal-card .field select:focus { border-color: var(--accent); }
+
+/* Narrow screens: the workbench stacks, and the preview stops being tall. */
+@media (max-width: 1080px) {
+  .lo-wrap { grid-template-columns: 1fr; }
+  .lo-classes { position: static; }
+  .lo-class-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .lo-view { aspect-ratio: 16 / 10; }
+  .item-body, .trade-cols { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .lo-equipped { grid-template-columns: repeat(2, 1fr); }
+  .skin-grid { grid-template-columns: repeat(auto-fill, minmax(136px, 1fr)); }
 }

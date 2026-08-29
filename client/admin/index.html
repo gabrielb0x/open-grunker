@@ -32,6 +32,7 @@
       <button class="tab" data-tab="reports">REPORTS
         <span class="tab-badge hidden" id="reportBadge">0</span></button>
       <button class="tab" data-tab="clans">CLANS</button>
+      <button class="tab" data-tab="cosmetics">COSMETICS</button>
       <button class="tab" data-tab="logs">LOGS</button>
     </nav>
     <!--
@@ -383,6 +384,62 @@
         <aside class="detail" id="clanDetail">
           <div class="detail-empty" id="clanDetailEmpty">Select a clan to review it.</div>
           <div class="detail-body hidden" id="clanDetailBody"></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- Cosmetics: the item economy -->
+    <section class="panel" data-panel="cosmetics">
+      <div class="page-head">
+        <h2>COSMETICS</h2>
+        <p>
+          What exists, where it came from, and whether any of it is leaking.
+          The realised drop rates below are counted from every case ever opened
+          on this instance — if they and the published odds ever disagree by
+          more than sampling noise, the roll is wrong.
+        </p>
+      </div>
+
+      <div class="tile-grid" id="cosTiles"></div>
+
+      <div class="toolbar">
+        <button class="btn" id="btnCosReload">REFRESH</button>
+        <span class="count" id="cosCount">—</span>
+      </div>
+
+      <div class="split">
+        <div class="list-wrap">
+          <h3 class="sec-head">CASES — PUBLISHED vs REALISED</h3>
+          <table class="list">
+            <thead><tr>
+              <th>CASE</th><th>PRICE</th><th>POOL</th><th>OPENS</th><th>GR IN</th><th>ODDS</th>
+            </tr></thead>
+            <tbody id="cosCaseRows"></tbody>
+          </table>
+
+          <h3 class="sec-head">RECENT ACTIVITY</h3>
+          <nav class="subtabs" id="cosActivityNav">
+            <button class="subtab active" data-act="drops">DROPS</button>
+            <button class="subtab" data-act="listings">LISTINGS</button>
+            <button class="subtab" data-act="trades">TRADES</button>
+          </nav>
+          <table class="list">
+            <thead id="cosActivityHead"></thead>
+            <tbody id="cosActivityRows"></tbody>
+          </table>
+        </div>
+
+        <aside class="detail">
+          <h3 class="sec-head">ONE ACCOUNT</h3>
+          <div class="form-row">
+            <input id="cosUser" type="search" placeholder="Nickname or id" autocomplete="off">
+            <button class="btn" id="btnCosLookup">LOOK UP</button>
+          </div>
+          <div class="detail-empty" id="cosDetailEmpty">
+            Name an account to see everything it holds, where each unit came from,
+            and to grant, revoke or bar it from trading.
+          </div>
+          <div class="detail-body hidden" id="cosDetailBody"></div>
         </aside>
       </div>
     </section>

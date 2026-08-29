@@ -108,6 +108,7 @@ for (const tab of document.querySelectorAll('.tab')) {
     if (tab.dataset.tab === 'reports') loadReports();
     if (tab.dataset.tab === 'clans') loadClans();
     if (tab.dataset.tab === 'stats') loadStats();
+    if (tab.dataset.tab === 'cosmetics') loadCosmetics();
   });
 }
 
@@ -1459,6 +1460,254 @@ async function start() {
     }
   }, 4000);
 }
+
+/* ── Cosmetics ───────────────────────────────────────────────────────────── */
+
+/**
+ * The item economy.
+ *
+ * Three questions, in the order a moderator actually asks them: is the
+ * catalogue reaching anybody, are the cases paying out what they promise, and
+ * what has this one account been doing. Everything below is read-only until
+ * the last of those — grant, revoke and the trade ban are the only writes on
+ * this tab and all three are per account, because there is no such thing as a
+ * bulk action here that somebody does not later wish had asked twice.
+ */
+
+let cosState = null;
+let cosActivity = 'drops';
+let cosUser = null;
+
+const RAR_COLOR = {
+  common: '#8fa0b4', uncommon: '#4ddb7a', rare: '#4d9bff',
+  epic: '#b07cff', legendary: '#f5a623', mythic: '#ff4d6d',
+};
+const rarDot = (r) => `<i class="rar-dot" style="background:${RAR_COLOR[r] ?? '#8fa0b4'}"></i>`;
+const grFmt = (n) => Number(n ?? 0).toLocaleString('en-GB');
+
+async function loadCosmetics() {
+  try {
+    cosState = await call('GET', '/cosmetics');
+    renderCosTiles();
+    renderCosCases();
+    await loadCosActivity();
+  } catch (err) {
+    toast(err.message, 'bad');
+  }
+}
+
+function renderCosTiles() {
+  const s = cosState.summary;
+  const c = cosState.catalogue;
+  const tile = (label, value, note = '') => `
+    <div class="tile">
+      <div class="t-label">${esc(label)}</div>
+      <div class="t-value">${esc(value)}</div>
+      ${note ? `<div class="t-note">${note}</div>` : ''}
+    </div>`;
+  $('cosTiles').innerHTML = [
+    tile('CATALOGUE', c.items, `${c.animated} animated · ${Object.keys(c.bySlot).length} slots`),
+    tile('UNITS HELD', grFmt(s.held), `${s.unseen} item(s) nobody has ever had`),
+    tile('CASES OPENED', grFmt(s.cases.total), `${grFmt(s.cases.byCase.reduce((a, b) => a + b.spent, 0))} GR spent`),
+    tile('ON THE MARKET', grFmt(s.market.openListings), `${grFmt(s.market.openValue)} GR asked`),
+    tile('MARKET VOLUME', grFmt(s.market.volume), `${grFmt(s.market.feesBurned)} GR burned in fees`),
+    tile('TRADES SETTLED', grFmt(s.trades.byStatus.accepted ?? 0), `${grFmt(s.trades.itemsMoved)} item(s) moved`),
+    tile('TRADE BANS', grFmt(s.tradeBanned), s.tradeBanned ? 'accounts barred' : 'nobody barred'),
+  ].join('');
+  $('cosCount').textContent =
+    `${grFmt(s.held)} unit(s) held across ${grFmt(cosState.catalogue.items)} catalogue item(s)`;
+}
+
+/**
+ * Published odds beside what actually came out.
+ *
+ * The realised share is only marked as drifted once it is both meaningfully
+ * different *and* drawn from enough opens to mean anything — a case opened
+ * eleven times will disagree with its own odds by a mile and that is not a
+ * bug, it is eleven.
+ */
+function renderCosCases() {
+  const realised = cosState.summary.cases.rarity ?? {};
+  const total = cosState.summary.cases.total || 0;
+  $('cosCaseRows').innerHTML = cosState.cases.map((c) => {
+    const cells = c.odds.map((o) => {
+      const got = total >= 400 ? (realised[o.rarity] ?? 0) / total : null;
+      const drift = got != null && Math.abs(got - o.chance) > Math.max(0.02, o.chance * 0.5);
+      return `<span class="${drift ? 'drift' : ''}">${rarDot(o.rarity)}<b>${
+        (o.chance * 100).toFixed(2)}%</b></span>`;
+    }).join('');
+    return `<tr>
+      <td>${esc(c.name)}</td>
+      <td>${grFmt(c.price)}</td>
+      <td>${c.pool}</td>
+      <td>${grFmt(c.opens)}</td>
+      <td>${grFmt(c.spent)}</td>
+      <td><div class="odds-cell">${cells}</div></td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadCosActivity() {
+  try {
+    const a = await call('GET', '/cosmetics/activity?limit=40');
+    cosActivityData = a;
+    renderCosActivity();
+  } catch (err) {
+    toast(err.message, 'bad');
+  }
+}
+
+let cosActivityData = null;
+
+function renderCosActivity() {
+  const a = cosActivityData;
+  if (!a) return;
+  const head = $('cosActivityHead');
+  const body = $('cosActivityRows');
+  const when = (ts) => (ts ? new Date(ts * 1000).toLocaleString() : '—');
+
+  if (cosActivity === 'drops') {
+    head.innerHTML = '<tr><th>WHEN</th><th>WHO</th><th>ITEM</th><th>CASE</th></tr>';
+    body.innerHTML = a.drops.map((d) => `<tr>
+      <td>${when(d.at)}</td><td>${esc(d.user ?? '—')}</td>
+      <td>${rarDot(d.rarity)}${esc(d.name)}</td><td>${esc(d.caseId)}</td></tr>`).join('')
+      || '<tr><td colspan="4" style="text-align:center;color:var(--muted)">Nothing opened yet.</td></tr>';
+  } else if (cosActivity === 'listings') {
+    head.innerHTML = '<tr><th>WHEN</th><th>ITEM</th><th>PRICE</th><th>SELLER</th><th>OUTCOME</th></tr>';
+    body.innerHTML = a.listings.map((l) => `<tr>
+      <td>${when(l.listedAt)}</td><td>${esc(l.name)}</td><td>${grFmt(l.price)} GR</td>
+      <td>${esc(l.seller ?? '—')}</td>
+      <td>${l.soldAt ? `sold to ${esc(l.buyer ?? '—')}` : l.cancelled ? 'withdrawn' : 'standing'}</td>
+      </tr>`).join('')
+      || '<tr><td colspan="5" style="text-align:center;color:var(--muted)">Nothing listed yet.</td></tr>';
+  } else {
+    head.innerHTML = '<tr><th>WHEN</th><th>FROM</th><th>TO</th><th>ITEMS</th><th>STATUS</th></tr>';
+    body.innerHTML = a.trades.map((t) => `<tr>
+      <td>${when(t.createdAt)}</td><td>${esc(t.from ?? '—')}</td><td>${esc(t.to ?? '—')}</td>
+      <td>${esc([...t.fromItems, ...t.toItems].join(', ') || '—')}</td>
+      <td>${esc(t.status)}</td></tr>`).join('')
+      || '<tr><td colspan="5" style="text-align:center;color:var(--muted)">No offers yet.</td></tr>';
+  }
+}
+
+async function lookUpCosUser() {
+  const who = $('cosUser').value.trim();
+  if (!who) return;
+  try {
+    cosUser = await call('GET', `/cosmetics/inventory/${encodeURIComponent(who)}`);
+    renderCosUser();
+  } catch (err) {
+    toast(err.message, 'bad');
+  }
+}
+
+function renderCosUser() {
+  const d = cosUser;
+  $('cosDetailEmpty').classList.add('hidden');
+  const body = $('cosDetailBody');
+  body.classList.remove('hidden');
+  const banned = d.tradeBannedUntil > Math.floor(Date.now() / 1000);
+  const worth = d.units.reduce((a, u) => a + (u.worth ?? 0), 0);
+
+  body.innerHTML = `
+    <h3>${esc(d.user.username)}</h3>
+    <p class="muted">${grFmt(d.user.gr)} GR held · ${d.units.length} unit(s)
+       worth about ${grFmt(worth)} GR at catalogue</p>
+    ${banned ? `<p class="cos-warn">Barred from trading until
+       ${esc(new Date(d.tradeBannedUntil * 1000).toLocaleString())}</p>` : ''}
+
+    <h3 class="sec-head">INVENTORY</h3>
+    <div class="unit-list">
+      ${d.units.map((u) => `
+        <div class="unit-row${u.locked ? ' locked' : ''}" data-unit="${esc(u.unitId)}">
+          ${rarDot(u.rarity)}
+          <span>${esc(u.name)} <span class="src">#${u.serial} · ${esc(u.source)}${
+  u.origin ? ` (${esc(u.origin)})` : ''}${u.locked ? ' · staked' : ''}</span></span>
+          <span class="worth">${grFmt(u.worth)} GR</span>
+          <button class="btn small danger" data-revoke="${esc(u.unitId)}">REVOKE</button>
+        </div>`).join('') || '<p class="muted">Nothing held.</p>'}
+    </div>
+
+    <h3 class="sec-head">GRANT</h3>
+    <div class="form-row">
+      <input id="cosGrantItem" type="search" placeholder="Item id, e.g. knife:doppler" autocomplete="off">
+      <button class="btn" id="btnCosGrant">GRANT</button>
+    </div>
+    <p class="muted" id="cosGrantHint">Type part of a name to look one up.</p>
+
+    <h3 class="sec-head">TRADE BAN</h3>
+    <div class="form-row">
+      <input id="cosBanDays" type="number" min="-1" value="${banned ? 0 : 7}"
+             title="Days. 0 lifts it, -1 is permanent.">
+      <button class="btn danger" id="btnCosBan">${banned ? 'LIFT / SET' : 'APPLY'}</button>
+    </div>
+    <p class="muted">
+      A trade ban also takes down everything they have listed and cancels every offer
+      they are a party to — a ban that left the shop open would not be one.
+    </p>`;
+
+  for (const b of body.querySelectorAll('[data-revoke]')) {
+    b.addEventListener('click', async () => {
+      if (!window.confirm('Take that item off this account for good?')) return;
+      try {
+        await call('POST', '/cosmetics/revoke', { unitId: b.dataset.revoke });
+        toast('Revoked.', 'ok');
+        lookUpCosUser();
+        loadCosmetics();
+      } catch (err) { toast(err.message, 'bad'); }
+    });
+  }
+
+  // The grant box looks items up as you type rather than making anybody
+  // remember two hundred and twenty-seven ids.
+  const itemBox = $('cosGrantItem');
+  itemBox.addEventListener('input', async () => {
+    const q = itemBox.value.trim();
+    if (q.length < 2) { $('cosGrantHint').textContent = 'Type part of a name to look one up.'; return; }
+    try {
+      const { items } = await call('GET', `/cosmetics/items?q=${encodeURIComponent(q)}`);
+      $('cosGrantHint').innerHTML = items.slice(0, 6)
+        .map((i) => `<code>${esc(i.id)}</code> — ${esc(i.name)} (${esc(i.rarity)}, ${grFmt(i.price)} GR)`)
+        .join('<br>') || 'Nothing matches that.';
+    } catch { /* the hint is a convenience */ }
+  });
+
+  $('btnCosGrant').addEventListener('click', async () => {
+    try {
+      await call('POST', '/cosmetics/grant', {
+        user: d.user.id, itemId: itemBox.value.trim(), note: 'admin panel',
+      });
+      toast('Granted.', 'ok');
+      lookUpCosUser();
+      loadCosmetics();
+    } catch (err) { toast(err.message, 'bad'); }
+  });
+
+  $('btnCosBan').addEventListener('click', async () => {
+    try {
+      const res = await call('POST', '/cosmetics/trade-ban', {
+        user: d.user.id, days: Number($('cosBanDays').value) || 0,
+      });
+      toast(res.until ? `Barred. ${res.withdrawn} listing(s) taken down.` : 'Lifted.', 'ok');
+      lookUpCosUser();
+      loadCosmetics();
+    } catch (err) { toast(err.message, 'bad'); }
+  });
+}
+
+$('btnCosReload')?.addEventListener('click', () => loadCosmetics());
+$('btnCosLookup')?.addEventListener('click', () => lookUpCosUser());
+$('cosUser')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') lookUpCosUser(); });
+for (const b of document.querySelectorAll('#cosActivityNav .subtab')) {
+  b.addEventListener('click', () => {
+    cosActivity = b.dataset.act;
+    for (const o of document.querySelectorAll('#cosActivityNav .subtab')) {
+      o.classList.toggle('active', o === b);
+    }
+    renderCosActivity();
+  });
+}
+
 
 /* Resume an existing session if the token still works. */
 (async () => {

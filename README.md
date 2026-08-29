@@ -1680,76 +1680,147 @@ pose only — an aimed weapon is placed by its sights and by nothing else.
 To add a class, copy the nearest existing one in `CLASSES`, change the id, and
 it appears in the class picker, the gun-game ladder and the shop automatically.
 
-### Skins
+### Cosmetics
+
+Everything a player can own, wear, carry, open, trade or sell is declared once
+in `shared/cosmetics.js` and read identically by the browser, the game server
+and the admin panel. Nothing downstream invents an item.
+
+**A cosmetic is an item in a slot.** There are nine:
+
+| Slot | What it is |
+| --- | --- |
+| `primary` `secondary` `knife` | the three guns, each finished independently |
+| `gloves` | what the hands the viewmodel draws are in |
+| `head` `face` `body` `back` | the operator everybody else sees |
+| `charm` | a trinket hung off the primary |
+
+An item id is `<slot>:<key>` — `primary:gold`, `knife:doppler`, `head:crown`.
+Slot-prefixed on purpose: `gold` alone is ambiguous the moment the same finish
+exists on three guns, and every id that reaches the database, the market or a
+trade has to name exactly one thing.
+
+Only `primary` is remembered **per class** — everybody wants a different paint
+on a sniper than on an SMG, and nobody wants different gloves depending on
+which one they picked.
+
+#### Weapon finishes
 
 A finish is **not a tint**. Dipping every part of a rifle in one colour makes
-the wood, the steel and the polymer the same shade of nothing — which is why
-every skin used to look like the same gun in different paint. Three things make
-a finish instead, all declared in `SKINS` in `shared/weapons.js`:
+the wood, the steel and the polymer the same shade of nothing. Three things
+make a finish instead, declared in `FINISHES`:
 
 ```js
 crimson: {
-  id: 'crimson', name: 'Crimson', price: 800, rarity: 'rare',
-  paint:   { body: 0xa41f2c, wood: 0x1a1418, metal: 0x14171b, accent: 0x7c1621 },
+  name: 'Crimson', rarity: 'rare', on: WEAPON_SLOTS,
+  paint:   { body: 0xa41f2c, wood: 0x241b1f, metal: 0x1a1e23, accent: 0x7c1621 },
   pattern: { kind: 'stripe', on: ['body'], colors: [0xc02434, 0x8c1926, 0x1a1418], scale: 0.22 },
   gloss: 1,
   glove: 0xb01f2e,
-  swatch: [0xc02434, 0x8c1926, 0x14171b],
   blurb: 'Racing stripes on something that is not a car.',
 },
 ```
 
-**Zones.** Every model part declares one, and a skin paints the zones it names
-and leaves the rest factory:
+* **Zones.** Every model part declares which piece of the gun it is (`ZONE` in
+  `shared/weapons.js`) and a finish paints zones, not weapons. Gold Rush gilds
+  the receiver and leaves the butt pad black rubber. The `detail` zone —
+  lenses, reticles, brass, bores — is never painted, which is what keeps a gold
+  rifle's optic made of glass.
+* **Pattern.** One of 27 seamless tiles painted on a 128px canvas at load time:
+  `digital`, `splinter`, `blotch`, `scratch`, `splatter`, `stripe`, `hex`,
+  `fade`, `grid`, `scroll`, `damascus`, `circuit`, `stencil`, `tiger`,
+  `marble`, `chevron`, `serpent`, `nebula`, `starfield`, `wave`, `crackle`,
+  `topo`, `oil`, `crystal`, `flame`, `plasma`, `web`. Nothing is downloaded.
+* **Finish.** Gloss and an optional emissive rim, layered on the material's own
+  shading, so polished gold and matte olive drab are *lit* differently rather
+  than tinted differently.
 
-| Zone | What is in it |
-| --- | --- |
-| `body` | Receiver, frame, chassis — the biggest painted panel |
-| `metal` | Barrel, bolt, slide, muzzle device — the working steel |
-| `wood` | Grip, stock, handguard — whatever the hands hold |
-| `accent` | Rails, optics, magazines, hardware |
-| `detail` | **Never painted.** Lenses, reticles, tritium dots, brass, bores. |
+`on` lists the gun slots a finish may be minted for. A finish declared once
+becomes one item per slot, priced by the slot: a knife finish is worth more
+than the same paint on a sidearm because far fewer people are looking at a
+sidearm.
 
-That is what lets Gold Rush gild a receiver and leave the butt pad black rubber,
-and lets a gold rifle still have glass in its optic. Emissive and glass parts
-are exempt whatever zone they claim, and `npm test` fails if any finish reaches
-one.
+#### Worn cosmetics
 
-**Patterns** are painted into a seamless 128 px canvas at load time and applied
-as a shared texture — nothing is fetched and nothing ships as an image. `on` is
-the list of zones that get it, `colors` is the palette it draws from and `scale`
-is how big one tile is **in world units**, so a camouflage blob is the same size
-on a butt pad as on a receiver. The recipes live in `client/js/gunskin.js`:
+Hats, faces, packs, gloves and charms are **recipes rather than meshes** — a
+`shape` naming a builder `client/js/wearables.js` already knows, plus two or
+three colours. That is deliberate. A cosmetic that shipped its own mesh would
+mean an asset pipeline, a download, a cache and a loading screen; one that
+names a shape and three colours is four hundred bytes and draws on the frame it
+is equipped.
 
-`digital` · `splinter` · `blotch` · `scratch` · `splatter` · `stripe` · `hex` ·
-`fade` · `grid` · `scroll` · `damascus` · `circuit` · `stencil`
+The same builders draw the operator in the match *and* the operator on the
+loadout screen, so nothing can be bought on the strength of a preview that
+lies.
 
-Adding one is a function that fills a square and tiles — use `wrapped()` so
-anything crossing an edge is drawn again on the other side.
+#### Rarity, and the animated tier
 
-**The rest of the entry.** `gloss` (0–2) scales the shininess and specular on
-top of each material's own shading, so polished gold and matte olive drab are
-*lit* differently rather than tinted differently. `glow` adds an emissive rim.
-`glove` is the colour of the shooter's gloves — a finish is worn as well as
-carried, in first person and third. `swatch` is the three tones the shop card
-draws, and `blurb` is the line under the name.
+Six tiers — common, uncommon, rare, epic, legendary, mythic — and
+`RARITY[x].weight` is the only thing a case roll consults. Forty-two items are
+**animated**: the pattern scrolls, the emissive breathes, or the hue rotates.
+Nothing animated sits below legendary, which is the whole promise of the tier.
 
-**Price and unlock.** `price: 0` is free, a positive price is bought with GR, and
-`price: -1` means it is earned rather than sold — pair it with an `unlock` and a
-`hint`:
+Motion costs almost nothing: `tickCosmetics()` in `client/js/gunskin.js` walks
+two short lists once a frame and moves *shared* texture offsets and *shared*
+material emissives, so forty players in Hellfire cost exactly what one does.
 
-```js
-unlock: { type: 'account' }                 // just sign up
-unlock: { type: 'level', value: 15 }        // account level
-unlock: { type: 'mastery', value: 4 }       // mastery tier with that class's weapon
-```
+#### Cases
 
-The server re-checks every one of these when a loadout is saved and when a skin
-is bought, so the shop card is presentation and never permission.
+A case is a priced roll over a slice of the catalogue. `pool` is a filter
+rather than a list, so adding an item to the catalogue puts it in every case
+that already described it.
 
-**One caution about ids.** A skin id is what is written into an account's `owned`
-list in the database. Renaming or removing one takes it away from everybody who
-had bought it — change the look, keep the id.
+Two draws, not one: the tier is chosen against the published weights and then
+the item is chosen uniformly inside it. Rolling flat over the pool instead
+would make a tier's odds depend on how many items happen to be in it, so adding
+one more legendary would quietly make legendaries commoner.
+
+**The odds a case publishes are the odds it rolls** — `caseOdds()` is read by
+the shop card *and* by `rollCase()`, so the two cannot drift apart. The roll
+happens on the server, from `node:crypto`, inside the same transaction that
+charges for it, and every opening is kept forever in `case_openings`. The admin
+panel puts the realised rates beside the published ones; if they ever disagree
+by more than sampling noise, the roll is wrong and that is how anybody would
+find out.
+
+#### The market and trades
+
+An owned cosmetic is a **unit**, not a flag: one row per copy, each with its own
+id, its own serial number and its own provenance. A boolean "owns gold" could
+not be sold once without taking away the copy that was equipped.
+
+Three rules run through every economic path in `server/db/index.js`:
+
+1. **A locked unit does not move.** Locked means staked in an open trade or
+   standing on the market, and every mover re-checks it *inside* the same
+   transaction it writes in — not before, where a second request could slip
+   between the check and the write.
+2. **GR and units move together or not at all.** One helper does both, and
+   everything routes through it.
+3. **Nothing trusts an item id.** `getItem` returns null rather than inventing
+   one.
+
+The market takes a tenth of every sale and burns it, which is the only GR sink
+trading has. The game itself will buy a duplicate back for a fifth of catalogue
+— deliberately a bad deal, because that is the floor under the market rather
+than a way to play it.
+
+Trades are **friends-only**. Not a limitation, a defence: every scam an item
+economy has ever had starts with an offer from a stranger, and the friend list
+is a barrier the player already controls. Anybody who wants to deal with a
+stranger has the market, where nobody can be talked into anything.
+
+#### Adding an item
+
+Add a row to the right table in `shared/cosmetics.js` and it appears
+everywhere: the loadout grid, the cases whose pool describes it, the market's
+filters, the admin panel's catalogue counts. Nothing else has to be kept in
+step.
+
+**One caution about ids.** An item id is what is written into `inventory` in
+the database. Renaming or removing one takes it away from everybody who had
+bought it — change the look, keep the id.
+
 
 ---
 
@@ -1878,13 +1949,34 @@ The GR for founding a clan is taken first and refunded if the tag turns out to b
 gone: the unique index on the tag, not the `SELECT` before it, is what settles a
 race between two people founding the same four characters in the same second.
 
-### Loadout and shop
+### Loadout and the wardrobe
+
+The catalogue itself is **not** served over HTTP — it is a static module the
+browser imports (`/shared/cosmetics.js`), so the client and the server read the
+same definitions out of the same file. These routes carry only what the server
+knows and the client cannot: who owns what, what it is selling for, and who is
+offering what to whom.
 
 | Method | Path | Body |
 | --- | --- | --- |
 | `GET` | `/loadout` | *(auth)* |
-| `PUT` | `/loadout` | *(auth)* `{ classId?, skins?, settings?, keybinds? }` |
-| `POST` | `/shop/buy` | *(auth)* `{ skinId }` — spends GR |
+| `PUT` | `/loadout` | *(auth)* `{ classId?, equip?, primaries?, settings?, keybinds? }` |
+| `GET` | `/wardrobe` | *(auth)* — units held, what is equipped, what may be |
+| `POST` | `/shop/buy` | *(auth)* `{ itemId }` — spends GR at catalogue price |
+| `POST` | `/wardrobe/scrap` | *(auth)* `{ unitId }` — sells it back to the game |
+| `POST` | `/cases/open` | *(auth)* `{ caseId }` — charges, rolls, mints, audits |
+| `GET` | `/cases/recent` | the live drop feed |
+| `GET` | `/cases/history` | *(auth)* your own openings |
+| `GET` | `/market` | `?slot=&rarity=&q=&sort=` — one row per item |
+| `GET` | `/market/item` | `?id=` — standing listings and recent sale prices |
+| `GET` | `/market/mine` | *(auth)* |
+| `POST` | `/market/list` | *(auth)* `{ unitId, price }` |
+| `POST` | `/market/cancel` | *(auth)* `{ listingId }` |
+| `POST` | `/market/buy` | *(auth)* `{ listingId }` |
+| `GET` | `/trades` | *(auth)* open offers and settled history |
+| `POST` | `/trades` | *(auth)* `{ to, give[], want[], giveGr, wantGr, note }` |
+| `POST` | `/trades/accept` | *(auth)* `{ id }` |
+| `POST` | `/trades/close` | *(auth)* `{ id }` — withdraw or decline |
 
 ### Admin *(private network only)*
 

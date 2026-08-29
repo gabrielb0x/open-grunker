@@ -19,8 +19,20 @@ installBrowser();
 const THREE = await import('three');
 const K = await import('/shared/constants.js');
 const {
-  CLASS_IDS, loadoutFor, getClass, recoilKick, spreadFor, SKINS, ZONE, MAT, paintFor,
+  CLASS_IDS, loadoutFor, getClass, recoilKick, spreadFor, ZONE, MAT, paintFor,
 } = await import('/shared/weapons.js');
+const COS = await import('/shared/cosmetics.js');
+
+/** Every weapon finish in the game, as the shape `gunMaterial` wants. */
+const FINISHES = COS.itemsInSlot(COS.SLOT.PRIMARY)
+  .map((i) => ({ ...i.finish, name: i.name }));
+/** A wardrobe wearing one finish on all three guns, for `setWeapon`. */
+const wearing = (key) => ({
+  ...COS.DEFAULT_EQUIP,
+  [COS.SLOT.PRIMARY]: COS.itemId(COS.SLOT.PRIMARY, key),
+  [COS.SLOT.SECONDARY]: COS.itemId(COS.SLOT.SECONDARY, key),
+  [COS.SLOT.KNIFE]: COS.itemId(COS.SLOT.KNIFE, key),
+});
 const { getMap, ALL_MAP_IDS } = await import('/shared/maps.js');
 
 const { Hud } = await import('/js/hud.js');
@@ -440,6 +452,37 @@ export default async function run() {
     const optIn = css.slice(css.indexOf('#hud #chatForm'), css.indexOf('#hud #chatForm') + 700);
     return /#hud #scoreboard, #hud #scoreboard \*/.test(optIn)
       && /pointer-events: auto/.test(optIn);
+  })());
+
+  check('nothing owns a state class the scoreboard and the match lists share', (() => {
+    /*
+     * `won`, `lost` and `me` are *states*, and three different lists put them
+     * on a row: the in-match scoreboard, ACCOUNT ▸ MATCHES, and the player
+     * card. They are ordinary enough words that a later feature reaches for
+     * one as a name of its own — and a bare `.won { display: flex }` anywhere
+     * in this stylesheet takes all three apart at once.
+     *
+     * That is not hypothetical. The V2 case-opening modal called its result
+     * card `.won`, which turned every won row in the game into a flexbox and
+     * blew the "/" between kills and deaths up to a hundred pixels.
+     *
+     * A compound selector is fine — `.match-row.won` names exactly one thing.
+     * What is banned is owning the word outright.
+     */
+    const css = readFileSync(join(ROOT, 'client/css/style.css'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const states = ['won', 'lost', 'me', 'hot', 'active', 'selected', 'locked', 'equipped'];
+    const owned = [];
+    for (const rule of css.matchAll(/(?:^|[{}])([^{}@]+)\{/g)) {
+      for (const sel of rule[1].split(',')) {
+        for (const compound of sel.trim().split(/[\s>+~]+/)) {
+          const c = compound.trim();
+          if (/^\.[a-z-]+$/.test(c) && states.includes(c.slice(1))) owned.push(`${c} (in "${sel.trim()}")`);
+        }
+      }
+    }
+    if (owned.length) info(owned.join(' · '));
+    return owned.length === 0;
   })());
 
   check('the killfeed sits under the standings in one right-hand column', (() => {
@@ -1237,7 +1280,7 @@ export default async function run() {
         if (seen.has(w.id)) continue;
         seen.add(w.id);
         try {
-          vm.setWeapon(w, 'gold');
+          vm.setWeapon(w, COS.SLOT.PRIMARY, wearing('gold'));
           // The ADS pose is derived from the weapon's declared sight point.
           const s = w.model.sight;
           const scale = w.model.scale ?? 1;
@@ -1251,7 +1294,7 @@ export default async function run() {
 
   check('firing, reloading and cycling animate without throwing', (() => {
     try {
-      vm.setWeapon(loadoutFor('bulldog')[0], 'default');
+      vm.setWeapon(loadoutFor('bulldog')[0], COS.SLOT.PRIMARY, wearing('factory'));
       let ejected = 0;
       vm.onEject = () => { ejected++; };
       for (let i = 0; i < 5; i++) {
@@ -1266,7 +1309,7 @@ export default async function run() {
 
   check('the knife swings through a real arc rather than a jolt', (() => {
     try {
-      vm.setWeapon(loadoutFor('triggerman')[2], 'default');
+      vm.setWeapon(loadoutFor('triggerman')[2], COS.SLOT.KNIFE, wearing('factory'));
       // The knife's guard is not square to the camera — it is turned so the
       // blade shows its edge — so "home" is that rest angle, not zero.
       for (let f = 0; f < 60; f++) vm.update(1 / 60, { speed: 0, grounded: true, ads: false });
@@ -1286,7 +1329,7 @@ export default async function run() {
   })());
 
   check('hiding the weapon while aiming is a setting, and only affects the gun', (() => {
-    vm.setWeapon(loadoutFor('triggerman')[0], 'default');
+    vm.setWeapon(loadoutFor('triggerman')[0], COS.SLOT.PRIMARY, wearing('factory'));
     const settle = (ads) => { for (let f = 0; f < 90; f++) vm.update(1 / 60, { speed: 0, grounded: true, ads }); };
     settings.hideWeaponAds = false;
     settle(true);
@@ -1301,13 +1344,31 @@ export default async function run() {
     return shown && hidden && back;
   })());
 
-  check('every finish builds on every weapon', (() => {
+  check('every finish builds on every weapon slot', (() => {
     let ok = true;
-    for (const skin of Object.keys(SKINS)) {
-      try { vm.setWeapon(loadoutFor('hunter')[0], skin); } catch (e) { info(`${skin}: ${e}`); ok = false; }
+    for (const key of [...Object.keys(COS.FINISHES), ...Object.keys(COS.EARNED_FINISHES)]) {
+      const cos = wearing(key);
+      for (const slot of COS.WEAPON_SLOTS) {
+        // Not every finish is minted for every slot — `on` decides — and a
+        // slot it was not minted for falls back to factory rather than
+        // throwing, which is the behaviour being checked as much as the build.
+        const i = COS.WEAPON_SLOTS.indexOf(slot);
+        try { vm.setWeapon(loadoutFor('hunter')[i], slot, cos); }
+        catch (e) { info(`${key}/${slot}: ${e}`); ok = false; }
+      }
     }
     return ok;
-  })(), `${Object.keys(SKINS).length} finishes`);
+  })(), `${FINISHES.length} finishes × ${COS.WEAPON_SLOTS.length} slots`);
+
+  check('an animated finish registers motion rather than baking it in', (() => {
+    const before = gunskin.animatedCount();
+    vm.setWeapon(loadoutFor('hunter')[0], COS.SLOT.PRIMARY, wearing('prismatic'));
+    const after = gunskin.animatedCount();
+    // And ticking the clock must not throw on any of them.
+    for (let t = 0; t < 4; t += 0.25) gunskin.tickCosmetics(t);
+    info(`${after} animated texture(s)/material(s) registered`);
+    return after >= before && after > 0;
+  })());
 
   /*
    * The framing test.
@@ -1344,7 +1405,7 @@ export default async function run() {
       for (const w of loadoutFor(cid)) {
         if (seenIds.has(w.id)) continue;
         seenIds.add(w.id);
-        vm.setWeapon(w, 'default');
+        vm.setWeapon(w, COS.SLOT.PRIMARY, wearing('factory'));
         for (let f = 0; f < 200; f++) vm.update(1 / 60, { speed: 0, grounded: true, ads: false });
         // The root carries the whole rest pose, and a child's world matrix is
         // built from its parent's — so the scene has to be brought up to date
@@ -1365,7 +1426,7 @@ export default async function run() {
     let ok = true;
     for (const cid of CLASS_IDS) {
       for (const w of loadoutFor(cid)) {
-        vm.setWeapon(w, 'default');
+        vm.setWeapon(w, COS.SLOT.PRIMARY, wearing('factory'));
         if (!vm.armMain) { info(`${w.id}: no firing hand`); ok = false; continue; }
         const g = w.model.grip;
         if (Math.abs(vm.armMain.position.y - g[1]) > 1e-9) { info(`${w.id}: hand off the grip`); ok = false; }
@@ -1407,8 +1468,7 @@ export default async function run() {
 
   check('no finish paints a lens, a reticle or a bore', (() => {
     let painted = 0, checked = 0;
-    for (const skinId of Object.keys(SKINS)) {
-      const skin = SKINS[skinId];
+    for (const skin of FINISHES) {
       for (const cid of CLASS_IDS) {
         for (const w of loadoutFor(cid)) {
           for (const p of w.model.parts) {
@@ -1420,26 +1480,27 @@ export default async function run() {
         }
       }
     }
-    info(`${checked} untouchable parts across ${Object.keys(SKINS).length} finishes`);
+    info(`${checked} untouchable parts across ${FINISHES.length} finishes`);
     return painted === 0 && checked > 0;
   })());
 
   check('a finish that names a pattern actually paints one', (() => {
-    const patterned = Object.values(SKINS).filter((s) => s.pattern);
+    const patterned = FINISHES.filter((f) => f.pattern);
     let ok = patterned.length >= 10;
     for (const skin of patterned) {
       const part = { c: 0x808080, m: MAT.POLY, z: skin.pattern.on[0] };
       const mat = gunskin.gunMaterial(part, skin);
       if (!mat.map) { info(`${skin.id}: no texture`); ok = false; }
     }
-    info(`${patterned.length} of ${Object.keys(SKINS).length} finishes carry a pattern`);
+    info(`${patterned.length} of ${FINISHES.length} finishes carry a pattern`);
     return ok;
   })());
 
   check('materials and geometry are shared, so a finish is paid for once', (() => {
     const part = { p: [0, 0, 0], s: [0.1, 0.1, 0.1], c: 0x445566, m: MAT.METAL, z: ZONE.BODY };
-    const a = gunskin.gunMaterial(part, SKINS.gold);
-    const b = gunskin.gunMaterial(part, SKINS.gold);
+    const gold = COS.getItem('primary:gold').finish;
+    const a = gunskin.gunMaterial(part, gold);
+    const b = gunskin.gunMaterial(part, gold);
     const geoA = gunskin.skinnedBoxGeometry(0.11, 0.12, 0.13);
     const geoB = gunskin.skinnedBoxGeometry(0.11, 0.12, 0.13);
     return a === b && geoA === geoB && a.userData.shared && geoA.userData.shared;
@@ -1457,8 +1518,9 @@ export default async function run() {
 
   check('the third-person body skips the detail work the viewmodel draws', (() => {
     const ar = loadoutFor('triggerman')[0];
-    const full = gunskin.buildWeaponMesh(ar, SKINS.default, { fine: true }).children.length;
-    const far = gunskin.buildWeaponMesh(ar, SKINS.default, { fine: false }).children.length;
+    const factory = COS.getItem('primary:factory').finish;
+    const full = gunskin.buildWeaponMesh(ar, factory, { fine: true }).children.length;
+    const far = gunskin.buildWeaponMesh(ar, factory, { fine: false }).children.length;
     info(`${full} parts in hand, ${far} at forty metres`);
     return far < full && far > 8;
   })());
@@ -1598,20 +1660,35 @@ export default async function run() {
 
   check('a body only casts the shadows that are actually its own', (() => {
     /*
-     * Fifteen parts sit strictly inside — or flush against — a bigger part
-     * that still casts: the mask inside the head, the crown on the helmet, the
-     * pouches on the plate carrier. A directional light casts a contained
+     * Several parts sit strictly inside — or flush against — a bigger part
+     * that still casts: the mask inside the head, the knee pads on the legs,
+     * the pouches on the plate carrier. A directional light casts a contained
      * solid's shadow inside its container's, so those are draws in the shadow
      * pass that produce no pixels.
+     *
+     * The helmet is not in this list any more and is not meant to be: since
+     * V2 it is a worn item (`head:helmet`) hanging off `headGear` rather than
+     * a fixed part of the body, so what it does with shadows is decided by
+     * wearables.js and checked with the rest of the wardrobe.
      */
     const u = entities.get(4).group.userData;
     const casting = u.solid.filter((p) => p.castShadow).length;
     const silent = u.solid.filter((p) => !p.castShadow).length;
     info(`${casting} caster(s), ${silent} carried by a bigger part`);
-    return u.torso.castShadow && u.head.castShadow && u.helmet.castShadow
+    return u.torso.castShadow && u.head.castShadow
       && u.legL.castShadow && u.bootR.castShadow
-      && !u.mask.castShadow && !u.helmetTop.castShadow && !u.pouchC.castShadow
-      && silent === 15 && casting === u.solid.length - 15;
+      && !u.mask.castShadow && !u.pouchC.castShadow && !u.kneeL.castShadow
+      && silent > 0 && casting === u.solid.length - silent;
+  })());
+
+  check('the wardrobe is worn on the body and fades with it', (() => {
+    const u = entities.get(4).group.userData;
+    // A default operator still has a helmet, a balaclava and a day pack on —
+    // the three items every account owns without being given them.
+    const worn = u.wornMeshes.length;
+    const inFade = u.wornMeshes.every((m) => u.fadeParts.includes(m));
+    info(`${worn} worn mesh(es), all fadeable: ${inFade}`);
+    return worn > 0 && inFade && u.headGear && u.faceGear && u.backGear;
   })());
 
   suite('Client — objectives');

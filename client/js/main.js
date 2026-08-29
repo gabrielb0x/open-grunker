@@ -16,6 +16,14 @@ import {
   loadoutFor, getClass, drawStamp, shotInterval, spreadFor, recoilKick, recoilRecovery, weaponById,
 } from '/shared/weapons.js';
 
+import * as COS from '/shared/cosmetics.js';
+/**
+ * Which cosmetic slot finishes which weapon slot.
+ *
+ * The game's three weapon slots are indices — 0 primary, 1 sidearm, 2 knife —
+ * and the wardrobe's are names. This is the one place the two are lined up.
+ */
+const SLOT_FOR = [COS.SLOT.PRIMARY, COS.SLOT.SECONDARY, COS.SLOT.KNIFE];
 import { settings, set as setSetting, onChange as onSettingsChange, HEAVY_KEYS } from './settings.js';
 import { binds } from './keybinds.js';
 import { api } from './api.js';
@@ -24,6 +32,7 @@ import { Input } from './input.js';
 import { GameWorld } from './world.js';
 import { EntityManager } from './entities.js';
 import { ViewModel } from './viewmodel.js';
+import { tickCosmetics } from './gunskin.js';
 import { Effects } from './effects.js';
 import { Objectives } from './objectives.js';
 import { Hud } from './hud.js';
@@ -138,6 +147,15 @@ export class Game {
      */
     this.afkNotice = null;
     this.skin = 'default';
+    /**
+     * The worn loadout: `{ <slot>: <itemId> }` for all nine slots.
+     *
+     * Kept on the game rather than read out of `api` at every use, because it
+     * is read on every weapon switch and every respawn, and because a guest
+     * has no account to read it from — a guest wears the defaults, which is
+     * exactly what this starts as.
+     */
+    this.cos = { ...COS.DEFAULT_EQUIP };
     this.classId = 'triggerman';
     this.deathCam = null;
     this.projectiles = [];
@@ -218,6 +236,20 @@ export class Game {
       onClassChange: (id) => this.requestClass(id),
       // Picking a class in the menu arms it for the seat we are about to take.
       onClassPreview: (id) => { this.classId = id; if (this.net.connected) this.net.setClass(id); },
+      /*
+       * Something was equipped in the wardrobe.
+       *
+       * Re-reads the loadout and rebuilds the viewmodel in place, so a knife
+       * bought between rounds is in your hand on the next draw. The server
+       * already has it — this is only the local view catching up.
+       */
+      onCosmeticsChange: () => {
+        this.refreshCosmetics();
+        if (this.weapons?.length) {
+          this.viewmodel.setWeapon(this.weapons[this.slot] ?? this.weapons[0],
+            SLOT_FOR[this.slot] ?? COS.SLOT.PRIMARY, this.cos);
+        }
+      },
       onBindsChange: () => this.hud.refreshHints(),
     });
 
@@ -278,7 +310,7 @@ export class Game {
     initAudio();
     resumeAudio();
     this.classId = opts.classId ?? this.classId ?? 'triggerman';
-    this.skin = api.account?.loadout?.skins?.[this.classId] ?? 'default';
+    this.refreshCosmetics();
 
     const wanted = opts.room || null;
     const here = !wanted || wanted === this.roomCode || wanted === this.roomId;
@@ -611,7 +643,7 @@ export class Game {
       this.slot = 0;
       this.reloading = false;
       this.burst = 0;
-      this.viewmodel.setWeapon(this.weapons[0], this.skin);
+      this.viewmodel.setWeapon(this.weapons[0], COS.SLOT.PRIMARY, this.cos);
       this.input.reset(msg.yaw, 0);
       this.hud.hideDeath();
       sfx.spawn();
@@ -619,7 +651,7 @@ export class Game {
 
     net.on('join', (p) => {
       // A class change re-announces the player: refresh rather than duplicate.
-      if (this.entities.get(p.id)) this.entities.setClass(p.id, p.classId, p.skin);
+      if (this.entities.get(p.id)) this.entities.setClass(p.id, p.classId, p.skin, p.cos);
       else this.entities.addPlayer(p);
       const row = this.scoreboardRows.find((r) => r.id === p.id);
       if (row) Object.assign(row, { classId: p.classId, name: p.name, level: p.level, verified: p.verified });
@@ -1900,7 +1932,7 @@ export class Game {
     this.classId = classId;
     this.menu?.setLoadoutCard(classId);
     this.weapons = loadoutFor(classId);
-    this.skin = api.account?.loadout?.skins?.[classId] ?? 'default';
+    this.refreshCosmetics();
     for (let i = 0; i < this.weapons.length; i++) {
       this.ammo[i] = this.weapons[i].magSize ?? 0;
       this.reserve[i] = -1;
@@ -1908,7 +1940,26 @@ export class Game {
     this.slot = 0;
     this.reloading = false;
     this.burst = 0;
-    this.viewmodel.setWeapon(this.weapons[0], this.skin);
+    this.viewmodel.setWeapon(this.weapons[0], COS.SLOT.PRIMARY, this.cos);
+  }
+
+  /**
+   * Re-reads the wardrobe off the account.
+   *
+   * Called on every class change and every spawn rather than cached once,
+   * because the loadout screen is reachable mid-match: somebody who equips a
+   * new knife between rounds sees it on the next draw, without a reconnect.
+   */
+  refreshCosmetics() {
+    const w = api.account?.wardrobe ?? null;
+    const primary = w?.primaries?.[this.classId] ?? w?.equip?.[COS.SLOT.PRIMARY];
+    this.cos = {
+      ...COS.DEFAULT_EQUIP,
+      ...(w?.equip ?? {}),
+      ...(primary ? { [COS.SLOT.PRIMARY]: primary } : {}),
+    };
+    // What a pre-V2 payload called the skin, for a server that is still on one.
+    this.skin = COS.parseItemId(this.cos[COS.SLOT.PRIMARY])?.key ?? 'default';
   }
 
   switchSlot(slot) {
@@ -1918,7 +1969,7 @@ export class Game {
     this.reloading = false;
     this.burst = 0;
     this.lastShotAt = drawStamp(this.weapons[slot], performance.now() / 1000, 0.1);
-    this.viewmodel.setWeapon(this.weapons[slot], this.skin);
+    this.viewmodel.setWeapon(this.weapons[slot], SLOT_FOR[slot] ?? COS.SLOT.PRIMARY, this.cos);
     this.net.switchSlot(slot);
     sfx.switchWeapon();
   }
@@ -2296,6 +2347,11 @@ export class Game {
       this.frameBudget = 0;
     }
     this.lastFrame = now;
+
+    // Animated finishes, once a frame for the whole game. It walks two short
+    // lists of shared textures and materials — see gunskin.js — so the cost is
+    // per *finish on screen*, not per player wearing one.
+    tickCosmetics(now / 1000);
 
     // The controller is polled on every frame, in the match *and* in the menu:
     // one path drives the game, the other steers the interface, and a pad that

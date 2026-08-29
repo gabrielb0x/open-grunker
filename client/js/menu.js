@@ -6,8 +6,8 @@
  * `onPlay(opts)`, so the menu owns all of its own DOM and network chatter.
  */
 import * as K from '/shared/constants.js';
-import { CLASSES, CLASS_IDS, SKINS, RARITY, loadoutFor } from '/shared/weapons.js';
-import { skinSwatchCss } from './gunskin.js';
+import { CLASSES, CLASS_IDS, loadoutFor } from '/shared/weapons.js';
+import { Wardrobe } from './wardrobe.js';
 import { api } from './api.js';
 import {
   settings, set as setSetting, SCHEMA, reset as resetSettings,
@@ -45,11 +45,13 @@ const SCORING_HELP = [
 ];
 
 export class Menu {
-  constructor({ onPlay, onSettingsChange, onClassChange, onClassPreview, onBindsChange, input }) {
+  constructor({ onPlay, onSettingsChange, onClassChange, onClassPreview, onCosmeticsChange, onBindsChange, input }) {
     this.onPlay = onPlay;
     this.onSettingsChange = onSettingsChange;
     this.onClassChange = onClassChange;
     this.onClassPreview = onClassPreview;
+    /** Something was equipped: the running match rebuilds its viewmodel. */
+    this.onCosmeticsChange = onCosmeticsChange;
     this.onBindsChange = onBindsChange;
     this.input = input;
     this.selectedClass = localStorage.getItem(CLASS_KEY) || 'triggerman';
@@ -109,6 +111,15 @@ export class Menu {
     this._bindPlayerCard();
     this._bindCardEditor();
     this._bindPrivacy();
+    /**
+     * The four wardrobe pages.
+     *
+     * Bound after the panels exist and before the first class is drawn: it
+     * hangs off the same DOM the loadout page does, and the class grid's own
+     * click handler asks it to redraw the preview.
+     */
+    this.wardrobe = new Wardrobe(this);
+    this.wardrobe.bind();
     this.buildClasses($('classGrid'));
     this.buildClasses($('classGridModal'), true);
     this.buildSettings();
@@ -292,7 +303,7 @@ export class Menu {
     // rather than polling a tab nobody is on.
     this.watchFriends(name === 'friends');
     if (name === 'servers') this.refreshServers();
-    if (name === 'shop') this.buildShop();
+    if (['classes', 'cases', 'market', 'trades'].includes(name)) this.wardrobe?.onTab(name);
     if (name === 'profile') this.refreshAccount();
     if (name === 'controls') this.buildBinds();
     if (name === 'challenges') this.buildProgress();
@@ -583,6 +594,9 @@ export class Menu {
           n.classList.toggle('selected', n.dataset.classId === id);
         }
         if (api.isAuthed) api.saveLoadout({ classId: id, settings, keybinds: keys.binds }).catch(() => {});
+        // The preview, the equipped strip and the primary-finish grid are all
+        // per class, so choosing one redraws the workbench around it.
+        this.wardrobe?.buildLoadout();
         if (isModal) { this.closeClassModal(); this.onClassChange?.(id); }
         else this.onClassPreview?.(id);
       });
@@ -1438,63 +1452,20 @@ export class Menu {
     }
   }
 
-  /* ── Shop ──────────────────────────────────────────────────────────────── */
+  /* ── The wardrobe ──────────────────────────────────────────────────────
+   *
+   * Four pages — loadout, cases, market, trades — all of which live in
+   * client/js/wardrobe.js. This class keeps only the seam: the wardrobe needs
+   * to know which class is selected, needs somewhere to put a message, and
+   * needs to be able to tell the running match that something was equipped.
+   */
 
-  buildShop() {
-    const grid = $('shopGrid');
-    const owned = api.account?.loadout?.owned ?? [];
-    const equipped = api.account?.loadout?.skins?.[this.selectedClass] ?? 'default';
-    const cls = CLASSES[this.selectedClass];
-    const weaponId = cls?.primary?.id;
-    const tier = K.masteryFor(api.mastery?.[weaponId]?.kills ?? 0).tier;
-    const level = api.account?.level ?? 0;
-    $('grBalance').textContent = fmtNum(api.account?.gr ?? 0);
-    $('shopFor').textContent =
-      `Applied to ${cls?.name ?? 'your class'} — ${cls?.primary?.name ?? ''}. Pick a class first to skin a different gun.`;
+  /** Kept so a cached older bundle calling `buildShop()` still lands somewhere. */
+  buildShop() { this.wardrobe?.buildLoadout(); }
 
-    grid.innerHTML = '';
-    for (const skin of Object.values(SKINS)) {
-      const earned = skin.price < 0;
-      const unlocked = !earned ? true
-        : skin.unlock?.type === 'level' ? level >= skin.unlock.value
-          : skin.unlock?.type === 'mastery' ? tier >= skin.unlock.value
-            : skin.unlock?.type === 'account' ? api.isAuthed
-              : false;
-      const has = skin.price === 0 || owned.includes(skin.id) || (earned && unlocked);
-      const isOn = equipped === skin.id;
-      const rarity = RARITY[skin.rarity ?? 'common'];
-      const priceLine = has
-        ? (isOn ? 'EQUIPPED' : 'OWNED — EQUIP')
-        : earned ? (skin.hint ?? 'EARN IT') : `${fmtNum(skin.price)} GR`;
-
-      const card = el('div', `skin-card${isOn ? ' equipped' : ''}${has ? '' : ' locked'}`, `
-        <div class="skin-swatch" style="background:${skinSwatchCss(skin)}">
-          <span class="skin-zones">${(skin.swatch ?? []).map((c) =>
-    `<i style="background:#${(c >>> 0).toString(16).padStart(6, '0')}"></i>`).join('')}</span>
-        </div>
-        <h5>${escapeHtml(skin.name)}</h5>
-        <div class="skin-rarity" style="color:#${rarity.color.toString(16).padStart(6, '0')}">${rarity.name.toUpperCase()}</div>
-        <p class="skin-blurb">${escapeHtml(skin.blurb ?? '')}</p>
-        <div class="price ${has ? 'owned' : earned ? 'locked' : ''}">${escapeHtml(priceLine)}</div>`);
-
-      card.addEventListener('click', async () => {
-        if (!api.isAuthed) { this.toastAuth('Sign in to buy and equip skins.'); return; }
-        if (earned && !unlocked) { sfx.ui('error'); this.notify(skin.hint ?? 'Not unlocked yet.', 'error'); return; }
-        try {
-          if (!has) {
-            await api.buySkin(skin.id);
-            sfx.ui('ok');
-          }
-          const skins = { ...(api.account.loadout?.skins ?? {}), [this.selectedClass]: skin.id };
-          await api.saveLoadout({ classId: this.selectedClass, skins, settings, keybinds: keys.binds });
-          this.buildShop();
-        } catch (err) {
-          sfx.ui('error');
-          this.notify(err.message ?? 'Purchase failed.', 'error');
-        }
-      });
-      grid.appendChild(card);
-    }
+  /** The names the trade builder may offer to. Trades are friends-only. */
+  friendNames() {
+    return (this.friendState?.friends ?? []).map((f) => f.name).filter(Boolean);
   }
 
   /* ── Challenges & mastery ──────────────────────────────────────────────── */
@@ -3320,7 +3291,8 @@ export class Menu {
       $('acGr').textContent = '0';
       $('acXpFill').style.width = '0%';
       $('acVerified').classList.add('hidden');
-      $('grBalance').textContent = '0';
+      // Three pages carry the balance now; the wardrobe owns all three.
+      this.wardrobe?.paintBalance();
       $('friendsSignedOut')?.classList.remove('hidden');
       $('friendsSignedIn')?.classList.add('hidden');
       this.friendState = null;
@@ -3364,7 +3336,7 @@ export class Menu {
     $('acGr').textContent = fmtNum(user.gr ?? 0);
     $('acXpFill').style.width = `${pct}%`;
     $('acVerified').classList.toggle('hidden', !user.verified);
-    $('grBalance').textContent = fmtNum(user.gr ?? 0);
+    this.wardrobe?.paintBalance();
 
     // Profile panel
     $('phName').textContent = user.username;

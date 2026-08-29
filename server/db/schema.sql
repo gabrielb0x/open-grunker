@@ -70,7 +70,12 @@ CREATE TABLE IF NOT EXISTS users (
   -- The one privacy answer pulled back out into a column. The leaderboard is
   -- its only reader and cannot afford to parse a blob per row; savePrivacy is
   -- its only writer, which is what keeps it from drifting from the blob.
-  listed         INTEGER NOT NULL DEFAULT 1
+  listed         INTEGER NOT NULL DEFAULT 1,
+  -- Barred from trading, listing and buying on the market until this unix ts;
+  -- 0 is unrestricted. Here rather than only in migrate() for the same reason
+  -- level_graded is: the UUID rebuild recreates this table from this file and
+  -- re-inserts every column the old one had.
+  trade_banned_until INTEGER NOT NULL DEFAULT 0
 );
 
 -- Career milestones an account has been paid for. One row per milestone per
@@ -118,6 +123,15 @@ CREATE TABLE IF NOT EXISTS loadouts (
   owned      TEXT    NOT NULL DEFAULT '[]',   -- JSON: [ <skinId>, ... ]
   settings   TEXT    NOT NULL DEFAULT '{}',   -- JSON: client settings blob
   keybinds   TEXT    NOT NULL DEFAULT '{}',   -- JSON: { <action>: <KeyboardEvent.code> }
+  -- V2 cosmetics. `equip` is the whole worn loadout as { <slot>: <itemId> };
+  -- `primaries` is the one slot remembered per class, as { <classId>: <itemId> }.
+  -- The older `skins`/`owned` columns above are what a pre-V2 database has
+  -- instead, and migrate() reads them once to mint an inventory from them.
+  equip      TEXT    NOT NULL DEFAULT '{}',
+  primaries  TEXT    NOT NULL DEFAULT '{}',
+  -- Has this row's pre-V2 wardrobe been minted into `inventory` yet? Runs once
+  -- per account, ever: see migrateCosmetics().
+  migrated_cosmetics INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT 0
 );
 
@@ -377,6 +391,103 @@ CREATE TABLE IF NOT EXISTS admin_log (
   target   TEXT,
   detail   TEXT
 );
+
+-- ── Cosmetics: inventory, cases, market, trades ───────────────────────────
+--
+-- An owned cosmetic is a *unit*, not a flag. Two players can hold the same
+-- item, one player can hold four of it, and each of those four is a separate
+-- row with its own id, its own serial and its own history — which is the whole
+-- reason a market and a trade are possible at all. A boolean "owns gold" could
+-- not be sold once without taking away the copy that was equipped.
+--
+-- `locked` is the safety on every economic action: a unit staked in an open
+-- trade or standing on the market is locked, and every path that moves, scraps
+-- or equips a unit refuses a locked one. It is a column rather than a join so
+-- that the refusal costs nothing and cannot be forgotten.
+CREATE TABLE IF NOT EXISTS inventory (
+  id          TEXT    PRIMARY KEY,
+  user_id     TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  item_id     TEXT    NOT NULL,             -- "<slot>:<key>", see shared/cosmetics.js
+  acquired_at INTEGER NOT NULL,
+  -- How it was got: case | shop | trade | market | grant | migrate | signup.
+  source      TEXT    NOT NULL DEFAULT 'grant',
+  origin      TEXT,                         -- free text: the case id, the seller, the admin
+  -- The nth copy of this item ever minted on this instance. Cosmetic in every
+  -- sense: it decides nothing, and a low one is worth exactly what somebody
+  -- will pay for it.
+  serial      INTEGER NOT NULL DEFAULT 0,
+  locked      INTEGER NOT NULL DEFAULT 0    -- staked in a trade or a listing
+);
+
+-- Every case ever opened, kept forever. This is the audit trail behind the
+-- published odds: if the drop rates are ever disputed, this table is the
+-- answer, and the admin panel reads nothing else.
+CREATE TABLE IF NOT EXISTS case_openings (
+  id       TEXT    PRIMARY KEY,
+  user_id  TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  case_id  TEXT    NOT NULL,
+  item_id  TEXT    NOT NULL,
+  unit_id  TEXT,                            -- the inventory row it minted
+  price    INTEGER NOT NULL DEFAULT 0,      -- what the case cost at the time
+  at       INTEGER NOT NULL
+);
+
+-- The market. A listing is a unit, a price and a seller; it is created locked,
+-- and it leaves this table only by being bought or cancelled.
+CREATE TABLE IF NOT EXISTS market_listings (
+  id           TEXT    PRIMARY KEY,
+  seller_id    TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  unit_id      TEXT    NOT NULL,
+  item_id      TEXT    NOT NULL,            -- denormalised: the browse query filters on it
+  price        INTEGER NOT NULL,
+  listed_at    INTEGER NOT NULL,
+  sold_at      INTEGER,
+  buyer_id     TEXT REFERENCES users(id) ON DELETE SET NULL,
+  cancelled_at INTEGER,
+  -- What the seller actually banked, after MARKET_FEE. Stored rather than
+  -- recomputed so a later change to the fee does not rewrite history.
+  net          INTEGER NOT NULL DEFAULT 0
+);
+
+-- A trade is an offer between two accounts, and neither side moves until both
+-- have said yes. `status` is the whole state machine:
+--   open      -> the recipient has not answered
+--   accepted  -> both sides confirmed, items and GR have moved
+--   declined  -> the recipient said no
+--   cancelled -> the sender withdrew it
+--   expired   -> nobody answered inside TRADE_TTL_SEC
+CREATE TABLE IF NOT EXISTS trades (
+  id         TEXT    NOT NULL PRIMARY KEY,
+  from_id    TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  to_id      TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  status     TEXT    NOT NULL DEFAULT 'open',
+  note       TEXT,
+  from_gr    INTEGER NOT NULL DEFAULT 0,    -- GR the sender is adding
+  to_gr      INTEGER NOT NULL DEFAULT 0,    -- GR the sender is asking for
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
+-- The two sides of one offer. `side` is 'from' or 'to' and says who is giving
+-- the unit up, never who ends with it.
+CREATE TABLE IF NOT EXISTS trade_items (
+  trade_id TEXT NOT NULL REFERENCES trades(id) ON DELETE CASCADE,
+  unit_id  TEXT NOT NULL,
+  item_id  TEXT NOT NULL,
+  side     TEXT NOT NULL,
+  PRIMARY KEY (trade_id, unit_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_user   ON inventory(user_id, acquired_at DESC);
+CREATE INDEX IF NOT EXISTS idx_inventory_item   ON inventory(item_id);
+CREATE INDEX IF NOT EXISTS idx_case_openings_at ON case_openings(at DESC);
+CREATE INDEX IF NOT EXISTS idx_case_openings_u  ON case_openings(user_id, at DESC);
+CREATE INDEX IF NOT EXISTS idx_market_open      ON market_listings(item_id, price) WHERE sold_at IS NULL AND cancelled_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_market_seller    ON market_listings(seller_id, listed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_market_sold      ON market_listings(sold_at DESC) WHERE sold_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_trades_to        ON trades(to_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trades_from      ON trades(from_id, status, updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user     ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires  ON sessions(expires_at);

@@ -258,8 +258,11 @@
     <button class="rail-item" data-open="help" type="button">
       <span class="ri-ico">◎</span><span class="ri-body"><b>GUIDE</b><small>LEARN THE BASICS</small></span>
     </button>
-    <button class="rail-item" data-open="shop" type="button">
-      <span class="ri-ico">◆</span><span class="ri-body"><b>STORE</b><small>WEAPON FINISHES</small></span>
+    <button class="rail-item" data-open="cases" type="button">
+      <span class="ri-ico">◆</span><span class="ri-body"><b>CASES</b><small>OPEN ONE</small></span>
+    </button>
+    <button class="rail-item" data-open="market" type="button">
+      <span class="ri-ico">⇄</span><span class="ri-body"><b>MARKET</b><small>BUY &amp; SELL SKINS</small></span>
     </button>
     <button class="rail-item" data-open="challenges" type="button">
       <span class="ri-ico">✦</span><span class="ri-body"><b>CHALLENGES</b><small>DAILY &amp; MASTERY</small></span>
@@ -346,7 +349,7 @@
         <div class="ml-weapon" id="mlWeapon">Assault Rifle</div>
       </div>
       <button class="ml-btn" data-open="classes" type="button">LOADOUT <span>⟳</span></button>
-      <button class="ml-btn" data-open="shop" type="button">CUSTOMIZE <span>✎</span></button>
+      <button class="ml-btn" data-open="cases" type="button">CASES <span>◆</span></button>
     </aside>
   </div>
 
@@ -393,10 +396,14 @@
         <nav class="pn-rail" id="panelRail">
           <div class="pn-group" data-group="Play">
             <h6>PLAY</h6>
-            <button class="tab active" data-tab="classes" data-icon="loadout" data-label="CLASS"
-                    data-title="Loadout" data-sub="Pick the class you spawn with"></button>
-            <button class="tab" data-tab="shop" data-icon="palette" data-label="SKINS"
-                    data-title="Weapon skins" data-sub="Finishes for the gun you are holding"></button>
+            <button class="tab active" data-tab="classes" data-icon="loadout" data-label="LOADOUT"
+                    data-title="Loadout" data-sub="Your class, your finishes, and what you are wearing"></button>
+            <button class="tab" data-tab="cases" data-icon="palette" data-label="CASES"
+                    data-title="Cases" data-sub="Open one, see what is in it"></button>
+            <button class="tab" data-tab="market" data-icon="palette" data-label="MARKET"
+                    data-title="Market" data-sub="Buy and sell finishes with other players"></button>
+            <button class="tab" data-tab="trades" data-icon="users" data-label="TRADES"
+                    data-title="Trades" data-sub="Offers to and from your friends"><span class="tab-badge hidden" id="tradeTabBadge">0</span></button>
             <button class="tab" data-tab="challenges" data-icon="target" data-label="CHALLENGES"
                     data-title="Challenges" data-sub="Dailies, weeklies and weapon mastery"></button>
           </div>
@@ -449,8 +456,47 @@
         </header>
 
       <div class="panel-scroll">
+        <!-- ── The loadout workbench ────────────────────────────────────
+             Three columns: the class on the left, the operator it produces in
+             the middle, and the slot being dressed on the right. The preview
+             is the same builders the match uses, so nothing here can show you
+             something the game would not. -->
         <section class="tab-panel active" data-panel="classes">
-          <div id="classGrid" class="class-grid"></div>
+          <div class="lo-wrap">
+            <aside class="lo-classes">
+              <h4 class="lo-head">CLASS</h4>
+              <div id="classGrid" class="class-grid lo-class-grid"></div>
+            </aside>
+
+            <div class="lo-stage">
+              <div class="lo-stage-head">
+                <h4 id="loStageName">OPERATOR</h4>
+                <span class="gr-balance">GR <b id="grBalance">0</b></span>
+              </div>
+              <div class="lo-view" id="loView">
+                <canvas id="loCanvas"></canvas>
+                <div class="lo-view-empty" id="loViewEmpty">Preview unavailable</div>
+                <div class="lo-view-tools">
+                  <button class="lo-tool" id="loSpin" title="Turntable">↻</button>
+                  <button class="lo-tool" id="loZoomGun" title="Look at the weapon">⌖</button>
+                </div>
+              </div>
+              <div class="lo-equipped" id="loEquipped"></div>
+            </div>
+
+            <div class="lo-picker">
+              <nav class="lo-slots" id="loSlots"></nav>
+              <div class="lo-filters">
+                <input id="loSearch" type="search" placeholder="Find an item…" aria-label="Find an item">
+                <select id="loRarity" aria-label="Rarity">
+                  <option value="">Any rarity</option>
+                </select>
+                <label class="lo-owned"><input type="checkbox" id="loOwnedOnly"> Owned only</label>
+              </div>
+              <p class="panel-note" id="loSlotNote">—</p>
+              <div id="loGrid" class="skin-grid lo-grid"></div>
+            </div>
+          </div>
         </section>
 
         <!-- ── Challenges & mastery ─────────────────────────────────────── -->
@@ -465,7 +511,7 @@
                A daily is worth one evening and is gone by morning, which makes
                it useless to anyone who plays twice a week. These are what a
                Tuesday and a Saturday add up to. -->
-          <div class="panel-head" style="margin-top:26px">
+          <div class="panel-head sub">
             <h3>THIS WEEK</h3>
             <span class="panel-note" id="wkReset">—</span>
           </div>
@@ -473,13 +519,13 @@
 
           <!-- ── Career ───────────────────────────────────────────────────
                The only list here that never resets. -->
-          <div class="panel-head" style="margin-top:26px">
+          <div class="panel-head sub">
             <h3>CAREER</h3>
             <span class="panel-note" id="msCount">—</span>
           </div>
           <div id="milestoneList" class="milestone-list"></div>
 
-          <div class="panel-head" style="margin-top:26px">
+          <div class="panel-head sub">
             <h3>WEAPON MASTERY</h3>
             <span class="panel-note">Kills with a weapon raise its tier. Tiers unlock finishes.</span>
           </div>
@@ -925,7 +971,7 @@
 
           <div id="clanMine" class="clan-mine"></div>
 
-          <div class="panel-head" style="margin-top:26px">
+          <div class="panel-head sub">
             <h3>ALL CLANS</h3>
             <div class="head-actions">
               <input id="clanSearch" class="mini-input" maxlength="4" autocomplete="off"
@@ -936,13 +982,81 @@
           <div id="clanList" class="clan-list"></div>
         </section>
 
-        <section class="tab-panel" data-panel="shop">
+        <!-- ── Cases ────────────────────────────────────────────────── -->
+        <section class="tab-panel" data-panel="cases">
           <div class="panel-head">
-            <h3>WEAPON SKINS</h3>
-            <span class="gr-balance">GR <b id="grBalance">0</b></span>
+            <h3>CASES</h3>
+            <span class="gr-balance">GR <b id="grBalanceCases">0</b></span>
           </div>
-          <p class="panel-note" id="shopFor">Finishes apply to the class you have selected.</p>
-          <div id="shopGrid" class="shop-grid"></div>
+          <p class="panel-note">
+            Every case publishes the odds it actually rolls against — the figures on each card
+            are read from the same table the server draws from, not written beside it.
+          </p>
+          <div id="caseGrid" class="case-grid"></div>
+
+          <div class="panel-head sub">
+            <h3>LATEST PULLS</h3>
+            <span class="panel-note">Live, across every case on this server.</span>
+          </div>
+          <div id="dropFeed" class="drop-feed"></div>
+        </section>
+
+        <!-- ── The market ───────────────────────────────────────────────── -->
+        <section class="tab-panel" data-panel="market">
+          <div class="panel-head">
+            <h3>MARKET</h3>
+            <span class="gr-balance">GR <b id="grBalanceMarket">0</b></span>
+          </div>
+          <nav class="sub-nav" id="marketNav">
+            <button class="sub active" data-market="browse">BROWSE</button>
+            <button class="sub" data-market="sell">SELL</button>
+            <button class="sub" data-market="mine">MY LISTINGS</button>
+          </nav>
+
+          <div class="market-view" data-market-view="browse">
+            <div class="lo-filters">
+              <input id="mkSearch" type="search" placeholder="Find an item…" aria-label="Find an item">
+              <select id="mkSlot" aria-label="Slot"><option value="">Any slot</option></select>
+              <select id="mkRarity" aria-label="Rarity"><option value="">Any rarity</option></select>
+              <select id="mkSort" aria-label="Sort">
+                <option value="price">Cheapest first</option>
+                <option value="priceDesc">Dearest first</option>
+                <option value="rarity">Rarest first</option>
+              </select>
+            </div>
+            <p class="panel-note" id="mkNote">—</p>
+            <div id="mkBoard" class="skin-grid"></div>
+          </div>
+
+          <div class="market-view hidden" data-market-view="sell">
+            <p class="panel-note">
+              Pick something you own and name a price. The market takes a cut of every sale;
+              anything listed is locked until it sells or you take it down.
+            </p>
+            <div id="mkSellGrid" class="skin-grid"></div>
+          </div>
+
+          <div class="market-view hidden" data-market-view="mine">
+            <div id="mkMine" class="listing-list"></div>
+          </div>
+        </section>
+
+        <!-- ── Trades ───────────────────────────────────────────────────── -->
+        <section class="tab-panel" data-panel="trades">
+          <div class="panel-head">
+            <h3>TRADES</h3>
+            <button class="btn-ghost" id="tradeNew" type="button">NEW OFFER</button>
+          </div>
+          <p class="panel-note">
+            You can only trade with friends. Anybody else deals with you through the market,
+            where nobody can be talked into anything.
+          </p>
+          <div id="tradeOpen" class="trade-list"></div>
+          <div class="panel-head sub">
+            <h3>SETTLED</h3>
+            <span class="panel-note">Everything that has been accepted, declined or withdrawn.</span>
+          </div>
+          <div id="tradeHistory" class="trade-list"></div>
         </section>
 
         <!-- ── Controls ─────────────────────────────────────────────────── -->
@@ -1004,6 +1118,87 @@
 </div>
 
 <!-- ══ Overlays (outside #menu so they work in-game too) ════════════════ -->
+
+<!-- ── Case opening ──────────────────────────────────────────────────────
+     The reel is one long strip of cards that decelerates to a stop with the
+     winning card under the marker. Nothing about the outcome is decided here —
+     the server has already rolled it and the strip is *built around* the
+     answer, which is why the animation can be skipped without changing it. -->
+<div id="caseModal" class="modal hidden">
+  <div class="modal-card wide case-card-modal">
+    <button class="modal-x" id="caseClose">×</button>
+    <h3 id="caseTitle">CASE</h3>
+    <div class="reel-frame">
+      <div class="reel-mark"></div>
+      <div class="reel" id="caseReel"></div>
+    </div>
+    <div class="case-result hidden" id="caseResult"></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="caseSkip" type="button">SKIP</button>
+      <button class="btn-primary" id="caseAgain" type="button" disabled>OPEN ANOTHER</button>
+    </div>
+  </div>
+</div>
+
+<!-- Item detail: the market's listings and what it has been selling for -->
+<div id="itemModal" class="modal hidden">
+  <div class="modal-card wide">
+    <button class="modal-x" id="itemClose">×</button>
+    <div class="item-head" id="itemHead"></div>
+    <div class="item-body">
+      <div class="item-listings" id="itemListings"></div>
+      <div class="item-history">
+        <h5>RECENT SALES</h5>
+        <canvas id="itemSpark" width="320" height="70"></canvas>
+        <p class="panel-note" id="itemAvg">—</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Naming a price for something you own -->
+<div id="sellModal" class="modal hidden">
+  <div class="modal-card">
+    <button class="modal-x" id="sellClose">×</button>
+    <h3>LIST FOR SALE</h3>
+    <div id="sellItem" class="sell-item"></div>
+    <label class="field">PRICE <small>in GR</small>
+      <input id="sellPrice" type="number" min="10" step="10" value="100"></label>
+    <p class="modal-note" id="sellNote">—</p>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="sellCancel" type="button">CANCEL</button>
+      <button class="btn-primary" id="sellConfirm" type="button">LIST IT</button>
+    </div>
+  </div>
+</div>
+
+<!-- Building an offer for a friend -->
+<div id="tradeModal" class="modal hidden">
+  <div class="modal-card wide">
+    <button class="modal-x" id="tradeClose">×</button>
+    <h3>NEW OFFER</h3>
+    <label class="field">TO<select id="tradeWho"></select></label>
+    <div class="trade-cols">
+      <div class="trade-col">
+        <h5>YOU GIVE</h5>
+        <div id="tradeGive" class="trade-pick"></div>
+        <label class="field">GR TO ADD<input id="tradeGiveGr" type="number" min="0" step="10" value="0"></label>
+      </div>
+      <div class="trade-col">
+        <h5>YOU ASK FOR</h5>
+        <div id="tradeWant" class="trade-pick"></div>
+        <label class="field">GR TO ASK FOR<input id="tradeWantGr" type="number" min="0" step="10" value="0"></label>
+      </div>
+    </div>
+    <label class="field">NOTE <small>(optional)</small>
+      <input id="tradeNote" maxlength="200" placeholder="Say what the deal is"></label>
+    <p class="modal-note" id="tradeNote2">—</p>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="tradeCancel" type="button">CANCEL</button>
+      <button class="btn-primary" id="tradeSend" type="button">SEND OFFER</button>
+    </div>
+  </div>
+</div>
 
 <!-- Account modal -->
 <div id="authModal" class="modal hidden">

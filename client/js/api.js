@@ -167,6 +167,7 @@ export const api = {
     try {
       const r = await request('GET', '/auth/me');
       account = r.user;
+      if (r.wardrobe) account.wardrobe = r.wardrobe;
       mastery = r.mastery ?? {};
       challenges = r.challenges ?? null;
       verification = r.verification ?? null;
@@ -369,14 +370,89 @@ export const api = {
   async saveLoadout(payload) {
     if (!token) return null;
     const r = await request('PUT', '/loadout', payload);
-    if (account) account.loadout = r.loadout;
+    if (account) {
+      account.loadout = r.loadout;
+      if (r.wardrobe) account.wardrobe = r.wardrobe;
+    }
     return r.loadout;
   },
 
-  async buySkin(skinId) {
-    const r = await request('POST', '/shop/buy', { skinId });
-    if (account) { account.gr = r.gr; account.loadout = { ...account.loadout, owned: r.owned }; }
+  /* ── The wardrobe ────────────────────────────────────────────────────────
+   *
+   * Every one of these hands back the whole wardrobe rather than a delta, and
+   * every one of them stores it on the account. That is deliberate: an
+   * economy has half a dozen ways to change what you own — a case, a purchase,
+   * a sale, a trade somebody else accepted, a moderator's revoke — and a
+   * client that patched its own copy after each of them would drift out of
+   * step with the server on the first one it did not think of. One shape
+   * arrives, one shape is stored, and the screen redraws from it.
+   */
+
+  /** Adopts a wardrobe from any response that carried one. */
+  _wardrobe(r) {
+    if (account && r?.wardrobe) {
+      account.wardrobe = r.wardrobe;
+      account.gr = r.wardrobe.gr ?? r.gr ?? account.gr;
+    }
     return r;
+  },
+
+  get wardrobe() { return account?.wardrobe ?? null; },
+
+  async loadWardrobe() {
+    if (!token) return null;
+    return (await api._wardrobe(await request('GET', '/wardrobe'))).wardrobe;
+  },
+
+  /** Buys one item outright at catalogue price. */
+  async buyItem(itemId) {
+    return api._wardrobe(await request('POST', '/shop/buy', { itemId }));
+  },
+
+  /** Kept so an older cached bundle can still buy a primary finish by name. */
+  buySkin(skinId) { return api.buyItem(`primary:${skinId}`); },
+
+  /** Hands a duplicate back to the game for a fraction of its worth. */
+  async scrap(unitId) {
+    return api._wardrobe(await request('POST', '/wardrobe/scrap', { unitId }));
+  },
+
+  /* ── Cases ─────────────────────────────────────────────────────────────── */
+
+  async openCase(caseId) {
+    return api._wardrobe(await request('POST', '/cases/open', { caseId }));
+  },
+  recentDrops: (limit = 24) => request('GET', `/cases/recent?limit=${limit | 0}`),
+  caseHistory: () => request('GET', '/cases/history'),
+
+  /* ── The market ────────────────────────────────────────────────────────── */
+
+  marketBoard(params = {}) {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v) q.set(k, String(v));
+    return request('GET', `/market?${q.toString()}`);
+  },
+  marketItem: (itemId) => request('GET', `/market/item?id=${encodeURIComponent(itemId)}`),
+  marketMine: () => request('GET', '/market/mine'),
+  async marketList(unitId, price) {
+    return api._wardrobe(await request('POST', '/market/list', { unitId, price }));
+  },
+  async marketCancel(listingId) {
+    return api._wardrobe(await request('POST', '/market/cancel', { listingId }));
+  },
+  async marketBuy(listingId) {
+    return api._wardrobe(await request('POST', '/market/buy', { listingId }));
+  },
+
+  /* ── Trades ────────────────────────────────────────────────────────────── */
+
+  trades: () => request('GET', '/trades'),
+  offerTrade: (offer) => request('POST', '/trades', offer),
+  async acceptTrade(id) {
+    return api._wardrobe(await request('POST', '/trades/accept', { id }));
+  },
+  async closeTrade(id) {
+    return api._wardrobe(await request('POST', '/trades/close', { id }));
   },
 
   get isAuthed() { return !!token && !!account; },

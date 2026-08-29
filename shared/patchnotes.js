@@ -17,7 +17,7 @@
  * wrote it: what they can now do, or what stopped going wrong.
  */
 
-export const GAME_VERSION = '1.9.5';
+export const GAME_VERSION = '2.0.0';
 
 export const PATCH_KINDS = {
   new: { label: 'NEW', color: '#4ddb7a' },
@@ -26,6 +26,24 @@ export const PATCH_KINDS = {
 };
 
 export const PATCH_NOTES = [
+  {
+    version: '2.0.0',
+    date: '2026-08-29',
+    title: 'Skins for everything you carry and everything you wear, cases worth opening, and a market to sell it all on',
+    changes: [
+      { kind: 'new', text: 'A skin is no longer one thing. There are nine slots — your primary, your sidearm, your knife, your gloves, your headwear, your face, your outfit, your backpack and a charm that hangs off the gun — and every one of them is chosen separately. The rifle can be Gold Rush, the sidearm can be factory grey and the knife can be a Doppler, and everybody else sees all three as you switch between them.' },
+      { kind: 'new', text: 'Two hundred and twenty-seven items. Thirty-nine weapon finishes across three slots, sixteen pairs of gloves, twenty-two hats, fifteen faces, sixteen outfits, twelve packs and twelve charms. The plain ones are common and cost very little; the ones worth having are not.' },
+      { kind: 'new', text: 'Forty-two of them move. Hellfire’s flames climb the receiver, Overclock’s circuit traces breathe, Prismatic cycles through every colour there is, and Voidwalker flickers like something that is not entirely here. Nothing animated is below legendary and most of it is mythic — that is the whole point of the tier — and it costs nothing to draw, because a moving finish is one shared texture being scrolled rather than a video being played.' },
+      { kind: 'new', text: 'Seven cases, and every one of them publishes the odds it actually rolls against. The percentages on the card are read from the same table the server draws from rather than written beside it, so they cannot drift apart, and every case ever opened is kept — which is what makes the claim checkable rather than a promise. The roll happens on the server, from the operating system’s own entropy, before the reel starts spinning: what you watch is scenery built around an answer that already exists.' },
+      { kind: 'new', text: 'A real market. Anything you own that you did not earn can be listed for GR, and anybody can buy it. The board shows one row per item with the cheapest asking price and how many are behind it, and opening one shows every standing listing and what the last forty actually sold for, so nobody has to guess what a thing is worth. The market takes a tenth of each sale and burns it, which is the only reason the amount of GR in the world does not climb forever.' },
+      { kind: 'new', text: 'Trading, with friends. Put items and GR on your side, ask for GR on theirs, and nothing moves until they say yes — at which point everything moves at once or nothing does. Everything staked in an offer is locked while it stands, so the same knife cannot be promised to four people. Offers are friends-only on purpose: every scam an item economy has ever had starts with a stranger, and anybody who wants to deal with one has the market, where nobody can be talked into anything.' },
+      { kind: 'change', text: 'The class screen is now a workbench. Your class down the left, the operator you have actually built in the middle — turning, at the real size, wearing everything you have on and holding the gun you picked — and the slot you are dressing on the right. The preview is drawn by the same code the match is, so nothing it shows you is something the game would not.' },
+      { kind: 'new', text: 'Items are individual. Two of the same finish are two separate things, each with the number of the copy it is — #1 or #4,000 — and its own history: which case it fell out of, who sold it to you, when. That is what makes it possible to sell one and keep the other.' },
+      { kind: 'new', text: 'The game will buy a duplicate back for a fifth of what it is worth. Deliberately a bad deal: it is the floor under the market rather than a way to play it, and anybody who wants what an item is actually worth sells it to another player.' },
+      { kind: 'change', text: 'Everything you had bought is still yours, on all three weapon slots. Somebody who paid for Gold Rush paid for the look, and charging them twice more for the same look on the sidearm and the knife would have been a robbery dressed up as a feature. Whatever you had equipped is still what you are wearing.' },
+      { kind: 'change', text: 'Your gloves are your own choice now rather than something your rifle’s paint decided for you. It used to be impossible to have black gloves on a gold gun.' },
+    ],
+  },
   {
     version: '1.9.5',
     date: '2026-08-28',

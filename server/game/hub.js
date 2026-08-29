@@ -330,12 +330,12 @@ export class Hub {
     return this.rooms.values().next().value ?? null;
   }
 
-  join({ ws, name, userId, level, classId, skin, skins, verified, clan, clanVerified, role, mutedUntil,
+  join({ ws, name, userId, level, classId, skin, skins, cos, primaries, verified, clan, clanVerified, role, mutedUntil,
     ip, roomId, spectate = false }) {
     const room = this.pickRoom(roomId, { spectate });
     if (!room) return null;
     const player = new Player({
-      ws, name, userId, level, classId, skin, skins, verified, clan, clanVerified, role, mutedUntil,
+      ws, name, userId, level, classId, skin, skins, cos, primaries, verified, clan, clanVerified, role, mutedUntil,
       ip, spectator: spectate,
     });
     room.add(player);

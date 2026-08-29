@@ -8,7 +8,7 @@
 import { deflateSync, crc32 } from 'node:zlib';
 import { Room } from '../server/game/room.js';
 import { Player } from '../server/game/player.js';
-import { SKINS } from '../shared/weapons.js';
+import { EARNED_FINISHES } from '../shared/cosmetics.js';
 import { identify, validateAvatar } from '../server/util/image.js';
 import { pathFor as avatarPathFor, urlFor as avatarUrlFor } from '../server/util/avatar.js';
 import * as K from '../shared/constants.js';
@@ -355,11 +355,11 @@ export default async function run() {
   })());
 
   check('the Veteran skin is on the ladder at the level it really unlocks', (() => {
-    // The rule lives on the skin in weapons.js; the ladder repeats the number,
-    // so the two have to be checked against each other somewhere.
+    // The rule lives on the finish in shared/cosmetics.js; the ladder repeats
+    // the number, so the two have to be checked against each other somewhere.
     const step = K.progressionLadder().find((st) => st.title === 'VETERAN SKIN');
-    info(`ladder ${step?.level} · skin ${SKINS.veteran.unlock.value}`);
-    return step?.level === SKINS.veteran.unlock.value;
+    info(`ladder ${step?.level} · finish ${EARNED_FINISHES.veteran.unlock.value}`);
+    return step?.level === EARNED_FINISHES.veteran.unlock.value;
   })());
 
   /* ── Spectator mode ────────────────────────────────────────────────────── */

@@ -14,6 +14,7 @@ import { WebSocketServer } from 'ws';
 
 import * as K from '../shared/constants.js';
 import { getClass } from '../shared/weapons.js';
+import { SLOT, DEFAULT_EQUIP, sanitiseEquip } from '../shared/cosmetics.js';
 import config, { ROOT } from './config.js';
 import log from './util/log.js';
 import * as db from './db/index.js';
@@ -496,6 +497,7 @@ async function handleHello(ws, session, msg) {
   if (auth && !enforceSingleSession(ws, auth.user.id, auth.user.username)) return;
 
   let name, userId = null, level = 1, skin = 'default', skins = {}, classId = getClass(msg.classId).id;
+  let cos = { ...DEFAULT_EQUIP }, primaries = {};
   let verified = false, clan = null, clanVerified = false, role = 'player', mutedUntil = 0;
 
   if (auth) {
@@ -520,13 +522,30 @@ async function handleHello(ws, session, msg) {
       skins = JSON.parse(l.skins) ?? {};
       skin = skins[classId] ?? 'default';
     } catch { /* keep the default skin */ }
+    // V2: the whole wardrobe, not just the primary finish. It is read back
+    // through the same sanitiser the save path uses, so an item revoked by a
+    // moderator or a finish whose unlock the account has since lost cannot be
+    // worn into a match by an old row that still names it.
+    try {
+      const owned = db.inventory.ownedIds(userId);
+      primaries = JSON.parse(l.primaries || '{}') ?? {};
+      const wanted = { ...(JSON.parse(l.equip || '{}') ?? {}) };
+      if (primaries[classId]) wanted[SLOT.PRIMARY] = primaries[classId];
+      const weaponId = getClass(classId).primary.id;
+      cos = sanitiseEquip(wanted, owned, {
+        authed: true,
+        level: auth.user.level ?? 0,
+        masteryTier: K.masteryFor(db.mastery.forUser(userId)[weaponId]?.kills ?? 0).tier,
+      });
+    } catch { /* keep the default wardrobe */ }
   } else {
     // Whatever the client sent is ignored: a guest is named, not self-named.
     name = assignGuestName();
   }
 
   const joined = hub.join({
-    ws, name, userId, level, classId, skin, skins, verified, clan, clanVerified, role, mutedUntil, ip: session.ip,
+    ws, name, userId, level, classId, skin, skins, cos, primaries,
+    verified, clan, clanVerified, role, mutedUntil, ip: session.ip,
     roomId: typeof msg.room === 'string' ? msg.room.slice(0, 32) : undefined,
     spectate: !!msg.spectate,
   });
