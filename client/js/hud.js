@@ -14,6 +14,9 @@ import * as K from '/shared/constants.js';
 import { WEAPON_LABEL } from '/shared/weapons.js';
 import { settings } from './settings.js';
 import { bindingLabel, padLabel } from './keybinds.js';
+// Only for the strings this file *assembles*. Everything it writes as a plain
+// sentence is translated where it lands, by the pass in i18n.js.
+import { t, tf } from './i18n.js';
 import { sfx } from './audio.js';
 
 const $ = (id) => document.getElementById(id);
@@ -81,6 +84,8 @@ export class Hud {
       kcAnthem: $('kcAnthem'), kcTrack: $('kcTrack'), kcTrackBy: $('kcTrackBy'),
       kcRemaining: $('kcRemaining'), kcSkip: $('kcSkip'), kcSkipFill: $('kcSkipFill'),
       kcSkipLabel: $('kcSkipLabel'), kcDirector: $('kcDirector'),
+      kcEyebrow: $('kcEyebrow'), kcReplay: $('kcReplay'), kcReplayLabel: $('kcReplayLabel'),
+      kcReplayFill: $('kcReplayFill'), kcReplayTime: $('kcReplayTime'),
       devOverlay: $('devOverlay'),
       nukePrompt: $('nukePrompt'), nukeKey: $('nukeKey'), nukeWarning: $('nukeWarning'),
       nukeBy: $('nukeBy'), nukeCount: $('nukeCount'), nukeSub: $('nukeSub'), nukeFlash: $('nukeFlash'),
@@ -289,7 +294,7 @@ export class Hud {
       // The board is pinned open rather than held — every nickname on it opens a
       // profile, on top of the mute and report columns — so the hint names the
       // way out of it rather than telling the player to keep holding a key.
-      this.el.sbHint.textContent = `${this.hintFor('scoreboard')} to close`;
+      this.el.sbHint.textContent = tf('{key} to close', { key: this.hintFor('scoreboard') });
     }
   }
 
@@ -505,7 +510,7 @@ export class Hud {
     this.el.ggWeapon.textContent = (gg.classId ?? '').toUpperCase().replace(/_/g, ' ') || 'LADDER';
     this.el.ggRung.textContent = `${rung} / ${total}`;
     this.el.ggFill.style.width = `${((rung - 1) / total) * 100}%`;
-    this.el.ggNext.textContent = `${kills} / ${need} kills to promote`;
+    this.el.ggNext.textContent = tf('{done} / {need} kills to promote', { done: kills, need });
   }
 
   /* ── Map voting ────────────────────────────────────────────────────────── */
@@ -854,11 +859,16 @@ export class Hud {
 
   showKillCam(view) {
     const el = this.el;
+    // The whole interface goes with the shot. It used to stay up — a crosshair,
+    // a magazine and a minimap of the *present* over ten seconds of somebody
+    // else's past, all of it about a body that is on the floor.
+    document.body.classList.add('killcam');
+    el.kcEyebrow.textContent = view.replay ? 'THROUGH THE EYES OF' : 'ELIMINATED BY';
     el.kcName.textContent = view.name ?? '—';
     el.kcTags.innerHTML = clanTag(view.clan, view.clanVerified)
       + verifiedTag(view.verified, 16)
       + creatorTag(view.creator)
-      + (view.level ? `<span class="kc-level">LEVEL ${view.level | 0}</span>` : '');
+      + (view.level ? `<span class="kc-level">${escapeHtml(tf('LEVEL {n}', { n: view.level | 0 }))}</span>` : '');
 
     // Only what is true. A melee has no distance worth printing, a headshot is
     // worth saying out loud, and a killer left standing on 8 HP is the single
@@ -876,15 +886,32 @@ export class Hud {
     el.kcAnthem.classList.toggle('hidden', !hasTrack);
     if (hasTrack) {
       el.kcTrack.textContent = view.anthemTitle;
-      el.kcTrackBy.textContent = `${view.name} · MUSIC CREATOR`;
+      el.kcTrackBy.textContent = tf('{name} · MUSIC CREATOR', { name: view.name });
     }
-    el.kcDirector.textContent = view.director ? "DIRECTOR'S CUT" : '';
+    el.kcDirector.textContent = view.director ? t("DIRECTOR'S CUT") : '';
     el.killCam.classList.remove('hidden');
     this.killCamOpen = true;
   }
 
   updateKillCam(view, respawnIn) {
     const el = this.el;
+    /*
+     * The replay strip, and the moment it stops.
+     *
+     * A replay that has caught up with the death hands the cam to the orbit,
+     * and the strip goes with it: leaving a full bar on screen over a camera
+     * that is no longer replaying anything would be the interface saying one
+     * thing while the picture says another.
+     */
+    el.kcReplay.classList.toggle('hidden', !view.replay);
+    if (view.replay) {
+      const span = view.replayLength || 1;
+      el.kcReplayFill.style.width = `${Math.round((view.replayAt / span) * 100)}%`;
+      el.kcReplayTime.textContent = `\u2212${view.replayLeft.toFixed(1)}s`;
+      el.kcEyebrow.textContent = 'THROUGH THE EYES OF';
+    } else if (el.kcEyebrow.textContent !== 'ELIMINATED BY') {
+      el.kcEyebrow.textContent = 'ELIMINATED BY';
+    }
     // The countdown is the respawn, not the cam: what a dead player wants to
     // know is when they are back in, and the two only agree if nobody skips.
     el.kcRemaining.textContent = Math.max(0, Math.ceil(Math.max(respawnIn, view.remaining)));
@@ -892,13 +919,13 @@ export class Hud {
     el.kcSkip.disabled = !view.canSkip;
     el.kcSkip.classList.toggle('ready', view.canSkip);
     el.kcSkipLabel.textContent = view.canSkip
-      ? 'SKIP'
-      : `SKIP IN ${Math.max(1, Math.ceil(view.skipIn))}`;
+      ? t('SKIP')
+      : tf('SKIP IN {n}', { n: Math.max(1, Math.ceil(view.skipIn)) });
     // The credit only appears once the track is really playing — a fetch that
     // lands late must not have promised music that never arrives.
     if (view.anthemTitle && el.kcAnthem.classList.contains('hidden')) {
       el.kcTrack.textContent = view.anthemTitle;
-      el.kcTrackBy.textContent = `${view.name} · MUSIC CREATOR`;
+      el.kcTrackBy.textContent = tf('{name} · MUSIC CREATOR', { name: view.name });
       el.kcAnthem.classList.remove('hidden');
     }
   }
@@ -906,6 +933,8 @@ export class Hud {
   hideKillCam() {
     this.el.killCam.classList.add('hidden');
     this.el.kcAnthem.classList.add('hidden');
+    this.el.kcReplay.classList.add('hidden');
+    document.body.classList.remove('killcam');
     this.killCamOpen = false;
   }
 

@@ -80,8 +80,12 @@ export const ACTIONS = [
   { id: 'prevWeapon', group: 'Weapons', label: 'Previous weapon', keys: ['WheelUp', '', 'Pad4'] },
 
   { id: 'scoreboard', group: 'Interface', label: 'Scoreboard', hold: true, keys: ['Tab', '', 'Pad8'] },
-  // No pad default: writing a chat line needs a keyboard anyway, so a button
-  // that opened an input nobody could type into would be a dead end.
+  // No pad default, but not for the old reason: the game ships an on-screen
+  // keyboard now (padkeyboard.js), so a button bound here really does open a
+  // chat line a controller can write. It stays unbound because every button on
+  // a standard pad is already spoken for above, and taking one from firing or
+  // from the weapon wheel to give it to the chat is a trade a player should
+  // make deliberately rather than find already made.
   { id: 'chat', group: 'Interface', label: 'Chat', keys: ['Enter', 'KeyT', ''] },
   { id: 'classMenu', group: 'Interface', label: 'Change class', keys: ['KeyB', '', 'Pad15'] },
   { id: 'toggleMinimap', group: 'Interface', label: 'Toggle minimap', keys: ['KeyM', '', ''] },

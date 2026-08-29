@@ -745,14 +745,128 @@ body.clean #deathScreen { opacity: 0; transition: opacity .2s; }
 
 .kc-hint { font-size: 10px; letter-spacing: .24em; color: var(--purple); }
 
+/* — The replay strip —
+   Under the card, over the bottom bar: a light that says a recording is
+   running, how far through the ten seconds this frame is, and how long is
+   left before the part where you die. It is absent, not empty, once the
+   replay has handed the camera to the orbit. */
+.kc-replay {
+  position: absolute; left: 5vw; bottom: calc(9vh + 92px);
+  display: flex; align-items: center; gap: 11px; max-width: min(460px, 62vw);
+  animation: kcRise .5s .16s backwards cubic-bezier(.16, 1, .3, 1);
+}
+.kc-rec {
+  flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--red);
+  box-shadow: 0 0 12px rgba(255, 77, 77, .8); animation: kcRec 1.4s ease-in-out infinite;
+}
+@keyframes kcRec { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+.kc-replay-label { font-size: 10px; letter-spacing: .28em; color: var(--red); }
+.kc-replay-track {
+  flex: 1; min-width: 60px; height: 3px; border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, .12); overflow: hidden;
+}
+.kc-replay-track i { display: block; height: 100%; width: 0; background: var(--red); }
+.kc-replay-time {
+  font-size: 11px; letter-spacing: .1em; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* — The interface, while the cam owns the screen —
+   Everything that reports on *your* body is about a body lying on the floor,
+   and half of it is about a moment ten seconds newer than the picture. The
+   scoreboard, the chat and the end-of-match card stay: those are things a
+   dead player may still want to open, and each is its own deliberate act. */
+body.killcam #crosshair,
+body.killcam #hitmarker,
+body.killcam #scopeOverlay,
+body.killcam #dirIndicators,
+body.killcam #floaters,
+body.killcam #matchBar,
+body.killcam #objStrip,
+body.killcam #ggStrip,
+body.killcam #hudRight,
+body.killcam #streakBanner,
+body.killcam #pointsFeed,
+body.killcam #bottomLeft,
+body.killcam #bottomRight { opacity: 0; transition: opacity .28s; }
+
 /* Portrait phones: the card and the credit stack rather than fighting for a
    line, and the letterbox thins so there is a game left to look at. */
 @media (max-width: 700px) {
   .kc-bar { height: 6vh; }
-  .kc-card { left: 5vw; right: 5vw; max-width: none; bottom: calc(6vh + 150px); }
+  .kc-card { left: 5vw; right: 5vw; max-width: none; bottom: calc(6vh + 186px); }
+  .kc-replay { left: 5vw; right: 5vw; max-width: none; bottom: calc(6vh + 152px); }
   .kc-anthem { left: 5vw; right: 5vw; bottom: calc(6vh + 82px); }
   .kc-foot { left: 5vw; right: 5vw; bottom: calc(6vh + 22px); }
   .kc-track b { max-width: none; }
+}
+
+/* ── The controller's own two pieces of interface ────────────────────────────
+ *
+ * A legend and a keyboard. Both exist only because a pad is not a mouse and
+ * not a keyboard: one says what the buttons do here, and the other is the
+ * letters, because there is no stick gesture that is a letter.
+ *
+ * Both are drawn only while `body.pad` is set, which follows the first real
+ * input from a controller rather than its arrival — a pad plugged in and never
+ * touched should change nothing on screen.
+ * ────────────────────────────────────────────────────────────────────────── */
+#padHints {
+  position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+  display: none; align-items: center; gap: 18px; z-index: 60;
+  padding: 8px 18px; border: 1px solid var(--line); border-radius: var(--r-pill);
+  background: rgba(13, 17, 24, .86); backdrop-filter: blur(8px);
+  font-size: 10.5px; letter-spacing: .12em; color: var(--muted);
+  pointer-events: none;
+}
+body.pad.pad-ui #padHints { display: flex; }
+#padHints span { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+#padHints b {
+  display: grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px;
+  border-radius: var(--r-pill); background: var(--panel-3); border: 1px solid var(--line-2);
+  color: var(--text); font-size: 10px; letter-spacing: .06em;
+}
+
+/* Every key is a real button, so the pad's own focus walker steers this and
+   this file writes no navigation of its own. See padkeyboard.js. */
+#padKeyboard {
+  position: fixed; left: 50%; bottom: 54px; transform: translateX(-50%);
+  z-index: 70; width: min(680px, 94vw); padding: 16px;
+  background: rgba(10, 14, 20, .96); border: 1px solid var(--line-2);
+  border-radius: var(--r-lg); box-shadow: 0 24px 70px rgba(0, 0, 0, .7);
+  animation: kbIn .22s cubic-bezier(.16, 1, .3, 1);
+}
+@keyframes kbIn { from { opacity: 0; transform: translate(-50%, 12px); } }
+.pk-head {
+  display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px;
+  padding-bottom: 10px; border-bottom: 1px solid var(--line);
+}
+.pk-label { font-size: 9.5px; letter-spacing: .24em; color: var(--dim); text-transform: uppercase; }
+.pk-preview {
+  flex: 1; min-width: 0; font-size: 15px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
+}
+.pk-grid { display: flex; flex-direction: column; gap: 6px; }
+.pk-row { display: flex; gap: 6px; justify-content: center; }
+.pk-key {
+  flex: 1 1 0; min-width: 0; height: 42px; padding: 0 4px; font: inherit; font-size: 15px;
+  color: var(--text); background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: var(--r-sm); cursor: pointer; transition: background .12s, border-color .12s;
+}
+.pk-key:hover { background: var(--panel-3); }
+.pk-key:focus-visible, body.pad .pk-key:focus {
+  outline: none; border-color: var(--accent); background: rgba(245, 166, 35, .16);
+}
+.pk-actions { margin-top: 8px; }
+.pk-fn { font-size: 10.5px; letter-spacing: .16em; color: var(--muted); }
+.pk-space { flex: 3 1 0; }
+.pk-done { color: var(--accent); border-color: rgba(245, 166, 35, .4); }
+#padKeyboard.shifted .pk-shift { color: var(--accent); border-color: var(--accent); }
+
+@media (max-width: 620px) {
+  #padKeyboard { padding: 10px; bottom: 46px; }
+  .pk-key { height: 36px; font-size: 13px; }
+  #padHints { gap: 10px; font-size: 9.5px; padding: 6px 12px; }
 }
 
 /* ── Developer overlays ──────────────────────────────────────────────────────
@@ -2032,6 +2146,9 @@ select, input[type=color] {
 .settings-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; align-items: start; }
 .set-group { padding: 14px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); }
 .set-group h4 { margin: 0 0 10px; font-size: 11px; letter-spacing: .22em; color: var(--accent); }
+/* The group's glyph, kept out of the heading's own text node so that the
+   translator can match the heading. See Menu.buildSettings. */
+.set-icon { font-style: normal; margin-right: 7px; letter-spacing: 0; }
 .set-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center;
   padding: 6px 0; border-top: 1px solid rgba(38,50,67,.4); }
 .set-row:first-of-type { border-top: none; }
@@ -3475,12 +3592,33 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
 .cr-standing.rejected b, .cr-standing.revoked b { color: var(--red); }
 
 /* — The four disciplines — */
+/* The status bar this page writes every message into. Sticky because half of
+   what writes to it — the anthem uploader, the brief form — is a screen and a
+   half below the top of the page. */
+.cr-msg { position: sticky; top: 0; z-index: 3; }
+
 .cr-kinds { display: grid; grid-template-columns: repeat(auto-fit, minmax(238px, 1fr)); gap: 12px; }
 .cr-kind {
   padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r);
   background: var(--panel-2);
 }
 .cr-kind.mine { border-color: var(--green); background: rgba(77, 219, 122, .07); }
+
+/* While there is an application to make, the cards *are* the discipline
+   picker: reading what one earns and choosing it were two gestures a screen
+   apart, and the select at the bottom of the form is the only thing that used
+   to decide. It still is — this moves it. */
+.cr-kinds.picking .cr-kind { cursor: pointer; transition: border-color .15s, transform .15s, box-shadow .15s; }
+.cr-kinds.picking .cr-kind:hover { border-color: var(--line-2); transform: translateY(-2px); }
+.cr-kinds.picking .cr-kind:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cr-kind.chosen {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(245, 166, 35, .35), 0 10px 26px rgba(0, 0, 0, .45);
+}
+.cr-pick {
+  display: none; margin-top: 11px; font-size: 9px; letter-spacing: .22em; color: var(--accent);
+}
+.cr-kind.chosen .cr-pick { display: block; }
 .cr-kind h5 {
   display: flex; align-items: center; gap: 8px; margin: 0 0 6px;
   font-size: 13px; letter-spacing: .16em;
@@ -3496,14 +3634,66 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
 .cr-kind li { font-size: 12px; line-height: 1.5; color: var(--text); }
 
 /* — The application, and the perks below it — */
-.cr-apply, .cr-perk { margin-top: 26px; }
+/* Each perk is its own section rather than one long column of headings: a
+   musician's page is an uploader, a card editor and a way out, and without a
+   rule between them the three read as one form. */
+.cr-apply, .cr-perk { margin-top: 26px; padding-top: 4px; border-top: 1px solid var(--line); }
 .cr-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 12px; }
-.field-note { display: block; margin-top: 4px; font-size: 11px; color: var(--dim); }
+/* The one set of actions that sits above what it acts on. */
+.cr-actions.top { margin: 0 0 12px; }
+/* ── Form fields on a panel ──────────────────────────────────────────────────
+ *
+ * `.field` was written for the modals and only ever styled as
+ * `.modal-card .field`, so the four of them on the CREATOR tab — the pitch, the
+ * discipline, the anthem trim and the whole brief form — rendered as a bare
+ * browser select and a white system textarea in the middle of a dark panel.
+ * The rule is the same one, hung off the panel instead of the card.
+ *
+ * The child combinator is load-bearing: a `.field` on that tab also *contains*
+ * the link editor and the palette, both of which have their own layout, and a
+ * descendant selector would stretch every one of their inputs to the width of
+ * the page.
+ * ────────────────────────────────────────────────────────────────────────── */
+.tab-panel .field {
+  display: flex; flex-direction: column; gap: 6px; margin: 0 0 16px;
+  font-size: 9.5px; letter-spacing: .16em; color: var(--muted);
+}
+.tab-panel .field > span { display: flex; align-items: baseline; gap: 9px; }
+.tab-panel .field > input,
+.tab-panel .field > select,
+.tab-panel .field > textarea {
+  width: 100%; padding: 10px 12px; font: inherit; font-size: 13.5px; color: var(--text);
+  letter-spacing: normal; background: var(--panel-2);
+  border: 1px solid var(--line-2); border-radius: var(--r-sm); outline: none;
+}
+.tab-panel .field > textarea { resize: vertical; min-height: 96px; line-height: 1.55; }
+.tab-panel .field > input:focus,
+.tab-panel .field > select:focus,
+.tab-panel .field > textarea:focus { border-color: var(--accent); }
+/* A range is the one input that wants no box around it. */
+.tab-panel .field > input[type=range] {
+  padding: 0; background: none; border: none; accent-color: var(--accent); cursor: pointer;
+}
+.field-count { margin-left: auto; color: var(--dim); font-variant-numeric: tabular-nums; }
 
-.cr-links { display: flex; flex-direction: column; gap: 7px; margin: 9px 0; }
-.cr-link { display: flex; align-items: center; gap: 8px; }
-.cr-link select { flex: none; width: 148px; }
-.cr-link .cr-link-handle { flex: 1; min-width: 0; }
+.field-note { display: block; margin: 4px 0 0; font-size: 11px; letter-spacing: normal;
+  color: var(--dim); line-height: 1.5; }
+
+.cr-links { display: flex; flex-direction: column; gap: 9px; margin: 9px 0; }
+/* A row on one line where there is room, and two lines where there is not:
+   148px of select plus a handle plus a button does not fit a phone, and what
+   used to happen instead was that the handle shrank to nothing. */
+.cr-link { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.cr-link select { flex: 0 1 148px; min-width: 118px; }
+.cr-link .cr-link-handle { flex: 1 1 160px; min-width: 0; }
+/* What the pair becomes, drawn by the same function the server stores. Full
+   width on its own line, so a long URL never pushes the row apart. */
+.cr-link-url {
+  flex: 1 0 100%; font-size: 11px; letter-spacing: normal; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cr-link-url:empty { display: none; }
+.cr-link-url.bad { color: var(--red); }
 .btn-icon {
   flex: none; width: 30px; height: 30px; cursor: pointer; font: 16px/1 var(--hud-font);
   color: var(--dim); background: transparent; border: 1px solid var(--line);
@@ -3552,6 +3742,7 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
 /* Off is dim, not gone: the colour is still there to be turned back on, which
    is the whole thing the first version of this got wrong. */
 .cr-swatch input[data-off] { opacity: .28; }
+.cr-swatch input:disabled { cursor: default; }
 .cr-swatch-toggle {
   position: absolute; top: -5px; right: -5px; width: 16px; height: 16px; padding: 0;
   cursor: pointer; display: grid; place-items: center;

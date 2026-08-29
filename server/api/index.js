@@ -582,6 +582,10 @@ export function createApi({ db, hub }) {
     maxPlayers: config.maxPlayersPerRoom,
     registrationOpen: config.registrationOpen,
     renameCost: config.renameCost,
+    // What the browser falls back to when it has not asked for a language this
+    // game speaks. The list of languages is the client's; this is one id out of
+    // it, and an id the client does not know is simply ignored.
+    defaultLanguage: config.defaultLanguage,
     // Only the *site* keys travel; they are public by design and the browser
     // needs them to render a widget at all.
     turnstile: {

@@ -31,6 +31,9 @@ import { api } from './api.js';
 import { sfx } from './audio.js';
 import { buildWeaponMesh, tickCosmetics } from './gunskin.js';
 import { buildWearable, outfitColors, gloveColors } from './wearables.js';
+// Only for the two sentences this file assembles out of a name and a price.
+// Everything it writes as plain text is translated where it lands — see i18n.js.
+import { tf } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, html) => {
@@ -486,7 +489,11 @@ export class Wardrobe {
         // card says the price, and clicking it is the confirmation — there is
         // no second dialogue, because there is no way to do it by accident:
         // a locked card is the only card that charges anything.
-        if (!window.confirm(`Buy ${item.name} for ${fmt(item.price)} GR?`)) return;
+        if (!await this.menu.confirm({
+          title: 'BUY IT OUTRIGHT?',
+          body: tf('{item} costs {price} GR.', { item: item.name, price: fmt(item.price) }),
+          ok: 'BUY IT',
+        })) return;
         await api.buyItem(item.id);
         sfx.ui('ok');
       }
@@ -853,7 +860,11 @@ export class Wardrobe {
           <button class="btn-primary sm" type="button">BUY</button>`);
         row.querySelector('button').addEventListener('click', async () => {
           if (!api.isAuthed) { this.menu.toastAuth('Sign in to buy on the market.'); return; }
-          if (!window.confirm(`Buy ${item.name} for ${fmt(l.price)} GR?`)) return;
+          if (!await this.menu.confirm({
+            title: 'BUY FROM THE MARKET?',
+            body: tf('{item} costs {price} GR.', { item: item.name, price: fmt(l.price) }),
+            ok: 'BUY IT',
+          })) return;
           try {
             await api.marketBuy(l.id);
             sfx.ui('ok');

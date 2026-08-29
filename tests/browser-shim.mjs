@@ -86,7 +86,11 @@ export class El {
     if (k.startsWith('data-')) this.dataset[k.slice(5).replace(/-(\w)/g, (_, c) => c.toUpperCase())] = String(v);
   }
   getAttribute(k) { return this.attributes.get(k) ?? null; }
-  removeAttribute(k) { this.attributes.delete(k); }
+  hasAttribute(k) { return this.attributes.has(k); }
+  removeAttribute(k) {
+    this.attributes.delete(k);
+    if (k.startsWith('data-')) delete this.dataset[k.slice(5).replace(/-(\w)/g, (_, c) => c.toUpperCase())];
+  }
 
   get textContent() { return this._text; }
   set textContent(v) { this._text = String(v ?? ''); this.children.length = 0; }
@@ -188,6 +192,9 @@ export class El {
   }
 
   focus() {} blur() {} click() { this.fire('click'); }
+  // No layout, so nothing to scroll — but the real methods exist on every
+  // element, and code that calls them is not doing anything unusual.
+  scrollIntoView() {} scrollBy() {} scrollTo() {}
   requestPointerLock() { return undefined; }
   getBoundingClientRect() { return { x: 0, y: 0, width: 100, height: 100, top: 0, left: 0 }; }
 

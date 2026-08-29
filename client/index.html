@@ -65,13 +65,13 @@
 
     <aside id="liveScore">
       <div class="ls-head"><span id="lsLabel">SCORE</span><b id="lsMine">0</b></div>
-      <ol id="lsRows"></ol>
+      <ol id="lsRows" data-i18n-skip></ol>
     </aside>
 
-    <div id="killfeed"></div>
+    <div id="killfeed" data-i18n-skip></div>
   </div>
 
-  <div id="streakBanner"></div>
+  <div id="streakBanner" data-i18n-skip></div>
   <div id="pointsFeed"></div>
 
   <!-- God mode is loud on purpose: nobody should be invincible by accident. -->
@@ -111,7 +111,7 @@
       </div>
     </div>
     <div class="lvl-wrap">
-      <span id="playerNameTag">Guest</span>
+      <span id="playerNameTag" data-i18n-skip>Guest</span>
       <img id="playerVerified" class="verified hidden" src="/check.png" alt="verified" width="14" height="14">
       <span class="lvl" id="playerLevel">LVL 1</span>
     </div>
@@ -120,7 +120,7 @@
 
   <!-- Chat lives in the bottom-right corner, above the ammo readout. -->
   <div id="chatPanel">
-    <div id="chatLog"></div>
+    <div id="chatLog" data-i18n-skip></div>
     <form id="chatForm" class="hidden"><input id="chatInput" maxlength="140" autocomplete="off" placeholder="Say something…"></form>
     <!-- Replaced by the HUD with the reason whenever this player may not write. -->
     <div id="chatHint">Press <kbd>Y</kbd> to chat</div>
@@ -172,17 +172,29 @@
     <div class="kc-bar bottom"></div>
 
     <div class="kc-card">
-      <span class="kc-eyebrow">ELIMINATED BY</span>
-      <h2 class="kc-name" id="kcName">—</h2>
+      <span class="kc-eyebrow" id="kcEyebrow">ELIMINATED BY</span>
+      <h2 class="kc-name" id="kcName" data-i18n-skip>—</h2>
       <div class="kc-tags" id="kcTags"></div>
       <div class="kc-facts" id="kcFacts"></div>
+    </div>
+
+    <!-- The replay's own clock, and the one thing on this screen that says
+         what you are actually looking at: not a camera circling the winner,
+         but the last ten seconds of the fight from inside their head. The
+         readout counts *down* to the death, because that is the question
+         somebody watching is asking — how long until the bit where I die. -->
+    <div class="kc-replay hidden" id="kcReplay">
+      <span class="kc-rec" aria-hidden="true"></span>
+      <span class="kc-replay-label" id="kcReplayLabel">REPLAY</span>
+      <span class="kc-replay-track"><i id="kcReplayFill"></i></span>
+      <span class="kc-replay-time" id="kcReplayTime">−10.0s</span>
     </div>
 
     <!-- The anthem credit. Absent, not empty, when the killer has no track:
          "no anthem" is the ordinary case and must not look like a failure. -->
     <div class="kc-anthem hidden" id="kcAnthem">
       <span class="kc-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
-      <span class="kc-track"><b id="kcTrack">—</b><small id="kcTrackBy">—</small></span>
+      <span class="kc-track"><b id="kcTrack" data-i18n-skip>—</b><small id="kcTrackBy">—</small></span>
     </div>
 
     <div class="kc-foot">
@@ -216,7 +228,7 @@
         <th>SCORE</th><th>K</th><th>D</th><th>A</th><th>HS</th><th>K/D</th><th>ACC</th><th>PING</th>
         <th class="c-mod hidden" id="sbModHead">CHAT</th>
         <th class="c-report hidden" id="sbReportHead">REPORT</th>
-      </tr></thead><tbody id="sbRows"></tbody></table></div>
+      </tr></thead><tbody id="sbRows" data-i18n-skip></tbody></table></div>
       <div class="sb-foot">
         <span>100 points = 1 GR</span>
         <span id="sbAdmin" class="hidden">
@@ -247,7 +259,7 @@
       <div class="me-body"><table><thead><tr>
         <th class="c-rank">#</th><th class="c-name">PLAYER</th><th>SCORE</th><th>GR</th>
         <th>K</th><th>D</th><th>A</th><th>HS</th><th>DMG</th><th>ACC</th><th>STREAK</th>
-      </tr></thead><tbody id="meRows"></tbody></table></div>
+      </tr></thead><tbody id="meRows" data-i18n-skip></tbody></table></div>
 
       <div class="me-vote hidden" id="meVote">
         <div class="mv-head">VOTE FOR THE NEXT MAP</div>
@@ -280,7 +292,7 @@
                  order and the same ink as every other place a tag is drawn.
                  This chip was the one place it was missing entirely. -->
             <span id="acClan" class="clan-tag hidden"></span>
-            <b id="acName">Guest</b>
+            <b id="acName" data-i18n-skip>Guest</b>
             <img id="acVerified" class="verified hidden" src="/check.png" alt="verified" width="15" height="15">
           </span>
           <span class="ac-meta" id="acMeta">Not signed in</span>
@@ -999,20 +1011,30 @@
 
           <div id="creatorClosed" class="profile-empty hidden">
             <h3>NOT ON THIS SERVER</h3>
-            <p>Whoever runs this server has the creator programme switched off.</p>
+            <p>Whoever runs this server has the creator programme switched off. Nothing
+               here is taken and nothing new is granted.</p>
           </div>
 
           <div id="creatorBody" class="hidden">
             <!-- Where this account stands. Drawn first because it is the one
                  thing somebody opening this tab twice is here to read. -->
             <div class="cr-standing" id="crStanding"></div>
-            <div class="form-msg hidden" id="crMsg"></div>
+            <!-- Sticky: every message on this page is written here, and the
+                 anthem uploader and the brief form are both a screen and a half
+                 further down. A status bar you have to scroll back up to read
+                 is a status bar nobody reads. -->
+            <div class="form-msg cr-msg hidden" id="crMsg"></div>
 
             <!-- The perks, per discipline. -->
             <div class="panel-head sub">
               <h4>THE FOUR DISCIPLINES</h4>
               <span class="panel-note" id="crRules">—</span>
             </div>
+            <!-- Cards, and — while there is an application to make — the
+                 control that chooses which one it is for. Reading what a
+                 discipline earns and picking it were two separate gestures a
+                 screen apart, which is how somebody ends up applying as the
+                 one the select happened to open on. -->
             <div class="cr-kinds" id="crKinds"></div>
 
             <!-- The application. Hidden once there is one standing. -->
@@ -1022,6 +1044,7 @@
               <label class="field">
                 <span>DISCIPLINE</span>
                 <select id="crKind"></select>
+                <small class="field-note">The card above lights up with the one you pick.</small>
               </label>
               <label class="field">
                 <span>WHAT DO YOU MAKE?</span>
@@ -1030,12 +1053,12 @@
                 <small class="field-note"><b id="crPitchCount">0</b> / <span id="crPitchMax">700</span></small>
               </label>
               <div class="field">
-                <span>LINKS</span>
-                <p class="panel-note">Where your work lives. Pick a platform and give the handle —
+                <span>LINKS <b class="field-count" id="crLinkCount">0 / 4</b></span>
+                <p class="field-note">Where your work lives. Pick a platform and give the handle —
                    the address is built for you, so nothing you type here becomes a URL on
                    somebody else&rsquo;s screen.</p>
                 <div class="cr-links" id="crLinks"></div>
-                <button type="button" class="btn-ghost" id="crAddLink">ADD A LINK</button>
+                <button type="button" class="btn-ghost small" id="crAddLink">ADD A LINK</button>
               </div>
               <div class="cr-actions">
                 <button type="submit" class="btn-primary" id="crSubmit">SEND IT</button>
@@ -1060,7 +1083,10 @@
                    seconds out of a longer track, chosen by its owner rather
                    than taken off the front. -->
               <div class="cr-trim hidden" id="crTrim">
-                <label class="field">
+                <!-- Hidden outright for a track that is already short enough:
+                     a disabled slider under a heading that says START AT is a
+                     control asking to be dragged and refusing to move. -->
+                <label class="field" id="crTrimPick">
                   <span>START AT <b id="crTrimAt">0.0s</b></span>
                   <input type="range" id="crTrimRange" min="0" max="100" step="0.1" value="0">
                 </label>
@@ -1079,6 +1105,9 @@
             <div class="cr-perk hidden" id="crSkinPerk">
               <div class="panel-head sub"><h4>COMMISSION A FINISH</h4>
                 <span class="panel-note" id="crSkinNote">—</span></div>
+              <div class="cr-actions top">
+                <button type="button" class="btn-ghost" id="crBriefNew">NEW BRIEF</button>
+              </div>
               <div class="cr-briefs" id="crBriefs"></div>
               <form class="cr-brief-form hidden" id="crBriefForm">
                 <label class="field"><span>NAME</span>
@@ -1096,7 +1125,6 @@
                   <button type="button" class="btn-ghost" id="crBriefCancel">CANCEL</button>
                 </div>
               </form>
-              <button type="button" class="btn-ghost" id="crBriefNew">NEW BRIEF</button>
             </div>
 
             <div class="cr-perk hidden" id="crLinksPerk">
@@ -1181,7 +1209,7 @@
               <div id="friendIncoming" class="friend-list"></div>
             </div>
 
-            <div id="friendList" class="friend-list"></div>
+            <div id="friendList" class="friend-list" data-i18n-skip></div>
 
             <div id="friendOutgoingWrap" class="friend-sent hidden">
               <h4>ASKED, NOT YET ANSWERED</h4>
@@ -1206,7 +1234,7 @@
               <button class="btn-ghost" id="btnClanRefresh" type="button">REFRESH</button>
             </div>
           </div>
-          <div id="clanList" class="clan-list"></div>
+          <div id="clanList" class="clan-list" data-i18n-skip></div>
         </section>
 
         <!-- ── Cases ────────────────────────────────────────────────── -->
@@ -1383,6 +1411,24 @@
   </div>
 </div>
 
+<!-- ── "Are you sure?" ─────────────────────────────────────────────────────
+     The browser's own `confirm()` is a window nothing but a mouse and a
+     keyboard can dismiss — so every irreversible action in the game had a door
+     a controller could open and not close. This is the same question asked in
+     the page, out of the same two buttons every other card is built from, and
+     the pad's focus walker reaches it like anything else.
+     ──────────────────────────────────────────────────────────────────────── -->
+<div id="confirmModal" class="modal hidden">
+  <div class="modal-card">
+    <h3 id="confirmTitle">ARE YOU SURE?</h3>
+    <p class="modal-note" id="confirmBody">—</p>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="confirmNo" type="button">CANCEL</button>
+      <button class="btn-primary" id="confirmYes" type="button">CONFIRM</button>
+    </div>
+  </div>
+</div>
+
 <!-- Naming a price for something you own -->
 <div id="sellModal" class="modal hidden">
   <div class="modal-card">
@@ -1541,6 +1587,21 @@
 </div>
 
 <!-- ══ Pause / in-match escape menu ═════════════════════════════════════ -->
+<!-- ── The controller legend ───────────────────────────────────────────────
+     What the buttons do *here*, drawn only once a pad has actually been used
+     and only while an interface — rather than the match — is what a press is
+     aimed at. The keyboard that goes with it is built by padkeyboard.js on its
+     first use, because most sessions never plug a controller in at all.
+     ──────────────────────────────────────────────────────────────────────── -->
+<div id="padHints" aria-hidden="true">
+  <span><b>A</b><i>Select</i></span>
+  <span><b>B</b><i>Back</i></span>
+  <span><b>Y</b><i>Search</i></span>
+  <span><b>LB/RB</b><i>Change page</i></span>
+  <span><b>LT/RT</b><i>Scroll</i></span>
+  <span><b>&#9776;</b><i>Menu</i></span>
+</div>
+
 <div id="pause" class="hidden">
   <div class="pause-card">
     <h2>PAUSED</h2>

@@ -17,7 +17,20 @@ import { buildWearable, outfitColors, gloveColors } from './wearables.js';
 import { getItem, SLOT, DEFAULT_EQUIP } from '/shared/cosmetics.js';
 import { settings } from './settings.js';
 
-const BUFFER_MS = 1200;
+/**
+ * How much snapshot history is kept, in milliseconds.
+ *
+ * Interpolation needs about a fifth of a second of it. The kill cam needs the
+ * whole ten seconds it replays, because that replay *is* this buffer read at
+ * an older timestamp — there is no second recording, no second interpolator
+ * and nothing to keep in step with this one. Two extra seconds on top absorb
+ * the gap between the death and the frame the cam starts on.
+ *
+ * The cost is one Map of eight short arrays per snapshot: at 20 Hz, twelve
+ * seconds is 240 of them, a few hundred kilobytes that never grows with the
+ * length of a match.
+ */
+const BUFFER_MS = (K.KILLCAM_SECONDS + 2) * 1000;
 /** How long a body takes to go down, settle, and fade out. */
 const DEATH_TIME = 2.2;
 const SKIN_TONES = [0xc99a72, 0x9d6a45, 0x71472c, 0xe0b593, 0x54341f];
@@ -464,6 +477,18 @@ export class EntityManager {
      * which is exactly what a first-person view exists to avoid.
      */
     this.hidden = 0;
+    /**
+     * The local player's own body, drawn only by the kill cam's replay.
+     *
+     * A snapshot never carries your own entry — the server cuts it out, because
+     * you are predicting it yourself — so the replay would otherwise show the
+     * killer's ten seconds with the one person they were shooting at missing
+     * from them. `addSelf` builds the body and `pushSnapshot` fills in the
+     * entry from what this client already knew about itself.
+     */
+    this.selfId = 0;
+    /** True while `update` is being pointed at a moment in the past. */
+    this.replaying = false;
     /** Draw every body over the world rather than behind it — spectators only. */
     this.xray = false;
     this._fwd = new THREE.Vector3();
@@ -484,6 +509,8 @@ export class EntityManager {
   reset() {
     for (const id of [...this.players.keys()]) this.removePlayer(id);
     this.buffer.length = 0;
+    this.selfId = 0;
+    this.replaying = false;
   }
 
   /* ── Membership ────────────────────────────────────────────────────────── */
@@ -508,6 +535,26 @@ export class EntityManager {
       swingT: 0, wasAlive: false, lean: 0,
     });
     if (this.xray) this._applyXray(this.players.get(profile.id), true);
+  }
+
+  /**
+   * Builds a body for the local player, for the kill cam's replay to show.
+   *
+   * `addPlayer` refuses this on purpose — a body standing inside your own
+   * camera is the one thing a first-person view exists not to draw — so this
+   * is a second door with one difference behind it: the entity is marked
+   * `isSelf` and every draw path skips it unless a replay is running.
+   */
+  addSelf(profile) {
+    if (!profile?.id) return;
+    this.selfId = profile.id;
+    if (this.players.has(profile.id)) return;
+    const wasLocal = this.localId;
+    this.localId = 0;                    // …so `addPlayer` does not refuse it
+    this.addPlayer(profile);
+    this.localId = wasLocal;
+    const e = this.players.get(profile.id);
+    if (e) { e.isSelf = true; e.group.visible = false; }
   }
 
   removePlayer(id) {
@@ -605,9 +652,17 @@ export class EntityManager {
 
   /* ── Snapshots ─────────────────────────────────────────────────────────── */
 
-  pushSnapshot(t, entries) {
+  /**
+   * @param {number} t server clock, ms
+   * @param {Array<Array<number>>} entries one per player, minus the recipient
+   * @param {Array<number>|null} self the recipient's own entry, in the same
+   *   shape, so the replay has a body for them. Built by the game layer, which
+   *   is the only thing that knows this client's own view angles.
+   */
+  pushSnapshot(t, entries, self = null) {
     const map = new Map();
     for (const e of entries) map.set(e[0], e);
+    if (self && this.selfId) map.set(this.selfId, self);
     this.buffer.push({ t, entries: map });
     if (this.buffer.length > 2 && this.buffer[this.buffer.length - 1].t < this.buffer[this.buffer.length - 2].t) {
       this.buffer.sort((a, b) => a.t - b.t);        // out-of-order packet
@@ -617,6 +672,77 @@ export class EntityManager {
   }
 
   get latestTime() { return this.buffer.length ? this.buffer[this.buffer.length - 1].t : 0; }
+  /** The oldest moment the buffer can still be asked about. */
+  get earliestTime() { return this.buffer.length ? this.buffer[0].t : 0; }
+
+  /**
+   * The pair of frames `t` falls between, and how far it is between them.
+   *
+   * A binary search rather than the scan this used to be. With a fifth of a
+   * second of history the scan was two comparisons; with the twelve seconds
+   * the kill cam needs it is two hundred and forty of them on every frame of a
+   * replay, and the answer is the same one.
+   *
+   * Both ends clamp to a single frame rather than interpolating across the
+   * whole buffer, which is what the old scan did when asked about a moment
+   * before the first frame it held — and what put every body on the map at
+   * wherever they had been the moment the match started.
+   */
+  _frames(t) {
+    const buf = this.buffer;
+    if (t <= buf[0].t) return [buf[0], buf[0], 0];
+    const last = buf[buf.length - 1];
+    if (t >= last.t) return [last, last, 0];
+    let lo = 0, hi = buf.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (buf[mid].t <= t) lo = mid; else hi = mid;
+    }
+    const older = buf[lo], newer = buf[hi];
+    const span = newer.t - older.t;
+    return [older, newer, span > 0 ? Math.max(0, Math.min(1, (t - older.t) / span)) : 0];
+  }
+
+  /**
+   * One player's interpolated state at a moment in the buffer, or null.
+   *
+   * Read by the kill cam, which needs the killer's eye and view angles at the
+   * moment being replayed and must not wait for `update` to have run — the
+   * camera is placed before the bodies are, every frame.
+   */
+  sampleAt(id, t) {
+    if (!this.buffer.length) return null;
+    const [older, newer, alpha] = this._frames(t);
+    const a = older.entries.get(id);
+    if (!a) return null;
+    const b = newer.entries.get(id) ?? a;
+    const crouched = (b[6] & 12) !== 0;
+    return {
+      x: lerp(a[1], b[1], alpha), y: lerp(a[2], b[2], alpha), z: lerp(a[3], b[3], alpha),
+      yaw: lerpAngle(a[4], b[4], alpha), pitch: lerp(a[5], b[5], alpha),
+      height: crouched ? K.PLAYER_CROUCH_HEIGHT : K.PLAYER_HEIGHT,
+      alive: (b[6] & 1) !== 0,
+    };
+  }
+
+  /**
+   * Re-seeds every body's alive flag from `t` without drawing anything.
+   *
+   * Called when a replay hands the scene back to the present. `update` reads a
+   * death out of the *transition* from alive to not, and a jump of ten seconds
+   * in either direction is not a transition — without this, everybody who died
+   * during the replayed window would fall over a second time on the frame the
+   * cam ended.
+   */
+  syncAlive(t) {
+    if (!this.buffer.length) return;
+    const [, newer] = this._frames(t);
+    for (const e of this.players.values()) {
+      const entry = newer.entries.get(e.id);
+      e.wasAlive = !!entry && (entry[6] & 1) !== 0;
+      e.deathT = 0;
+    }
+  }
 
   /**
    * Interpolates every remote player to `renderTime` (ms, server clock).
@@ -627,16 +753,7 @@ export class EntityManager {
     if (this.buffer.length === 0) return;
     const { camera, world, nowSec = 0 } = view;
 
-    let older = this.buffer[0], newer = this.buffer[this.buffer.length - 1];
-    for (let i = this.buffer.length - 1; i >= 0; i--) {
-      if (this.buffer[i].t <= renderTime) {
-        older = this.buffer[i];
-        newer = this.buffer[Math.min(i + 1, this.buffer.length - 1)];
-        break;
-      }
-    }
-    const span = newer.t - older.t;
-    const alpha = span > 0 ? Math.max(0, Math.min(1, (renderTime - older.t) / span)) : 0;
+    const [older, newer, alpha] = this._frames(renderTime);
 
     if (camera) {
       camera.getWorldDirection(this._fwd);
@@ -645,6 +762,10 @@ export class EntityManager {
     }
 
     for (const e of this.players.values()) {
+      // Your own body exists for the replay and for nothing else: outside one
+      // it is a jaw and a shoulder inside the camera, so it is not posed, not
+      // ray-cast for visibility and not drawn.
+      if (e.isSelf && !this.replaying) { e.group.visible = false; e.visible = false; continue; }
       const a = older.entries.get(e.id);
       const b = newer.entries.get(e.id) ?? a;
       if (!a) { e.group.visible = false; e.visible = false; continue; }
@@ -870,7 +991,7 @@ export class EntityManager {
   _updateTag(e, camera) {
     // A hidden body is the one the camera is standing inside; its own plate
     // would be a wall of text across the middle of the view.
-    const show = settings.nametags && e.visible && !!camera && e.id !== this.hidden;
+    const show = settings.nametags && e.visible && !!camera && e.id !== this.hidden && !e.isSelf;
     e.tag.sprite.visible = show;
     if (!show) return;
     const d = e.pos.distanceTo(camera.position);

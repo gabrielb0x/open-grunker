@@ -20,6 +20,38 @@ import * as keys from './keybinds.js';
 import { sfx, initAudio, loadAnthem, playAnthem, stopAnthem } from './audio.js';
 import { icon } from './icons.js';
 import { avatarAccent, nameAccent } from './avatarcolor.js';
+import { PadKeyboard } from './padkeyboard.js';
+import * as i18n from './i18n.js';
+
+/**
+ * Clickable things the browser's own focus order cannot see.
+ *
+ * Half this interface is cards — a class, a server, a finish, a case, a
+ * discipline — and every one of them is a `div` with a click handler, because
+ * each contains a heading and a list and wrapping that in a `<button>` is
+ * markup a screen reader reads as one very long label. A mouse presses them; a
+ * pad, a keyboard and a screen reader could not reach them at all. `_padTargets`
+ * gives anything matching this list `tabindex="-1"` on the way past, which is
+ * programmatic focus without putting a hundred cards into the Tab order.
+ */
+const PAD_CARDS = '.class-card, .server-row, .skin-card, .case-card, .listing, '
+  + '.friend-row, .clan-row, .cr-kind, [role="button"]';
+
+/** Input types the on-screen keyboard is the right answer for. */
+const PAD_TEXT_TYPES = new Set(['text', 'search', 'email', 'password', 'number', 'tel', 'url', '']);
+
+/**
+ * What left and right walk a colour input through.
+ *
+ * A colour picker is an operating-system window, and there is no pad gesture
+ * that opens one. Twelve is not every colour; it is enough of them that a
+ * crosshair can be made a colour somebody chose rather than the one it shipped
+ * with, which is the whole of what this control is for.
+ */
+const PAD_COLORS = [
+  '#ffffff', '#000000', '#f5a623', '#ff7a2f', '#ff4d4d', '#ff5ea8',
+  '#b07cff', '#4da6ff', '#33e0e0', '#4ddb7a', '#c8ff3d', '#ffe066',
+];
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, html) => {
@@ -114,6 +146,16 @@ export class Menu {
     this._bindCardEditor();
     this._bindPrivacy();
     /**
+     * The letters, for the one input device that cannot spell.
+     *
+     * Built on its first use rather than here — most sessions never plug a
+     * controller in — and it is the pad's own focus walker that steers it, so
+     * opening it is the whole of the integration. See padkeyboard.js.
+     */
+    // No `onClose`: closing it hands focus back to the field it was typing
+    // into, which is where the player was and where the next press should land.
+    this.padKeyboard = new PadKeyboard({ sound: (kind) => sfx.ui(kind) });
+    /**
      * The four wardrobe pages.
      *
      * Bound after the panels exist and before the first class is drawn: it
@@ -164,6 +206,10 @@ export class Menu {
     // handler is switched off and would never see the key.
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
+      // A question sits over everything, including the card below.
+      if (this.confirmOpen) {
+        e.preventDefault(); e.stopPropagation(); this._confirmClose?.(); return;
+      }
       // The player card sits over the panel, so it is what Escape closes first.
       if (this.playerCardOpen) { e.preventDefault(); e.stopPropagation(); this.closePlayerCard(); return; }
       if (!this.panelOpen) return;
@@ -176,6 +222,62 @@ export class Menu {
       this.closePanel();
     });
   }
+
+  /**
+   * "Are you sure?", asked in the page rather than by the browser.
+   *
+   * `window.confirm()` opens an operating-system window, and there is no
+   * controller gesture that dismisses one — so every irreversible action in
+   * this game had a door a pad could open and then not close. This is the same
+   * question in the same two buttons every other card is built from, which
+   * means the pad's focus walker reaches it without knowing it exists.
+   *
+   * Returns a promise rather than taking a callback because every caller was
+   * already `await`-ing the thing it guards, so the shape of the call site does
+   * not change: `if (!await this.confirm(…)) return;`.
+   *
+   * @param {{title?:string, body:string, ok?:string, cancel?:string, danger?:boolean}} o
+   * @returns {Promise<boolean>}
+   */
+  confirm({ title = 'ARE YOU SURE?', body, ok = 'CONFIRM', cancel = 'CANCEL', danger = false }) {
+    const modal = $('confirmModal');
+    if (!modal) return Promise.resolve(window.confirm(body));
+    const yes = $('confirmYes');
+    const no = $('confirmNo');
+    $('confirmTitle').textContent = title;
+    $('confirmBody').textContent = body;
+    yes.textContent = ok;
+    no.textContent = cancel;
+    yes.className = danger ? 'btn-danger' : 'btn-primary';
+    modal.classList.remove('hidden');
+    // Focus starts on the safe half. A pad or a keyboard that answers by
+    // reflex answers "no", which is the right way round for a question asked
+    // in front of something that cannot be undone.
+    try { no.focus({ preventScroll: true }); } catch { /* not focusable yet */ }
+
+    return new Promise((resolve) => {
+      const done = (answer) => {
+        modal.classList.add('hidden');
+        yes.removeEventListener('click', onYes);
+        no.removeEventListener('click', onNo);
+        modal.removeEventListener('mousedown', onOutside);
+        this._confirmClose = null;
+        sfx.ui(answer ? 'ok' : 'click');
+        resolve(answer);
+      };
+      const onYes = () => done(true);
+      const onNo = () => done(false);
+      const onOutside = (e) => { if (e.target === modal) done(false); };
+      yes.addEventListener('click', onYes);
+      no.addEventListener('click', onNo);
+      modal.addEventListener('mousedown', onOutside);
+      // Escape and the pad's B both answer no, through the one door.
+      this._confirmClose = () => done(false);
+    });
+  }
+
+  /** True while the question is up. Read by Escape and by the pad. */
+  get confirmOpen() { return $('confirmModal')?.classList.contains('hidden') === false; }
 
   get panelOpen() { return !$('menuPanel').classList.contains('hidden'); }
   openPanel() { $('menuPanel').classList.remove('hidden'); }
@@ -444,12 +546,103 @@ export class Menu {
    * has to be re-declared as "pad-reachable". A pad you can play with but not
    * press PLAY with is not controller support.
    *
-   * @param {'up'|'down'|'left'|'right'|'accept'|'back'} dir
+   * @param {'up'|'down'|'left'|'right'|'accept'|'back'|'search'
+   *         |'tab-prev'|'tab-next'|'page-up'|'page-down'} dir
    */
   padNav(dir) {
     if (dir === 'accept') return void this._padActivate();
     if (dir === 'back') return void this._padBack();
+    if (dir === 'search') return void this._padSearch();
+    if (dir === 'tab-prev' || dir === 'tab-next') return void this._padTab(dir === 'tab-next' ? 1 : -1);
+    if (dir === 'page-up' || dir === 'page-down') return void this._padPage(dir === 'page-down' ? 1 : -1);
+    // A slider, a dropdown or a colour is a *value*, not a place: with one of
+    // them focused, left and right change what it says rather than walking off
+    // it. Without this a pad could reach every setting in the game and move
+    // exactly none of them.
+    if ((dir === 'left' || dir === 'right') && this._padAdjust(dir === 'right' ? 1 : -1)) return;
     this._padMove(dir);
+  }
+
+  /**
+   * Left/right on a focused widget. True when it was one.
+   *
+   * The event is dispatched rather than the handler called, because every one
+   * of these controls is already wired to `input`/`change` from the mouse path
+   * — a pad that called the handlers directly would be a second copy of the
+   * settings panel that could fall out of step with the first.
+   */
+  _padAdjust(sign) {
+    const el = document.activeElement;
+    if (!el || el.disabled) return false;
+
+    if (el.tagName === 'INPUT' && el.type === 'range') {
+      const step = Number(el.step) || 1;
+      const min = Number(el.min), max = Number(el.max);
+      const next = Math.min(max, Math.max(min, (Number(el.value) || 0) + step * sign));
+      if (next === Number(el.value)) return true;               // already at the end
+      el.value = String(next);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      sfx.ui('hover');
+      return true;
+    }
+
+    if (el.tagName === 'SELECT') {
+      const n = el.options.length;
+      if (!n) return true;
+      el.selectedIndex = (el.selectedIndex + sign + n) % n;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      sfx.ui();
+      return true;
+    }
+
+    if (el.tagName === 'INPUT' && el.type === 'color') {
+      // A colour picker is a native window nothing on a pad can reach, so the
+      // stick walks a short list instead. Not every colour — enough of them
+      // that a crosshair can be made a colour somebody wanted.
+      const i = PAD_COLORS.indexOf(el.value.toLowerCase());
+      el.value = PAD_COLORS[(i < 0 ? 0 : i + sign + PAD_COLORS.length) % PAD_COLORS.length];
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      sfx.ui();
+      return true;
+    }
+
+    return false;
+  }
+
+  /** LB / RB: the rail entry either side of this one, skipping hidden ones. */
+  _padTab(sign) {
+    const tabs = [...document.querySelectorAll('#panelRail .tab')]
+      .filter((t) => !t.classList.contains('hidden') && t.offsetParent !== null);
+    if (!tabs.length) return;
+    this.openPanel();
+    const at = tabs.findIndex((t) => t.classList.contains('active'));
+    const next = tabs[((at < 0 ? 0 : at) + sign + tabs.length) % tabs.length];
+    this.selectTab(next);
+    next.scrollIntoView({ block: 'nearest' });
+    sfx.ui();
+  }
+
+  /** LT / RT: a page of whatever is scrolling under the pad right now. */
+  _padPage(sign) {
+    const scope = this._padScope();
+    const scroller = scope.querySelector('.panel-scroll')
+      ?? scope.closest('.panel-scroll')
+      ?? scope;
+    if (!scroller || scroller.scrollHeight <= scroller.clientHeight + 4) return;
+    scroller.scrollBy({ top: sign * scroller.clientHeight * 0.85, behavior: 'smooth' });
+    sfx.ui('hover');
+  }
+
+  /** Y: the filter box over the rail, which is the fastest way across twenty tabs. */
+  _padSearch() {
+    const box = $('tabSearch');
+    if (!box) return;
+    this.openPanel();
+    box.focus();
+    sfx.ui();
+    this.padKeyboard?.open(box);
   }
 
   /**
@@ -462,7 +655,8 @@ export class Menu {
    * looking at, so the loop slows the backdrop down instead. See `Game.loop`.
    */
   get coveredByPanel() {
-    for (const id of ['reportCard', 'playerCard', 'classModal', 'authModal', 'menuPanel']) {
+    if (this.padKeyboard?.open_) return true;
+    for (const id of ['confirmModal', 'reportCard', 'playerCard', 'classModal', 'authModal', 'menuPanel']) {
       const el = $(id);
       if (el && !el.classList.contains('hidden')) return true;
     }
@@ -471,7 +665,20 @@ export class Menu {
 
   /** The surface a pad is currently inside: the topmost open thing. */
   _padScope() {
-    for (const id of ['reportCard', 'playerCard', 'classModal', 'authModal']) {
+    // The on-screen keyboard is over everything, including the modal that
+    // opened it, so a stick pushed while it is up moves between its keys and
+    // nothing else.
+    const keys = this.padKeyboard?.element;
+    if (keys && !keys.classList.contains('hidden')) return keys;
+    /*
+     * Topmost first, and three of these live in the HUD rather than in the
+     * menu: the pause card, the end-of-match vote and the scoreboard's report
+     * buttons are all things a player is looking at *during* a match, and a
+     * scope that stopped at the menu left a pad able to open every one of them
+     * and press nothing on any of them.
+     */
+    for (const id of ['confirmModal', 'reportCard', 'playerCard', 'classModal', 'authModal',
+      'pause', 'matchEnd', 'scoreboard']) {
       const el = $(id);
       if (el && !el.classList.contains('hidden')) return el;
     }
@@ -480,15 +687,26 @@ export class Menu {
     return this.root;
   }
 
-  /** Everything inside `scope` a person could actually click right now. */
+  /**
+   * Everything inside `scope` a person could actually click right now.
+   *
+   * Half this interface is cards: a class, a server, a finish, a case. Every
+   * one of them is a `div` with a click handler, which a mouse presses and the
+   * browser's own focus order cannot see — so a pad could walk the buttons
+   * around them and never reach the thing the page is *for*. They are made
+   * focusable here, lazily and at `-1`, which is programmatic focus without
+   * putting a hundred cards into the keyboard's tab order.
+   */
   _padTargets(scope) {
     const out = [];
-    const sel = 'button:not([disabled]), a[href], select, input:not([type="hidden"]):not([disabled]), '
-      + '[tabindex]:not([tabindex="-1"])';
+    const sel = 'button:not([disabled]), a[href], select, textarea:not([disabled]), '
+      + 'input:not([type="hidden"]):not([disabled]), [tabindex]:not([tabindex="-1"]), '
+      + PAD_CARDS;
     for (const el of scope.querySelectorAll(sel)) {
       if (el.offsetParent === null) continue;              // hidden or detached
       const r = el.getBoundingClientRect();
       if (r.width < 4 || r.height < 4) continue;
+      if (!el.hasAttribute('tabindex') && el.matches(PAD_CARDS)) el.tabIndex = -1;
       out.push(el);
     }
     return out;
@@ -497,13 +715,25 @@ export class Menu {
   _padActivate() {
     const scope = this._padScope();
     const el = document.activeElement;
-    if (el && el !== document.body && scope.contains(el)) {
+    if (!el || el === document.body || !scope.contains(el)) { this._padMove('down'); return; }
+
+    /*
+     * A is "do the obvious thing to this", and what that is depends on what it
+     * is. Focusing a control and calling it activated — which is what this used
+     * to do for every input and every select — is the one answer that is never
+     * right: a native dropdown cannot be opened by a pad and a text field
+     * cannot be typed into by one, so both simply sat there looking focused.
+     */
+    if (el.tagName === 'SELECT') { this._padAdjust(1); return; }
+    if (el.tagName === 'INPUT' && PAD_TEXT_TYPES.has(el.type)) {
       sfx.ui();
-      if (el.tagName === 'INPUT' || el.tagName === 'SELECT') el.focus();
-      else el.click();
+      this.padKeyboard?.open(el);
       return;
     }
-    this._padMove('down');
+    if (el.tagName === 'TEXTAREA') { sfx.ui(); this.padKeyboard?.open(el); return; }
+    if (el.tagName === 'INPUT' && el.type === 'range') { this._padAdjust(1); return; }
+    sfx.ui();
+    el.click();
   }
 
   /**
@@ -513,6 +743,8 @@ export class Menu {
    */
   _padBack() {
     sfx.ui();
+    if (this.padKeyboard?.close(false)) return;
+    if (this.confirmOpen) { this._confirmClose?.(); return; }
     for (const [id, close] of [
       ['reportCard', () => $('reportCancel')?.click()],
       ['playerCard', () => this.closePlayerCard()],
@@ -773,6 +1005,36 @@ export class Menu {
     note.textContent = `A ${rules.tagMin}–${rules.tagMax} character tag, drawn in front of your `
       + `name everywhere it appears. Joining needs level ${rules.joinLevel}; founding one needs `
       + `level ${rules.createLevel} and ${fmtNum(rules.createCost)} GR.`;
+  }
+
+  /**
+   * CREATORS_ENABLED, as far as the interface is concerned.
+   *
+   * The routes already refuse everything when an operator turns the programme
+   * off; what was left was a rail entry leading to a page whose every button
+   * answered 403, which is the interface advertising something this server
+   * does not do. The entry goes the same way the DEVELOPER one does — hidden
+   * *and* marked locked, because the search box must not be able to filter a
+   * hidden entry back into view.
+   */
+  applyCreatorRules(rules) {
+    this.creatorRules = rules ?? null;
+    const on = rules ? rules.enabled !== false : true;
+    const tab = document.querySelector('.tab[data-tab="creator"]');
+    if (tab) {
+      tab.dataset.locked = on ? '0' : '1';
+      tab.classList.toggle('hidden', !on);
+    }
+    // Somebody standing on the page when it closes is moved somewhere that
+    // still exists rather than left reading a dead one.
+    if (!on && document.querySelector('.tab-panel[data-panel="creator"].active')) {
+      this.openTab('settings');
+    }
+    if (!on) {
+      $('creatorSignedOut')?.classList.add('hidden');
+      $('creatorBody')?.classList.add('hidden');
+      $('creatorClosed')?.classList.remove('hidden');
+    }
   }
 
   /* ── Friends ───────────────────────────────────────────────────────────
@@ -1341,8 +1603,22 @@ export class Menu {
       if (!link) return;
       let host;
       try { host = new URL(link.href).host; } catch { e.preventDefault(); return; }
-      if (window.confirm(`Leave Open Grunker for ${host}?`)) return;
+      /*
+       * Always prevented, then opened by hand if the answer is yes.
+       *
+       * The question is asynchronous now and `preventDefault` is not: letting
+       * the navigation start while the card is still on screen would be the
+       * browser leaving before anybody answered.
+       */
       e.preventDefault();
+      const href = link.href;
+      this.confirm({
+        title: 'LEAVING OPEN GRUNKER',
+        body: i18n.tf('This link goes to {host}. Open it?', { host }),
+        ok: 'OPEN IT',
+      }).then((yes) => {
+        if (yes) window.open(href, '_blank', 'noopener,noreferrer');
+      });
     });
     // One listener on the card rather than one per button: the card is rebuilt
     // from scratch after every action it offers.
@@ -1612,7 +1888,11 @@ export class Menu {
     form.innerHTML = '';
 
     for (const group of SCHEMA) {
-      const box = el('div', 'set-group', `<h4>${group.icon ? `${group.icon} ` : ''}${escapeHtml(group.group)}</h4>`);
+      // The icon is its own element rather than a character glued to the front
+      // of the heading: the translator matches whole text nodes, and "🎯 Aim"
+      // is not a phrase anybody wrote a translation for.
+      const box = el('div', 'set-group',
+        `<h4>${group.icon ? `<i class="set-icon">${group.icon}</i>` : ''}${escapeHtml(group.group)}</h4>`);
       for (const item of group.items) {
         const row = el('div', 'set-row');
         row.appendChild(el('label', null,
@@ -1680,7 +1960,7 @@ export class Menu {
       form.appendChild(box);
     }
 
-    const actions = el('div', 'set-group', '<h4>💾 Backup & sync</h4>');
+    const actions = el('div', 'set-group', '<h4><i class="set-icon">💾</i>Backup &amp; sync</h4>');
     actions.appendChild(el('p', 'set-note',
       'Everything here is saved in this browser as you change it — no account needed. '
       + 'Signing in only copies it between devices.'));
@@ -1980,6 +2260,11 @@ export class Menu {
     $('renameCost').textContent = this.meta.renameCost ?? K.RENAME_COST;
     this.applyAvatarPolicy(this.meta.avatars);
     this.applyClanRules(this.meta.clans);
+    this.applyCreatorRules(this.meta.creators);
+    // The operator's own default, for a server run for one country. It only
+    // ever applies to somebody whose browser has not already asked for a
+    // language this game speaks — see i18n.init.
+    i18n.init({ serverDefault: this.meta.defaultLanguage ?? null });
     const label = $('authForm').querySelector('.reg-only small');
     if (label) {
       label.textContent = this.meta.emailVerification?.required
@@ -3508,16 +3793,33 @@ export class Menu {
 
     // The application.
     $('crApplyForm')?.addEventListener('submit', (e) => { e.preventDefault(); this.submitCreatorApplication(); });
-    $('crAddLink')?.addEventListener('click', () => { sfx.ui(); this.addCreatorLinkRow('crLinks'); });
+    $('crAddLink')?.addEventListener('click', () => {
+      sfx.ui();
+      this.addCreatorLinkRow('crLinks');
+      this.syncCreatorLinks();
+    });
     $('crPitch')?.addEventListener('input', () => {
       $('crPitchCount').textContent = String($('crPitch').value.length);
+    });
+    // The select stays the value that is sent; the cards are a second way to
+    // move it, so both have to end up looking like the same choice.
+    $('crKind')?.addEventListener('change', () => this.markCreatorKind());
+    $('crKinds')?.addEventListener('click', (e) => this._pickCreatorKind(e.target));
+    $('crKinds')?.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      this._pickCreatorKind(e.target);
     });
 
     // Links on an approved card. Deliberately a separate editor from the one in
     // the application: the first is part of a pitch and the second is what
     // strangers see, and editing one must not quietly rewrite the other until
     // SAVE is pressed.
-    $('crAddCardLink')?.addEventListener('click', () => { sfx.ui(); this.addCreatorLinkRow('crCardLinks'); });
+    $('crAddCardLink')?.addEventListener('click', () => {
+      sfx.ui();
+      this.addCreatorLinkRow('crCardLinks');
+      this.syncCreatorLinks('crCardLinks', 'crAddCardLink', null);
+    });
     $('crSaveLinks')?.addEventListener('click', () => this.saveCreatorLinks());
 
     $('crResign')?.addEventListener('click', () => this.resignCreator());
@@ -3530,7 +3832,10 @@ export class Menu {
       const drop = e.target.closest('[data-drop-link]');
       if (drop) {
         sfx.ui();
+        const host = drop.closest('.cr-links');
         drop.closest('.cr-link')?.remove();
+        if (host?.id === 'crLinks') this.syncCreatorLinks();
+        else this.syncCreatorLinks('crCardLinks', 'crAddCardLink', null);
         return;
       }
       const withdraw = e.target.closest('[data-withdraw-brief]');
@@ -3538,15 +3843,36 @@ export class Menu {
     });
   }
 
+  /** A card in the catalogue was pressed: move the select to it. */
+  _pickCreatorKind(node) {
+    const card = node?.closest?.('.cr-kinds.picking .cr-kind');
+    const select = $('crKind');
+    if (!card || !select || !card.dataset.kind) return;
+    select.value = card.dataset.kind;
+    this.markCreatorKind();
+    sfx.ui();
+  }
+
   crNote(text, kind = '') {
     const el = $('crMsg');
     if (!el) return;
     el.textContent = text || '';
-    el.className = `form-msg${text ? '' : ' hidden'}${kind ? ` ${kind}` : ''}`;
+    el.className = `form-msg cr-msg${text ? '' : ' hidden'}${kind ? ` ${kind}` : ''}`;
+    // The bar lives at the top of the page and half of what writes to it — the
+    // anthem uploader, the brief form — is a screen and a half further down.
+    // It is sticky, so this only has to bring it back into the scroller when
+    // the page is scrolled past it entirely.
+    if (text) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
   /** Pulls the whole page's state in one request and redraws. */
   async refreshCreator({ quiet = false } = {}) {
+    // A closed programme outranks everything else on this page: there is no
+    // point offering to sign in for something this server does not do.
+    if (this.creatorRules && this.creatorRules.enabled === false) {
+      this.applyCreatorRules(this.creatorRules);
+      return;
+    }
     const signedOut = !api.isAuthed;
     $('creatorSignedOut')?.classList.toggle('hidden', !signedOut);
     $('creatorBody')?.classList.toggle('hidden', signedOut);
@@ -3591,17 +3917,28 @@ export class Menu {
     const showForm = !creator || creator.status === 'rejected' || creator.status === 'revoked';
     form?.classList.toggle('hidden', !showForm);
     if (showForm) {
+      const pitch = $('crPitch');
       $('crPitchMax').textContent = String(rules.pitchMax);
+      if (pitch) {
+        pitch.maxLength = rules.pitchMax;
+        // Redrawing the page does not empty the box, so the counter under it
+        // has to be re-read rather than left saying whatever it last said.
+        $('crPitchCount').textContent = String(pitch.value.length);
+      }
       const select = $('crKind');
       if (select && !select.options.length) {
         select.innerHTML = rules.kinds
           .map((k) => `<option value="${escapeHtml(k.id)}">${escapeHtml(k.name)}</option>`).join('');
       }
       if (!$('crLinks').children.length) this.addCreatorLinkRow('crLinks');
+      this.syncCreatorLinks();
       const btn = $('crSubmit');
       btn.disabled = !apply.can;
       btn.textContent = apply.can ? 'SEND IT' : (apply.why ?? 'NOT YET').toUpperCase();
     }
+    // The catalogue is redrawn after the form so it can mark the discipline the
+    // select is actually sitting on.
+    this.markCreatorKind();
 
     const grants = creator?.status === 'approved' ? (creator.grants ?? []) : [];
     $('crAnthemPerk')?.classList.toggle('hidden', !grants.includes('anthem'));
@@ -3638,18 +3975,63 @@ export class Menu {
       + `<span>${escapeHtml(note)}</span></div>`;
   }
 
-  /** The four cards. The one this account holds is marked; the rest are read. */
+  /**
+   * The four cards. The one this account holds is marked; the rest are read.
+   *
+   * While there is an application to make they are also the control that picks
+   * which discipline it is for — the select below stays, and stays the value
+   * that is sent, but choosing a discipline and reading what it earns used to
+   * be two gestures a screen apart, which is how somebody applies as whichever
+   * one the select happened to open on.
+   */
   renderCreatorKinds(rules, creator) {
     const el = $('crKinds');
     if (!el) return;
+    const picking = !creator || creator.status === 'rejected' || creator.status === 'revoked';
+    el.classList.toggle('picking', picking);
     el.innerHTML = rules.kinds.map((kind) => {
       const mine = creator?.status === 'approved' && creator.kind === kind.id;
-      return `<article class="cr-kind${mine ? ' mine' : ''}">
+      // `tabindex` rather than a button: it is a card with a list in it, and a
+      // button wrapping a list is markup a screen reader reads as one long
+      // label. This makes it reachable by keyboard and by controller, which
+      // between them is what "clickable" has to mean.
+      return `<article class="cr-kind${mine ? ' mine' : ''}" data-kind="${escapeHtml(kind.id)}"
+               ${picking ? 'tabindex="0" role="button"' : ''}>
         <h5>${icon(kind.icon)}${escapeHtml(kind.name)}${mine ? '<i>YOURS</i>' : ''}</h5>
         <p class="cr-blurb">${escapeHtml(kind.blurb)}</p>
         <ul>${kind.perks.map((p) => `<li>${escapeHtml(p)}</li>`).join('')}</ul>
+        ${picking ? '<span class="cr-pick">APPLYING AS THIS</span>' : ''}
       </article>`;
     }).join('');
+  }
+
+  /** Lights the card the discipline select is sitting on. */
+  markCreatorKind() {
+    const want = $('crKind')?.value;
+    for (const card of document.querySelectorAll('.cr-kinds.picking .cr-kind')) {
+      card.classList.toggle('chosen', card.dataset.kind === want);
+    }
+  }
+
+  /**
+   * The link counter, and the button that stops promising a row it will refuse.
+   *
+   * `addCreatorLinkRow` already turned the limit away with a message; a full
+   * editor now says so before anybody presses anything, which is the difference
+   * between a rule and an error.
+   */
+  syncCreatorLinks(hostId = 'crLinks', buttonId = 'crAddLink', countId = 'crLinkCount') {
+    const host = $(hostId);
+    const max = this.creatorState?.rules?.linksMax ?? 0;
+    if (!host || !max) return;
+    const n = host.children.length;
+    const count = $(countId);
+    if (count) count.textContent = `${n} / ${max}`;
+    const btn = $(buttonId);
+    if (btn) {
+      btn.disabled = n >= max;
+      btn.textContent = n >= max ? `${max} LINKS IS THE LIMIT` : 'ADD A LINK';
+    }
   }
 
   /* ── The link editor ─────────────────────────────────────────────────────
@@ -3702,9 +4084,23 @@ export class Menu {
     drop.className = 'btn-icon';
     drop.dataset.dropLink = '';
     drop.setAttribute('aria-label', 'Remove');
+    drop.title = 'Remove this link';
     drop.textContent = '\u00d7';
 
-    row.append(select, input, drop);
+    /*
+     * What the pair actually becomes.
+     *
+     * The paragraph above the editor promises that the address is built from
+     * the platform and the handle rather than typed — but until it is drawn,
+     * that promise is a sentence somebody has to take on trust while looking at
+     * a box that behaves exactly like a URL field. `creatorLinkUrl` is the same
+     * function the server builds the stored address with, so this is the real
+     * answer and not an illustration of one.
+     */
+    const preview = document.createElement('small');
+    preview.className = 'cr-link-url';
+
+    row.append(select, input, drop, preview);
     host.appendChild(row);
 
     // The placeholder is the whole of the instruction: "@handle", "channel",
@@ -3713,8 +4109,21 @@ export class Menu {
     const hint = () => {
       const spec = rules.platforms.find((p) => p.id === select.value);
       input.placeholder = spec ? `${spec.prefix ?? ''}${spec.placeholder}${spec.suffix ?? ''}` : '';
+      const typed = input.value.trim();
+      // Normalised first, exactly as the server will: somebody who pastes a
+      // whole profile URL has typed a handle, and the preview has to show them
+      // the address that will actually be stored rather than a refusal.
+      const handle = typed ? K.normaliseCreatorHandle(select.value, typed) : '';
+      const url = handle ? K.creatorLinkUrl({ platform: select.value, handle }) : '';
+      preview.textContent = url || '';
+      preview.classList.toggle('bad', !!typed && !url);
+      if (typed && !url) {
+        const spec2 = rules.platforms.find((pl) => pl.id === select.value);
+        preview.textContent = `that is not a ${spec2?.name ?? 'valid'} ${spec2?.placeholder ?? 'handle'}`;
+      }
     };
     select.addEventListener('change', hint);
+    input.addEventListener('input', hint);
     hint();
   }
 
@@ -3734,6 +4143,7 @@ export class Menu {
     host.innerHTML = '';
     for (const link of links ?? []) this.addCreatorLinkRow(hostId, link);
     if (!host.children.length && rules) this.addCreatorLinkRow(hostId);
+    if (hostId === 'crCardLinks') this.syncCreatorLinks('crCardLinks', 'crAddCardLink', null);
   }
 
   async submitCreatorApplication() {
@@ -3774,8 +4184,15 @@ export class Menu {
   }
 
   async resignCreator() {
-    if (!window.confirm('Give up creator status? Your anthem is deleted with it, '
-      + `and you cannot apply again for ${this.creatorState?.rules?.reapplyDays ?? 14} days.`)) return;
+    const days = this.creatorState?.rules?.reapplyDays ?? 14;
+    const yes = await this.confirm({
+      title: 'GIVE UP CREATOR STATUS?',
+      body: i18n.tf('Your anthem is deleted with it, and you cannot apply again for '
+        + '{days} days.', { days }),
+      ok: 'GIVE IT UP',
+      danger: true,
+    });
+    if (!yes) return;
     try {
       await api.resignCreator();
       sfx.ui('ok');
@@ -3871,7 +4288,10 @@ export class Menu {
       const range = $('crTrimRange');
       range.max = String(Math.round(room * 10) / 10);
       range.value = '0';
-      range.disabled = room <= 0;
+      // A track already short enough has nothing to trim, and a disabled
+      // slider under a heading that says START AT is a control asking to be
+      // dragged and then refusing to move. The whole row goes instead.
+      $('crTrimPick')?.classList.toggle('hidden', room <= 0);
       $('crTrimAt').textContent = '0.0s';
       $('crTrim').classList.remove('hidden');
       if (!$('crAnthemTitle').value) {
@@ -3991,7 +4411,13 @@ export class Menu {
   }
 
   async removeAnthem() {
-    if (!window.confirm('Delete your anthem? Your kill cam runs silent until you upload another.')) return;
+    const yes = await this.confirm({
+      title: 'DELETE YOUR ANTHEM?',
+      body: 'Your kill cam runs silent until you upload another.',
+      ok: 'DELETE IT',
+      danger: true,
+    });
+    if (!yes) return;
     try {
       stopAnthem(0.1);
       const r = await api.removeAnthem();
@@ -4039,9 +4465,21 @@ export class Menu {
     : ''}
       </article>`).join('') : '<p class="empty small">No briefs filed yet.</p>';
 
-    // Full is full: the button goes rather than failing on submit.
-    $('crBriefNew')?.classList.toggle('hidden',
-      open >= rules.skinRequest.openMax || !$('crBriefForm').classList.contains('hidden'));
+    /*
+     * Full is full — but a button that has simply gone is a button somebody
+     * looks for. It stays and says what the ceiling is, which is the same
+     * sentence the route would have refused with; only the form being open
+     * takes it off the screen, and that is because the form replaces it.
+     */
+    const full = open >= rules.skinRequest.openMax;
+    const btn = $('crBriefNew');
+    if (btn) {
+      btn.classList.toggle('hidden', !$('crBriefForm').classList.contains('hidden'));
+      btn.disabled = full;
+      btn.textContent = full
+        ? `${rules.skinRequest.openMax} OPEN BRIEFS IS THE LIMIT`
+        : 'NEW BRIEF';
+    }
 
     const slot = $('crBriefSlot');
     if (slot && !slot.options.length) {
@@ -4086,14 +4524,23 @@ export class Menu {
       const toggle = document.createElement('button');
       toggle.type = 'button';
       toggle.className = 'cr-swatch-toggle';
-      toggle.title = 'Use this colour';
-      toggle.textContent = i > 2 ? '+' : '\u00d7';
+      // The label follows the state. It used to read "Use this colour" on both
+      // halves of a two-state control, so the × on a swatch that was already in
+      // the brief looked like the way to *add* it.
+      const say = () => {
+        const on = !input.hasAttribute('data-off');
+        toggle.textContent = on ? '\u00d7' : '+';
+        toggle.title = on ? 'Take this colour out of the brief' : 'Put this colour in the brief';
+        toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+        input.disabled = !on;
+      };
       toggle.addEventListener('click', () => {
-        const off = input.hasAttribute('data-off');
-        if (off) input.removeAttribute('data-off'); else input.setAttribute('data-off', '');
-        toggle.textContent = off ? '\u00d7' : '+';
+        if (input.hasAttribute('data-off')) input.removeAttribute('data-off');
+        else input.setAttribute('data-off', '');
+        say();
         sfx.ui();
       });
+      say();
       label.append(input, toggle);
       host.appendChild(label);
     }

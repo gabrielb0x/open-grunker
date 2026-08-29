@@ -17,7 +17,7 @@ import * as THREE from 'three';
 import { SURFACE } from '/shared/constants.js';
 import { settings } from './settings.js';
 import { surfaceTexture, SURFACE_SHADING, SURFACE_TILE, configureTextures } from './textures.js';
-import { PostFX } from './postfx.js';
+import { PostFX, BASE_SATURATION, BASE_CONTRAST } from './postfx.js';
 
 /**
  * `shadowHz` caps how often the shadow map is re-rendered.
@@ -248,6 +248,8 @@ export class GameWorld {
     const usePost = quality().post && settings.postProcessing !== false;
     const want = usePost ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
     const bright = settings.brightness ?? 0;
+    const sat = Math.max(0, settings.saturation ?? 1);
+    const con = Math.max(0.1, settings.contrast ?? 1);
     if (this.renderer.toneMapping !== want) {
       this.renderer.toneMapping = want;
       this.scene.traverse((o) => { if (o.isMesh && o.material) markDirty(o.material); });
@@ -266,7 +268,23 @@ export class GameWorld {
       chroma: settings.chromatic ? 0.55 : 0,
       exposure: 1.14 + bright,
       gamma: 1.16 + Math.max(0, bright) * 0.4,
+      saturation: BASE_SATURATION * sat,
+      contrast: BASE_CONTRAST * con,
     });
+
+    /*
+     * The same grade, for the frames the post chain does not draw.
+     *
+     * With post-processing off there is no composite pass to put a grade in, so
+     * a saturation slider would move and nothing would happen — which is worse
+     * than not having one. The browser's compositor can do both, on the canvas,
+     * and it is exactly free while the values are at their defaults: the filter
+     * string is empty and there is no extra layer to composite. It is only ever
+     * one of the two, never both.
+     */
+    const css = usePost || (sat === 1 && con === 1) ? '' : `saturate(${sat}) contrast(${con})`;
+    const canvas = this.renderer.domElement;
+    if (canvas?.style && canvas.style.filter !== css) canvas.style.filter = css;
   }
 
   /* ── Map ───────────────────────────────────────────────────────────────── */

@@ -31,7 +31,8 @@ export default async function run() {
 
   const keys = await import('/js/keybinds.js');
   const { settings } = await import('/js/settings.js');
-  const { GamepadInput } = await import('/js/gamepad.js');
+  const { GamepadInput, PAD_MENU_ACTIONS } = await import('/js/gamepad.js');
+  const { PadKeyboard } = await import('/js/padkeyboard.js');
   const { Input } = await import('/js/input.js');
   const { KEY } = await import('/shared/movement.js');
 
@@ -204,6 +205,119 @@ export default async function run() {
   check('the left stick walks the interface', nav.includes('up'), nav.join(', '));
   pad.axes = [0, 0, 0, 0];
   input.pollPad(0.016, false);
+
+  // The right stick too: a thumb that has spent ten minutes aiming with it
+  // reaches for it in a menu, and finding nothing there reads as a dead pad.
+  nav.length = 0;
+  pad.axes = [0, 0, 0, 1];
+  input.pollPad(0.016, false);
+  check('and so does the right one', nav.includes('down'), nav.join(', '));
+  pad.axes = [0, 0, 0, 0];
+  input.pollPad(0.016, false);
+
+  /*
+   * The rest of the layout.
+   *
+   * "You can play with it but you cannot press PLAY with it" was the gap: the
+   * face buttons steered the interface and everything else on the pad was dead
+   * in it. The bumpers now change page, the triggers scroll and Y reaches the
+   * filter box, which between them is what makes twenty tabs walkable.
+   */
+  const menuPress = (index) => {
+    nav.length = 0;
+    pad.buttons[index] = { pressed: true, value: 1 };
+    input.pollPad(0.016, false);
+    pad.buttons[index] = { pressed: false, value: 0 };
+    input.pollPad(0.016, false);
+    return nav.slice();
+  };
+
+  check('the bumpers change page', (() => {
+    const lb = menuPress(4);
+    const rb = menuPress(5);
+    info(`LB → ${lb.join(',')} · RB → ${rb.join(',')}`);
+    return lb.includes('tab-prev') && rb.includes('tab-next');
+  })());
+
+  check('Y reaches the filter box, which is otherwise unreachable without typing',
+    menuPress(3).includes('search'));
+
+  check('the triggers scroll, and keep scrolling while they are held', (() => {
+    nav.length = 0;
+    pad.buttons[7] = { pressed: true, value: 1 };
+    input.pollPad(0.016, false);
+    const first = nav.slice();
+    // Held: the first repeat is deliberately slow, so a tap moves one page.
+    for (let i = 0; i < 200; i++) input.pollPad(0.016, false);
+    const repeated = nav.filter((d) => d === 'page-down').length;
+    pad.buttons[7] = { pressed: false, value: 0 };
+    input.pollPad(0.016, false);
+    info(`${repeated} page(s) over ${(200 * 0.016).toFixed(1)}s of holding RT`);
+    return first.includes('page-down') && repeated > 1;
+  })());
+
+  check('nothing the match uses is quietly bound twice', (() => {
+    // Every menu action is a button the game also uses; `inGame` is what
+    // decides which of the two a press means, and it has to be the only thing.
+    const inMenu = Object.keys(PAD_MENU_ACTIONS);
+    nav.length = 0;
+    const fired = [];
+    input.on('reload', () => fired.push('reload'));
+    for (const code of inMenu) {
+      const i = Number(code.slice(3));
+      pad.buttons[i] = { pressed: true, value: 1 };
+      input.pollPad(0.016, false);
+      pad.buttons[i] = { pressed: false, value: 0 };
+      input.pollPad(0.016, false);
+    }
+    info(`${inMenu.join(' ')} → ${nav.join(',')}`);
+    return fired.length === 0 && nav.length === inMenu.length;
+  })());
+
+  suite('Controller — the on-screen keyboard');
+
+  check('every key is a real button, so the pad\u2019s own focus walker steers it', (() => {
+    /*
+     * The point of the design: this file writes no navigation, no focus model
+     * and no key repeat. A grid of buttons *is* a keyboard as far as the menu's
+     * walker is concerned — so what is checked is that they really are buttons
+     * and that pressing one types into the bound field.
+     */
+    const kb = new PadKeyboard();
+    const field = document.createElement('input');
+    field.maxLength = 4;
+    let typed = 0;
+    field.addEventListener('input', () => { typed++; });
+    kb.open(field);
+    const root = kb.element;
+    const keyButtons = kb.keys;
+    const allButtons = keyButtons.every((b) => b.tagName === 'BUTTON' && b.type === 'button');
+
+    keyButtons.find((b) => b.dataset.ch === 'a').click();
+    keyButtons.find((b) => b.dataset.ch === 'b').click();
+    const wrote = field.value === 'ab' && typed === 2;
+
+    // maxLength is the field's, not the keyboard's: it must not be possible to
+    // type a longer nickname here than through a keyboard.
+    for (let i = 0; i < 10; i++) keyButtons.find((b) => b.dataset.ch === 'c').click();
+    const capped = field.value.length === 4;
+
+    const closed = kb.close(true) && root.classList.contains('hidden');
+    info(`${keyButtons.length} keys · typed "${field.value}"`);
+    return allButtons && wrote && capped && closed && kb.close(false) === false;
+  })());
+
+  check('shift is a shift and not a caps lock', (() => {
+    const kb = new PadKeyboard();
+    const field = document.createElement('input');
+    kb.open(field);
+    kb.element.querySelector('.pk-shift').click();
+    kb.keys.find((b) => b.dataset.ch === 'q').click();
+    kb.keys.find((b) => b.dataset.ch === 'w').click();
+    kb.close(false);
+    info(`typed "${field.value}"`);
+    return field.value === 'Qw';
+  })());
 
   suite('Controller — plugged out');
 

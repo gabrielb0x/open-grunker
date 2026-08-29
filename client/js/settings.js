@@ -9,10 +9,22 @@
  * the version of that which needs no account at all.
  */
 
+import { LANGUAGE_IDS, languageName, detect as detectLanguage } from './languages.js';
+
 const KEY = 'og.settings.v2';
 const LEGACY_KEY = 'og.settings.v1';
 
 export const DEFAULTS = {
+  /**
+   * Which language the interface is in.
+   *
+   * `auto` is the browser's own preference, which is the answer for almost
+   * everybody and the only one that is right before anybody has opened a menu.
+   * Anything else is a deliberate choice and outranks it — including English,
+   * which is why 'auto' and 'en' are two different values rather than one.
+   */
+  language: 'auto',
+
   /* Aim */
   sensitivity: 1.0,
   adsSensitivity: 0.72,
@@ -52,6 +64,16 @@ export const DEFAULTS = {
   /* Kill cam */
   killCam: true,
   /**
+   * Whether the cam replays the fight from the killer's eyes or simply orbits
+   * their body.
+   *
+   * The replay is the cam; the orbit is what runs when there is no history to
+   * replay — somebody who died four seconds after spawning, or to a player who
+   * has since left. This switch is for anyone who finds ten seconds of
+   * somebody else's mouse hard to watch, which is a real thing to find.
+   */
+  killCamReplay: true,
+  /**
    * Whether the cam holds for its full ten seconds or ends the moment it may be
    * skipped. Off is the escape hatch for anyone who finds ten seconds long —
    * the skip is still there either way, this only decides what happens when
@@ -67,6 +89,19 @@ export const DEFAULTS = {
   dynamicLights: true,
   postProcessing: true,
   bloom: 0.6,
+  /**
+   * The colour grade, as multipliers on the game's own look rather than as raw
+   * shader values — 1.00 is exactly what the maps were painted against, so a
+   * player who has never opened this pays nothing and sees no difference.
+   *
+   * Applied in the post chain's composite when post-processing is on, where it
+   * happens in linear light before the vignette and the grain. With post off
+   * there is no composite to put it in, so world.js hands the same two numbers
+   * to the compositor as a CSS filter instead — the same control either way,
+   * which is what stops it from being a slider that silently does nothing.
+   */
+  saturation: 1.0,
+  contrast: 1.0,
   vignette: true,
   filmGrain: true,
   chromatic: true,
@@ -266,9 +301,29 @@ const pct = (v) => `${Math.round(v * 100)}%`;
 /** Schema that drives the settings UI. */
 export const SCHEMA = [
   {
+    group: 'Language', icon: '\u{1F310}', items: [
+      {
+        key: 'language', label: 'Language', type: 'select',
+        options: ['auto', ...LANGUAGE_IDS],
+        fmt: (v) => (v === 'auto'
+          ? `Automatic (${languageName(detectLanguage())})`
+          : languageName(v)),
+        hint: 'Automatic follows your browser. Everything a player wrote — names, '
+          + 'clan tags, chat — is always left exactly as they wrote it.',
+      },
+    ],
+  },
+  {
     group: 'Aim', icon: '🎯', items: [
       { key: 'sensitivity', label: 'Mouse sensitivity', type: 'range', min: 0.05, max: 4, step: 0.01, fmt: (v) => v.toFixed(2) },
-      { key: 'adsSensitivity', label: 'Aim sensitivity multiplier', type: 'range', min: 0.1, max: 2, step: 0.02, fmt: (v) => v.toFixed(2) },
+      {
+        key: 'adsSensitivity', label: 'Sensitivity while aiming', type: 'range',
+        min: 0.1, max: 2, step: 0.02, fmt: (v) => `${v.toFixed(2)}\u00d7`,
+        hint: 'A multiplier on the sensitivity above, applied only while the sights '
+          + 'are up. Below 1 the view slows down when you aim, which is what a scope '
+          + 'wants; 1.00 keeps the same speed everywhere. It steers a controller '
+          + 'stick as well as a mouse.',
+      },
       { key: 'fov', label: 'Field of view', type: 'range', min: 70, max: 130, step: 1, fmt: (v) => `${v}°` },
       { key: 'invertY', label: 'Invert vertical look', type: 'bool' },
       { key: 'toggleAds', label: 'Toggle aim (instead of hold)', type: 'bool' },
@@ -320,6 +375,15 @@ export const SCHEMA = [
       { key: 'shadows', label: 'Shadows', type: 'bool' },
       { key: 'postProcessing', label: 'Post-processing', type: 'bool', hint: 'Bloom, tone mapping, grade and vignette.' },
       { key: 'bloom', label: 'Bloom strength', type: 'range', min: 0, max: 1.4, step: 0.05, fmt: (v) => v.toFixed(2) },
+      {
+        key: 'saturation', label: 'Saturation', type: 'range', min: 0, max: 2, step: 0.02,
+        fmt: pct, hint: '100% is the colour the maps were painted at. Zero is greyscale.',
+      },
+      {
+        key: 'contrast', label: 'Contrast', type: 'range', min: 0.6, max: 1.6, step: 0.01,
+        fmt: pct, hint: 'Pushes the darks down and the lights up around mid-grey. '
+          + 'Works with post-processing on or off.',
+      },
       { key: 'brightness', label: 'Brightness', type: 'range', min: -0.35, max: 0.6, step: 0.01,
         hint: 'Raises exposure and opens the shadows. Positive values lift dark corners first.',
         fmt: (v) => (v >= 0 ? `+${v.toFixed(2)}` : v.toFixed(2)) },
@@ -370,6 +434,12 @@ export const SCHEMA = [
         key: 'killCam', label: 'Show the kill cam', type: 'bool',
         hint: 'Ten seconds looking at whoever killed you, skippable after three. '
           + 'Off goes straight back to the plain death screen.',
+      },
+      {
+        key: 'killCamReplay', label: 'Replay the fight from their eyes', type: 'bool',
+        hint: 'The last ten seconds before you died, played back through the killer\u2019s '
+          + 'own view. Off circles their body instead \u2014 which is also what happens '
+          + 'when there is no history to replay, such as dying moments after spawning.',
       },
       {
         key: 'killCamHold', label: 'Hold it for the full ten seconds', type: 'bool',

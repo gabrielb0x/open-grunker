@@ -17,7 +17,7 @@
  * wrote it: what they can now do, or what stopped going wrong.
  */
 
-export const GAME_VERSION = '2.1.0';
+export const GAME_VERSION = '2.1.5';
 
 export const PATCH_KINDS = {
   new: { label: 'NEW', color: '#4ddb7a' },
@@ -26,6 +26,27 @@ export const PATCH_KINDS = {
 };
 
 export const PATCH_NOTES = [
+  {
+    version: '2.1.5',
+    date: '2026-08-29',
+    title: 'A kill cam you watch through the killer’s own eyes, the game in eight languages, and a controller that reaches all of it',
+    changes: [
+      { kind: 'change', text: 'The kill cam is a replay now. Instead of a camera circling whoever killed you, the last ten seconds of the fight are played back from inside their head, with their view angles — the flick they made is the flick you see. The whole scene rewinds with the camera: every player, every body that fell, and yours, walking into the shot.' },
+      { kind: 'new', text: 'The strip under the card counts down to the moment you die, so you always know how much of it is left. Turn the replay off under SETTINGS ▸ KILL CAM and you get the old orbit around the killer instead — which is also what runs when there is nothing to replay, such as dying moments after spawning or dying to somebody who has since left the room.' },
+      { kind: 'new', text: 'The game speaks eight languages: English, Français, Español, Deutsch, Português, Italiano, Русский and 简体中文. Pick one under SETTINGS ▸ LANGUAGE; the default follows your browser. Nothing anybody wrote is ever translated — names, clan tags and chat lines stay exactly as they were typed.' },
+      { kind: 'new', text: 'A controller reaches the whole game now, not just the match. The bumpers change page, the triggers scroll, Y opens the filter over the menu, and left and right move a slider or a dropdown instead of walking off it. The cards — classes, servers, finishes, cases — can be selected at last, which also means a keyboard and a screen reader can reach them.' },
+      { kind: 'new', text: 'And a controller can spell. Pressing A on any text field opens an on-screen keyboard, so a nickname, a search or a chat line no longer needs a keyboard on the desk. A legend along the bottom of the screen says what each button does while you are in the interface.' },
+      { kind: 'new', text: 'Saturation and contrast, under SETTINGS ▸ VIDEO. 100% is the colour the maps were painted at, and both work whether post-processing is on or off.' },
+      { kind: 'change', text: '“Aim sensitivity multiplier” is now “Sensitivity while aiming”, and says what it does: below 1 the view slows down when you bring the sights up, which is what a scope wants. It steers a controller stick as well as a mouse.' },
+      { kind: 'change', text: 'The interface gets out of the way of the kill cam. The crosshair, the magazine, the health bar and the minimap all belonged to a body lying on the floor, and half of them were about a moment ten seconds newer than the picture. The scoreboard, the chat and the end-of-match card stay, because each of those is something you deliberately open.' },
+      { kind: 'change', text: 'Nothing irreversible asks through a browser window any more. Giving up creator status, deleting an anthem, buying a finish outright and following a link off the site are all asked in the page now, out of the same two buttons every other card is built from — which means a controller can answer them.' },
+      { kind: 'change', text: 'On the CREATOR page the four discipline cards are the picker: reading what one earns and choosing it used to be two gestures a screen apart. The link editor counts what you have added, stops asking for more at the limit, and shows the address it is going to store under each row.' },
+      { kind: 'change', text: 'Whoever runs a server can switch the creator programme off entirely. Where it is off the tab is gone rather than dead, and anything already approved keeps working.' },
+      { kind: 'fix', text: 'Your weapon stayed on screen while you were dead — a rifle floating in the middle of somebody else’s kill cam, pointed wherever your corpse had last been facing.' },
+      { kind: 'fix', text: 'Every form on the CREATOR page was drawn in raw browser widgets: a white textarea and a bare dropdown in the middle of a dark panel. The application, the anthem trim and the whole skin brief now look like the rest of the game.' },
+      { kind: 'fix', text: 'A controller could open the class picker, the pause card, the end-of-match vote and the scoreboard mid-match and then press nothing on any of them, because every button was still firing the game’s action at them.' },
+    ],
+  },
   {
     version: '2.1.0',
     date: '2026-08-29',

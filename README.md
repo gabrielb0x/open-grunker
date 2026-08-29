@@ -268,11 +268,52 @@ the same way, so nobody is ever thrown back into a firefight mid-sentence.
 
 #### The kill cam
 
-**Being killed by another player shows you who did it.** The camera lifts out of
-your body, settles into a slow orbit around them and holds it for ten seconds,
-letterboxed, with their name, level and clan, the weapon, how far the shot was,
-whether it was a headshot, and how much health they had left when it landed —
-which is very often the most interesting number on the screen.
+**Being killed by another player replays the last ten seconds of the fight
+through their eyes.** Not a camera circling the winner: the whole scene rewinds
+with you — every player, every body that fell, your own body walking into the
+shot — and plays forward at real time from inside the killer's head, with their
+view angles. The flick they made is the flick you see. It is letterboxed, with a
+strip under the card counting down to the moment you die, and their name, level
+and clan, the weapon, the range, whether it was a headshot, and how much health
+they had left when it landed — which is very often the most interesting number
+on the screen.
+
+**There is no recording.** Every client already holds a ring of the server's
+snapshots and already interpolates a moment out of it — that is what draws
+remote players a fraction of a second behind live, and has since the first day
+of network play. The only thing standing between that and a replay was the
+*length* of the ring, so the ring got longer and the cam asks it for a timestamp
+ten seconds old. A replay that shares one interpolator with live play cannot
+drift from live play, and there is no second copy of "where was everybody" to
+keep in step with the first.
+
+The one thing a snapshot does not carry is your *own* entry — the server cuts it
+out, because your client is predicting it — so the client hands its own position
+and view angles to the same ring. Without that the replay would be the killer's
+ten seconds with the person they were shooting at missing from them.
+
+**The orbit is still there, as the fallback.** A slow quarter-turn around the
+killer is what runs when there is no history to replay: dying a few seconds
+after spawning, dying to somebody who has since left the room, or the last
+twenty seconds of a video creator's thirty-second [director's
+cut](#creator-status), which is longer than the ring is deep. It is also what
+you get by turning **SETTINGS ▸ KILL CAM ▸ REPLAY THE FIGHT FROM THEIR EYES**
+off, which is a real thing to want: ten seconds of somebody else's mouse is not
+everybody's idea of a good time.
+
+**The interface goes with the shot.** A crosshair, a magazine and a minimap of
+the *present*, all of them about a body lying on the floor and half of them ten
+seconds newer than the picture, used to sit on top of the cam. They now fade out
+for its duration; the scoreboard, the chat and the end-of-match card stay,
+because each of those is something a dead player deliberately opens.
+
+**So does the world.** Real time keeps running while you watch, and every
+gunshot, spark and explosion arriving during those ten seconds belongs to *now* —
+so none of them is drawn or played over a picture of ten seconds ago. A rocket
+already in the air is the exception: it is flown and disposed of exactly as it
+would have been, and only its mesh and its exhaust are hidden, because the
+explosion that removes it has to find it where it really is the moment the cam
+hands the screen back.
 
 **You can skip it from three seconds in.** The bar under the button fills until
 then, so the wait explains itself. Three is not a compromise between the ten and
@@ -308,13 +349,63 @@ the wrong instrument for "1.37 exactly", and sensitivity is the setting people
 most often want to carry over from another game to the digit. Out-of-range values
 are clamped and snapped to the slider's own grid rather than refused.
 
-Three switches worth knowing about:
+A few switches worth knowing about:
 
 | Setting | What it does |
 | --- | --- |
+| **Language** (LANGUAGE) | Eight of them — see [languages](#languages). Automatic follows your browser |
+| **Sensitivity while aiming** (AIM) | A multiplier on the sensitivity above it, applied only while the sights are up: below 1 the view slows down when you aim, which is what a scope wants, and 1.00 keeps the same speed everywhere. It steers a controller stick as well as a mouse |
 | **Mouse acceleration** (AIM) | Off — the default — asks the browser for raw mouse input, so the same physical flick is always the same number of degrees. On lets your operating system's pointer acceleration through. Changing it re-asks for the pointer lock, so it lands on the next mouse movement rather than the next time you alt-tab |
+| **Saturation** and **Contrast** (VIDEO) | The colour grade, as multipliers on the game's own look. 100% is exactly what the maps were painted against, so somebody who never opens these pays nothing for having them |
 | **Hide the weapon while aiming** (WEAPON) | Clears the gun out of the bottom of your screen the moment you aim. Yours alone — everyone else still sees you holding it |
+| **Replay the fight from their eyes** (KILL CAM) | The [kill cam](#the-kill-cam) as a replay from inside the killer's head, or as the orbit around their body |
 | **Spectator** | The chase camera and the through-walls view, both also on `V` and `X` while watching |
+
+**The grade is applied wherever it can be.** With post-processing on, saturation
+and contrast happen inside the composite pass, in linear light, before the
+vignette and the grain — the right place for them. With post-processing off there
+is no composite to put them in, so the same two numbers are handed to the
+browser's compositor as a CSS filter on the canvas instead. It is exactly free
+while both sit at 100%: the filter string is empty and there is no extra layer to
+composite. What it avoids is the worst kind of setting, which is one that moves
+and does nothing.
+
+### Languages
+
+**The interface ships in eight languages**: English, Français, Español, Deutsch,
+Português (BR), Italiano, Русский and 简体中文. **SETTINGS ▸ LANGUAGE** picks one;
+*Automatic* — the default — follows your browser, and an operator running a
+server for one country can set the fallback for everybody who has not chosen with
+`DEFAULT_LANGUAGE` in `.env`.
+
+**Nothing a player wrote is ever translated.** Nicknames, clan tags, chat lines
+and the names people gave their listings are short strings that could collide
+with a table entry — a player called "SCORE" must not become "PUNTUACIÓN" — so the
+parts of the page they live in are marked and the translator stops at them.
+
+**The key is the English sentence itself.** There is no `en.js` and no table of
+symbolic names: `client/js/i18n/<lang>.js` maps the English as it is written in
+the source to the translation, and anything not in it renders as the English
+somebody actually wrote. That is the one fallback that cannot rot — with six
+hundred strings across sixteen hundred lines of markup, a separate English table
+would go stale the first time anybody edited a button, and the button would
+silently go back to saying whatever it used to say. Editing the markup is editing
+the key: the new sentence is untranslated until somebody adds it, which is honest,
+rather than translated into the old sentence, which is a lie. `npm test` checks
+both directions — that every key still matches a string the client can draw, and
+that no language has drifted behind the others.
+
+**An English player pays nothing for it.** No dictionary is fetched, no observer
+is created and no walk of the document ever runs: the whole thing returns on its
+first line while the language is English, which is what it is for everybody who
+has not chosen otherwise. Picking another language fetches one small chunk.
+
+Translating a string that is *assembled* — anything with a number or a name in
+the middle of it — needs the call site, so those go through `tf('SKIP IN {n}',
+{ n })` with named holes, because word order is exactly what a translation
+changes. Everything else is translated where it lands, by a pass that watches for
+markup arriving; a panel drawn by code that has never heard of `i18n.js` comes
+out translated anyway.
 
 ### Playing on a controller
 
@@ -322,13 +413,59 @@ Plug a pad in and it works. There is nothing to enable and no separate mode: the
 same action table drives the keyboard, the mouse and the pad, so every action,
 every rebinding and every on-screen hint already knows about it.
 
-| | |
+| In a match | |
 | --- | --- |
 | **Left stick** | Move. Thresholded into the same eight-way mask the server replays — see below |
 | **Right stick** | Look, as a *rate*: how far the stick is pushed is how fast the view turns |
 | **`RT` / `LT`** | Fire / aim. Analogue, so a feathered trigger is not a trigger pull |
 | **`START`** | The menu. Reserved, exactly like `Esc` — a pad with no way back to the menu is a pad that cannot leave the match |
-| **In the menu** | The stick or the d-pad moves the highlight, `A` presses, `B` steps back |
+
+| In the interface | |
+| --- | --- |
+| **Either stick, or the d-pad** | Move the highlight, geometrically: "down" from a card in a grid is the card underneath it, not the next element in the document |
+| **`A` / `B`** | Press this · step back. `B` closes whatever is on top, and closes the menu when nothing is |
+| **`LB` / `RB`** | The page either side of this one, straight down the rail |
+| **`LT` / `RT`** | Scroll a page of whatever is scrolling, repeating while held |
+| **`Y`** | The filter box over the rail — the fastest way across twenty pages |
+
+**Every button on the pad does something in the menu, and the whole interface
+answers to it.** That was the gap: a pad could play the game but not press PLAY
+with it. Three things were missing and are now there.
+
+*Sliders, dropdowns and colours are values, not places.* With one focused, left
+and right change what it says rather than walking off it — a step at a time on a
+slider, an option at a time in a dropdown, and along a short palette for a colour
+input, which is an operating-system window no pad gesture can open. Without this
+a controller could reach every setting in the game and move exactly none of them.
+
+*Half the interface is cards.* A class, a server, a finish, a case, a discipline:
+every one is a `div` with a click handler, because each contains a heading and a
+list, and wrapping that in a `<button>` is markup a screen reader reads as one
+very long label. A mouse presses them; the browser's own focus order cannot see
+them at all. They are now made focusable as the pad walks past — which also means
+a keyboard and a screen reader can reach them, which they never could.
+
+*A controller cannot spell.* So the letters come to it: pressing `A` on a text
+field opens an on-screen keyboard, and `DONE` commits — sending the line, when
+the field is the chat. Every key on it is a real `<button>` in the document, so
+the pad's own focus walker steers it and the keyboard itself contains no
+navigation code, no focus model and no key repeat. It works with a mouse and a
+touchscreen for free.
+
+*"Are you sure?" was a window a pad could not close.* Every irreversible action —
+giving up creator status, deleting an anthem, buying a skin outright, following a
+link off the site — asked through the browser's own `confirm()`, which is an
+operating-system window and takes no controller input at all. Those questions are
+now asked in the page, out of the same two buttons every other card is built
+from, with focus starting on the safe half.
+
+A legend along the bottom of the screen says what `A`, `B`, `Y` and the bumpers
+do. It appears only once a pad has actually been *used* — one plugged in and
+never touched changes nothing on screen — and only while an interface, rather
+than the match, is what a press is aimed at. That last distinction is its own
+fix: standing in a match with the class picker, the pause card, the end-of-match
+vote or the scoreboard open, every face button used to keep firing the *game's*
+action at it, so a pad could open all four and press nothing on any of them.
 
 **The left stick is thresholded rather than smuggled in as an analogue
 magnitude.** The movement step is shared code that the server replays against
@@ -348,9 +485,16 @@ nearly nothing at forty metres — and it only ever considers enemies the client
 can genuinely see, the same line-of-sight test that gates a nametag.
 
 Everything else lives in **SETTINGS ▸ CONTROLLER**: stick speed per axis, the
-response curve, the deadzone, inverted look and vibration. The button layout is
+response curve, the deadzone, inverted look and vibration. **Sensitivity while
+aiming**, under AIM, steers the stick as well as the mouse. The button layout is
 in **CONTROLS**, in a third column of its own — a controller layout is a layout,
 and it is rebound and reset as a set without touching the keyboard scheme.
+
+Chat is the one action with no pad button by default, and not because it would
+not work: bind it and it opens a line the on-screen keyboard can write. It stays
+unbound because every button on a standard pad is already spoken for, and taking
+one from firing or from the weapon wheel to give to the chat is a trade a player
+should make deliberately rather than find already made.
 
 ### Joining a match
 
@@ -683,7 +827,7 @@ a different colour:
 | --- | --- |
 | **Music** | A [player anthem](#player-anthems): up to ten seconds of your own music, played over the kill cam of everyone you kill, credited by name |
 | **Art** | Commission your own weapon finish — brief it, pick the palette, link the reference, and it goes into a queue a person reads and answers. Plus the engraved card frame, which is not for sale |
-| **Video** | The director's cut kill cam: thirty seconds instead of ten, letterboxed, interface-free, orbiting. Plus a clean-screen key that strips the HUD for a shot without touching settings |
+| **Video** | The director's cut kill cam: thirty seconds instead of ten, letterboxed and interface-free — the replay for as far back as the ring goes, then the orbit for the rest. Plus a clean-screen key that strips the HUD for a shot without touching settings |
 | **Code** | [Developer mode](#developer-mode) with no level gate, and the three instruments the gate does not open — the wire inspector, the reconciliation trace and the frame-time histogram |
 
 All four wear a badge beside their name wherever one is drawn, and all four get
@@ -705,6 +849,13 @@ nobody took away.
 
 Stepping down is one button under **CREATOR**, and it goes through the same path
 a moderator's decision does, so the history says what happened.
+
+**`CREATORS_ENABLED=false` closes the whole thing, everywhere.** The routes
+refuse, the queue stops, the rail entry disappears from the menu and the page
+behind it says so instead of offering a sign-in — an interface that advertises
+something the server does not do is worse than no interface. Anything already
+approved keeps working, and an anthem already on disk still plays; nothing new is
+taken and nothing new is granted.
 
 #### Links on a card
 
@@ -2265,6 +2416,15 @@ Copy `.env.example` to `.env`; every value has a working default.
 | `AVATAR_MAX_BYTES` | `196608` | 192 KB. The client uploads ~20 KB |
 | `AVATAR_MAX_DIM` | `512` | Refused past this, whatever the file size says |
 | `AVATAR_CACHE_SEC` | `31536000` | Safe at a year: the filename is a content hash |
+| `CREATORS_ENABLED` | `true` | [Creator status](#creator-status) at all. `false` closes the routes, the queue *and* the rail entry; anything already approved keeps working |
+| `CREATORS_MIN_LEVEL` | `5` | Before an account may apply |
+| `CREATORS_NEED_EMAIL` | `true` | A confirmed address as well. Only bites where email verification is on |
+| `ANTHEM_DIR` | `data/anthems` | One levelled WAV per music creator, beside the database |
+| `ANTHEM_MAX_BYTES` | `720896` | Ten seconds of mono 16-bit PCM at 32 kHz is 640 KB |
+| `ANTHEM_CACHE_SEC` | `31536000` | A year. The filename is a content hash, and this is fetched mid-match |
+| `DEV_MODE_ENABLED` | `true` | [Developer mode](#developer-mode) at all |
+| `DEV_MODE_LEVEL` | `10` | Where the overlays unlock. Code creators skip the gate |
+| `DEFAULT_LANGUAGE` | `en` | The [interface language](#languages) a visitor gets when their browser has not asked for one the game ships. Never a lock: a player's own choice wins, and so does a browser that has already asked |
 | `LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug` |
 
 ### Anti-bot, email, VPN and sessions

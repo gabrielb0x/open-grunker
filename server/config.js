@@ -237,6 +237,18 @@ export const config = {
   /** What a nickname change costs a signed-in player. Guests cannot rename. */
   renameCost: num('RENAME_COST', K_RENAME_COST),
 
+  /**
+   * The interface language a visitor gets when their browser has not asked for
+   * one this game speaks.
+   *
+   * A *default*, never a lock: whatever a player chooses in SETTINGS outranks
+   * it, and a browser that has already asked for one of the shipped languages
+   * outranks it too. It exists for the operator running this for one country,
+   * who would otherwise be handing every visitor English plus a menu to go and
+   * find. Unknown values are ignored by the client, which stays in English.
+   */
+  defaultLanguage: str('DEFAULT_LANGUAGE', 'en'),
+
   // Cloudflare Turnstile — one widget for the sign-up form, one for sign-in.
   // Each has its own key pair; a secret is what actually enforces the check, so
   // a missing secret turns that form's check off rather than failing shut.

@@ -37,6 +37,33 @@ const MOVE_GATE = 0.45;
 /** Menu navigation repeats at this rate while a stick or the d-pad is held. */
 const NAV_FIRST_MS = 380;
 const NAV_REPEAT_MS = 130;
+/** …and the triggers, which scroll a page at a time, repeat more slowly. */
+const PAGE_FIRST_MS = 420;
+const PAGE_REPEAT_MS = 260;
+
+/**
+ * What each button means with the interface up rather than a match.
+ *
+ * The same buttons the game uses, pointed at the other thing on screen. It is
+ * a table rather than a chain of `else if` because it is a *layout*: it wants
+ * to be read in one place, next to the labels the hint bar draws from it, and
+ * anything that is not in it is deliberately dead in the menu.
+ *
+ *   A / B      the two every interface has: press this, go back
+ *   Y          the filter box over the tab rail, which is the fastest way
+ *              across twenty tabs and is otherwise unreachable without typing
+ *   LB / RB    the tab either side of this one
+ *   LT / RT    a page of whatever is scrolling
+ */
+export const PAD_MENU_ACTIONS = {
+  Pad0: 'accept',
+  Pad1: 'back',
+  Pad3: 'search',
+  Pad4: 'tab-prev',
+  Pad5: 'tab-next',
+};
+/** Held rather than tapped, so these repeat on their own clock. */
+const PAD_MENU_HELD = { Pad6: 'page-up', Pad7: 'page-down' };
 
 /** Deadzone, then a curve that keeps small movements small. */
 function shape(v, deadzone, exponent) {
@@ -76,8 +103,11 @@ export class GamepadInput {
     this.lastInputAt = 0;
     /** While set, the next button press is captured for rebinding, not played. */
     this.captureFor = null;
+    /** Milliseconds left before a held direction repeats. See `_repeat`. */
     this._navAt = 0;
     this._navCode = '';
+    this._pageAt = 0;
+    this._pageCode = '';
     this._rumbleUntil = 0;
 
     // The connect events are only used for the toast: a pad that was already
@@ -178,11 +208,10 @@ export class GamepadInput {
       this._touch();
       if (code === PAD_MENU) this.onMenu?.();
       else if (inGame) this.onPress?.(code);
-      // Out of the match the same two face buttons are the interface's, not the
-      // game's: A is a click and B is a step back. Nothing is bound twice —
-      // `inGame` is what decides which of the two the press means.
-      else if (code === 'Pad0') this.onNav?.('accept');
-      else if (code === 'Pad1') this.onNav?.('back');
+      // Out of the match the same buttons are the interface's, not the game's.
+      // Nothing is bound twice — `inGame` is what decides which of the two a
+      // press means — and the layout is PAD_MENU_ACTIONS above.
+      else if (PAD_MENU_ACTIONS[code]) this.onNav?.(PAD_MENU_ACTIONS[code]);
     }
     for (const code of now) {
       if (next.has(code)) continue;
@@ -215,27 +244,59 @@ export class GamepadInput {
 
   /**
    * Menu steering: the d-pad and the left stick move focus, A clicks, B backs
-   * out. Repeats on a hold so a long list is walkable, with a first-press delay
-   * so a tap moves exactly one row.
+   * out, the bumpers change tab and the triggers scroll. Everything that can be
+   * held repeats, with a first-press delay so a tap moves exactly one row.
+   *
+   * The right stick steers too, one row at a time — a thumb that has spent the
+   * last ten minutes aiming with it reaches for it in a menu, and finding
+   * nothing there reads as the pad having stopped working.
    */
   _navigate(dt) {
     if (!this.onNav) return;
-    const dir = this.held.has('Pad12') || this.move.y < -0.5 ? 'up'
-      : this.held.has('Pad13') || this.move.y > 0.5 ? 'down'
-        : this.held.has('Pad14') || this.move.x < -0.5 ? 'left'
-          : this.held.has('Pad15') || this.move.x > 0.5 ? 'right'
+    const y = this.move.y || this.look.y;
+    const x = this.move.x || this.look.x;
+    const dir = this.held.has('Pad12') || y < -0.5 ? 'up'
+      : this.held.has('Pad13') || y > 0.5 ? 'down'
+        : this.held.has('Pad14') || x < -0.5 ? 'left'
+          : this.held.has('Pad15') || x > 0.5 ? 'right'
             : '';
-    const nowMs = performance.now();
-    if (!dir) { this._navCode = ''; this._navAt = 0; return; }
-    if (dir !== this._navCode) {
-      this._navCode = dir;
-      this._navAt = nowMs + NAV_FIRST_MS;
-      this.onNav(dir);
+    this._repeat(dt, 'nav', dir, NAV_FIRST_MS, NAV_REPEAT_MS);
+
+    let page = '';
+    for (const [code, action] of Object.entries(PAD_MENU_HELD)) {
+      if (this.held.has(code)) { page = action; break; }
+    }
+    this._repeat(dt, 'page', page, PAGE_FIRST_MS, PAGE_REPEAT_MS);
+  }
+
+  /**
+   * One auto-repeating control: fires on the change, then on a clock.
+   *
+   * The clock is the frame time this poll was handed, not `performance.now()`.
+   * The two agree in a browser, and the frame time is the one that is also true
+   * on a frame the tab spent in the background, in a test with no wall clock to
+   * wait on, and under a frame cap — a repeat measured against the wall while
+   * the poll runs on frames is a repeat that fires a different number of times
+   * on a 60 Hz screen than on a 144 Hz one.
+   *
+   * `which` names the clock rather than sharing one, so holding a trigger to
+   * scroll does not swallow the d-pad press that moves focus inside what has
+   * just scrolled into view.
+   */
+  _repeat(dt, which, code, first, rate) {
+    const leftKey = which === 'nav' ? '_navAt' : '_pageAt';
+    const codeKey = which === 'nav' ? '_navCode' : '_pageCode';
+    if (!code) { this[codeKey] = ''; this[leftKey] = 0; return; }
+    if (code !== this[codeKey]) {
+      this[codeKey] = code;
+      this[leftKey] = first;
+      this.onNav(code);
       return;
     }
-    if (nowMs < this._navAt) return;
-    this._navAt = nowMs + NAV_REPEAT_MS;
-    this.onNav(dir);
+    this[leftKey] -= dt * 1000;
+    if (this[leftKey] > 0) return;
+    this[leftKey] = rate;
+    this.onNav(code);
   }
 
   /**

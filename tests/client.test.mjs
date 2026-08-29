@@ -1686,6 +1686,90 @@ export default async function run() {
     return faded && body && gun && e.group.visible;
   })());
 
+  check('the ring holds enough history for the kill cam to replay out of', (() => {
+    /*
+     * The replay is not a second recording: it is this buffer read at an older
+     * timestamp. So the one thing that makes it possible is the *length* of the
+     * ring, and the one thing that would silently break it is somebody shorting
+     * that length back to the fifth of a second interpolation needs.
+     */
+    const ring = new EntityManager(scene);
+    ring.localId = 1;
+    ring.addPlayer({ id: 3, name: 'B', team: K.TEAM.BLUE, classId: 'hunter' });
+    const step = 1000 / K.SNAPSHOT_RATE;
+    for (let i = 0; i < K.SNAPSHOT_RATE * (K.KILLCAM_SECONDS + 1); i++) {
+      ring.pushSnapshot(i * step, [[3, i * 0.1, 0, 0, 0, 0, 0b011, 100, 0, 0]]);
+    }
+    const depth = (ring.latestTime - ring.earliestTime) / 1000;
+    info(`${ring.buffer.length} frames · ${depth.toFixed(1)}s deep`);
+    return depth >= K.KILLCAM_SECONDS;
+  })());
+
+  check('reading a moment before the ring starts clamps instead of teleporting', (() => {
+    /*
+     * The scan this replaced answered a too-old timestamp by interpolating
+     * across the *whole* buffer, which put every body on the map at wherever
+     * they had been when it started. Harmless at a fifth of a second; with ten
+     * seconds in the ring it is a scene that jumps.
+     */
+    const ring = new EntityManager(scene);
+    ring.localId = 1;
+    ring.pushSnapshot(5000, [[3, 10, 0, 0, 0, 0, 0b011, 100, 0, 0]]);
+    ring.pushSnapshot(9000, [[3, 90, 0, 0, 0, 0, 0b011, 100, 0, 0]]);
+    const before = ring.sampleAt(3, 0);
+    const after = ring.sampleAt(3, 99999);
+    const middle = ring.sampleAt(3, 7000);
+    info(`before: x=${before.x} · middle: x=${middle.x} · after: x=${after.x}`);
+    return before.x === 10 && after.x === 90 && Math.abs(middle.x - 50) < 0.01;
+  })());
+
+  check('the local player has a body, and nothing but the replay draws it', (() => {
+    /*
+     * A snapshot never carries your own entry — the server cuts it out, because
+     * you are predicting it — so without this the replay would be the killer's
+     * ten seconds with the person they were shooting at missing from them.
+     */
+    const ring = new EntityManager(scene);
+    ring.localId = 4;
+    ring.addSelf({ id: 4, name: 'Me', team: K.TEAM.RED, classId: 'triggerman' });
+    const refused = (() => { ring.addPlayer({ id: 4, name: 'Me', classId: 'hunter' }); return true; })();
+    const self = () => ring.get(4);
+    const entry = [4, 3, 0, 3, 1.2, 0.3, 0b011, 90, 0, 4];
+    ring.pushSnapshot(1000, [], entry);
+    ring.pushSnapshot(1050, [], entry);
+
+    ring.update(1025, 1 / 60, { camera, world: null, nowSec: 1 });
+    const hiddenLive = self().group.visible === false;
+
+    ring.replaying = true;
+    ring.update(1025, 1 / 60, { camera, world: null, nowSec: 1 });
+    const shownInReplay = self().group.visible === true;
+    const posed = Math.abs(self().pos.x - 3) < 0.01 && Math.abs(self().yaw - 1.2) < 0.01;
+    // Never a nametag: from inside a replay it would be a plate over your own head.
+    const noTag = self().tag.sprite.visible === false;
+    ring.replaying = false;
+    info(`live: ${hiddenLive ? 'hidden' : 'DRAWN'} · replay: ${shownInReplay ? 'drawn' : 'HIDDEN'}`);
+    return refused && hiddenLive && shownInReplay && posed && noTag;
+  })());
+
+  check('and a jump back through a death does not kill anybody twice', (() => {
+    // `update` reads a death out of the transition from alive to not. Ten
+    // seconds in one frame is not a transition, so leaving a replay has to
+    // re-seed the flags or everybody who died inside the window falls over
+    // again on the frame the cam ended.
+    const ring = new EntityManager(scene);
+    ring.localId = 1;
+    ring.addPlayer({ id: 5, name: 'C', team: K.TEAM.BLUE, classId: 'hunter' });
+    ring.pushSnapshot(1000, [[5, 0, 0, 0, 0, 0, 0b011, 100, 0, 0]]);
+    ring.pushSnapshot(2000, [[5, 0, 0, 0, 0, 0, 0b000, 0, 0, 0]]);
+    ring.update(1000, 1 / 60, { camera, world: null, nowSec: 1 });   // alive, in the past
+    ring.syncAlive(2000);
+    const e = ring.get(5);
+    const reseeded = e.wasAlive === false && e.deathT === 0;
+    ring.update(2000, 1 / 60, { camera, world: null, nowSec: 2 });
+    return reseeded && e.deathT === 0;
+  })());
+
   check('a player is drawn holding the weapon they actually switched to', (() => {
     /*
      * Only the primary used to exist on a third-person body, so switching to
@@ -2235,6 +2319,85 @@ export default async function run() {
   };
   const shown = (el, id) => !el(id).classList.contains('hidden');
 
+  check('an operator who closed the programme closes the whole tab', (() => {
+    /*
+     * CREATORS_ENABLED=false. The routes have always refused; what was left was
+     * a rail entry leading to a page whose every button answered 403, which is
+     * the interface advertising something this server does not do.
+     */
+    menu.applyCreatorRules({ ...creatorRules(), enabled: false });
+    const tab = document.querySelector('.tab[data-tab="creator"]');
+    const closed = document.getElementById('creatorClosed');
+    const body = document.getElementById('creatorBody');
+    const hidden = tab.classList.contains('hidden') && tab.dataset.locked === '1'
+      && !closed.classList.contains('hidden') && body.classList.contains('hidden');
+    // …and switching it back on gives the entry back rather than needing a reload.
+    menu.applyCreatorRules(creatorRules());
+    const back = !tab.classList.contains('hidden') && tab.dataset.locked === '0';
+    info(`off: entry ${hidden ? 'gone' : 'STILL THERE'} · on: entry ${back ? 'back' : 'MISSING'}`);
+    return hidden && back;
+  })());
+
+  check('the four discipline cards are the picker, and are reachable', (() => {
+    // Reading what a discipline earns and choosing it used to be two gestures a
+    // screen apart, which is how somebody applies as whichever one the select
+    // happened to open on. `tabindex` is what makes a card a keyboard and a
+    // controller can reach at all — see PAD_CARDS in menu.js.
+    const el = asCreator({});
+    const cards = [...document.querySelectorAll('#crKinds .cr-kind')];
+    const reachable = cards.every((c) => c.getAttribute('tabindex') === '0');
+    const select = document.getElementById('crKind');
+    const wanted = K.CREATOR_KINDS[K.CREATOR_KINDS.length - 1].id;
+    menu._pickCreatorKind(cards.find((c) => c.dataset.kind === wanted));
+    const moved = select.value === wanted;
+    const lit = cards.find((c) => c.dataset.kind === wanted).classList.contains('chosen');
+    info(`${cards.length} cards · picking ${wanted} moved the select: ${moved}`);
+    return reachable && moved && lit && el('crKinds').classList.contains('picking');
+  })());
+
+  check('nothing irreversible asks through a window a pad cannot close', await (async () => {
+    /*
+     * `window.confirm()` opens an operating-system window, and no controller
+     * gesture dismisses one — so every irreversible action in the game had a
+     * door a pad could open and then not close. The question is asked in the
+     * page now, out of the same two buttons every other card is built from.
+     */
+    const asked = menu.confirm({ body: 'Delete it?', ok: 'DELETE IT', danger: true });
+    const modal = document.getElementById('confirmModal');
+    const up = !modal.classList.contains('hidden')
+      && document.getElementById('confirmYes').textContent === 'DELETE IT'
+      && document.getElementById('confirmYes').className === 'btn-danger';
+    document.getElementById('confirmNo').click();
+    const no = await asked;
+
+    const again = menu.confirm({ body: 'Sure?' });
+    document.getElementById('confirmYes').click();
+    const yes = await again;
+    info(`up: ${up} · CANCEL → ${no} · CONFIRM → ${yes} · closed: ${modal.classList.contains('hidden')}`);
+    return up && no === false && yes === true && modal.classList.contains('hidden');
+  })());
+
+  check('the link editor counts, stops at the limit and shows what it will store', (() => {
+    const el = asCreator({});
+    const max = K.CREATOR_LINKS_MAX;
+    for (let i = 0; i < max + 3; i++) menu.addCreatorLinkRow('crLinks');
+    menu.syncCreatorLinks();
+    const rows = el('crLinks').querySelectorAll('.cr-link').length;
+    const btn = el('crAddLink');
+    // The preview is built by the same function the server stores the address
+    // with, so it is the real answer rather than an illustration of one.
+    const row = el('crLinks').querySelector('.cr-link');
+    row.querySelector('.cr-link-platform').value = 'bandcamp';
+    const handle = row.querySelector('.cr-link-handle');
+    handle.value = '@melodie';
+    handle.dispatchEvent(new Event('input'));
+    const url = row.querySelector('.cr-link-url').textContent;
+    info(`${rows} rows · ${el('crLinkCount').textContent} · preview "${url}"`);
+    return rows === max && btn.disabled === true
+      && el('crLinkCount').textContent === `${max} / ${max}`
+      && url === K.creatorLinkUrl({ platform: 'bandcamp', handle: 'melodie' });
+  })());
+
   check('never applied: the form is up and no perk is', (() => {
     const el = asCreator({});
     return el('crStanding').innerHTML.includes('NOT A CREATOR')
@@ -2471,6 +2634,31 @@ export default async function run() {
   /** Just enough of an EntityManager for the cam to find a body to orbit. */
   const bodies = (id, pos) => ({ get: (n) => (n === id ? { pos } : undefined) });
 
+  /**
+   * A snapshot ring holding `seconds` of one player walking in a straight line
+   * and turning as they go — enough for the replay to have something to play.
+   *
+   * It answers `sampleAt` the way the real EntityManager does, because that is
+   * the whole of what the cam asks a ring for; `get` is still the orbit's door,
+   * so one object stands in for both halves of the cam.
+   */
+  const history = (id, seconds, { end = 100000, rate = 20 } = {}) => ({
+    earliestTime: end - seconds * 1000,
+    latestTime: end,
+    get: (n) => (n === id ? { pos: { x: 40, y: 0, z: 0 } } : undefined),
+    sampleAt(n, t) {
+      if (n !== id) return null;
+      if (t < this.earliestTime - 1 || t > this.latestTime + 1) return null;
+      // Quantised to the snapshot rate, so this is a ring and not a formula.
+      const step = Math.round((t - this.earliestTime) / (1000 / rate));
+      return {
+        x: step * 0.25, y: 0, z: 0,
+        yaw: step * 0.02, pitch: 0.1,
+        height: K.PLAYER_HEIGHT, alive: true,
+      };
+    },
+  });
+
   check('the world killing you gets the plain death screen, not a cam', (() => {
     // A fall, the void, your own rocket. There is nobody to look at, so there
     // is nothing to look at — and `begin` answering null is what makes the
@@ -2616,6 +2804,131 @@ export default async function run() {
       + `(${pct(unfixed)} without the raycast) · closer than 1u ${pct(tooClose)}`);
     return sampled > 5000 && clipped / sampled < 0.01 && tooClose / sampled < 0.005
       && clipped < unfixed;
+  })());
+
+  /* ── The replay ─────────────────────────────────────────────────────────
+   *
+   * The cam is a replay of the ten seconds before the death, seen from inside
+   * the killer's head, and the orbit above is what runs when there is no
+   * history to replay. These check the seam between the two.
+   * ────────────────────────────────────────────────────────────────────── */
+
+  check('with history, the cam is the killer\u2019s own eyes and not an orbit', (() => {
+    const cam = new KillCam();
+    const ring = history(7, K.KILLCAM_SECONDS);
+    cam.begin(deathMsg(), ring);
+    const shot = cam.update(1 / 60, ring, { x: 0, y: 0, z: 0 });
+    const sample = ring.sampleAt(7, cam.replayTime);
+    // The eye, exactly: their feet plus their height, less the eye offset.
+    const atEye = Math.abs(shot.from.y - (sample.y + sample.height - K.EYE_OFFSET)) < 1e-6;
+    info(`replay ${shot.replay} · rot ${shot.rot ? 'yes' : 'no'} · eye y=${shot.from.y.toFixed(3)}`);
+    return shot.replay === true && !!shot.rot && atEye
+      && Math.abs(shot.rot.pitch - 0.1) < 1e-9;
+  })());
+
+  check('it starts ten seconds before the death and runs at real time', (() => {
+    const cam = new KillCam();
+    const ring = history(7, K.KILLCAM_SECONDS);
+    cam.begin(deathMsg(), ring);
+    const opened = cam.replayTime;
+    for (let i = 0; i < 60 * 5; i++) cam.update(1 / 60, ring, { x: 0, y: 0, z: 0 });
+    const halfway = cam.replayTime;
+    const startsBack = Math.abs(opened - (ring.latestTime - K.KILLCAM_SECONDS * 1000)) < 1;
+    const realTime = Math.abs((halfway - opened) - 5000) < 40;
+    info(`opens at \u2212${((ring.latestTime - opened) / 1000).toFixed(1)}s, `
+      + `5s later it is at \u2212${((ring.latestTime - halfway) / 1000).toFixed(1)}s`);
+    return startsBack && realTime;
+  })());
+
+  check('a full ring is replayed for the whole cam, with no orbit tacked on', (() => {
+    // Ten seconds of cam over ten seconds of history: the replay *is* the cam,
+    // it ends on the frame you died, and the orbit never runs. That is the
+    // ordinary case and the one the setting describes.
+    const cam = new KillCam();
+    const ring = history(7, K.KILLCAM_SECONDS);
+    cam.begin(deathMsg(), ring);
+    let replayFrames = 0, orbitFrames = 0, frames = 0;
+    while (cam.active && frames < 2000) {
+      const shot = cam.update(1 / 60, ring, { x: 0, y: 0, z: 0 });
+      frames++;
+      if (shot?.replay) replayFrames++; else if (shot) orbitFrames++;
+    }
+    info(`${(replayFrames / 60).toFixed(2)}s replay + ${(orbitFrames / 60).toFixed(2)}s orbit`);
+    return Math.abs(replayFrames / 60 - K.KILLCAM_SECONDS) < 0.2 && orbitFrames === 0;
+  })());
+
+  check('and a short ring hands the camera to the orbit when it runs out', (() => {
+    // Four seconds of history under a ten-second cam — somebody who joined
+    // mid-match, or a director's cut, which is longer than the ring is deep.
+    // The replay plays what there is and the orbit finishes the shot.
+    const cam = new KillCam();
+    const ring = history(7, 4);
+    cam.begin(deathMsg(), ring);
+    let replayFrames = 0, last = null, frames = 0;
+    while (cam.active && frames < 2000) {
+      last = cam.update(1 / 60, ring, { x: 0, y: 0, z: 0 });
+      frames++;
+      if (last?.replay) replayFrames++;
+    }
+    const seconds = replayFrames / 60;
+    info(`${seconds.toFixed(2)}s of replay, then ${((frames - replayFrames) / 60).toFixed(2)}s of orbit`);
+    return Math.abs(seconds - 4) < 0.2 && frames - replayFrames > 60 * 5;
+  })());
+
+  check('too little history is the orbit, not a two-frame replay', (() => {
+    // Dying four seconds after spawning. A cut in, a shot and a cut out landing
+    // on top of each other reads as a glitch, so under a second and a half the
+    // cam is simply the orbit, which needs no history at all.
+    const cam = new KillCam();
+    const ring = history(7, 0.6);
+    cam.begin(deathMsg(), ring);
+    const shot = cam.update(1 / 60, ring, { x: 0, y: 0, z: 0 });
+    return cam.replayTime === null && shot && shot.replay === false && !shot.rot;
+  })());
+
+  check('a client with no ring at all still gets the cam it always had', (() => {
+    // Every one of the orbit checks above passes `begin` no history, which is
+    // the same path a build before the replay existed took.
+    const cam = new KillCam();
+    const shot = cam.begin(deathMsg());
+    return shot !== null && shot.replay === false && cam.replayTime === null;
+  })());
+
+  check('turning the replay off leaves the orbit and nothing else', (() => {
+    const cam = new KillCam();
+    settings.killCamReplay = false;
+    const ring = history(7, K.KILLCAM_SECONDS);
+    cam.begin(deathMsg(), ring);
+    const off = cam.replayTime === null;
+    settings.killCamReplay = true;
+    cam.end();
+    cam.begin(deathMsg(), ring);
+    const on = cam.replayTime !== null;
+    return off && on;
+  })());
+
+  check('the overlay counts down to the death rather than up from the start', (() => {
+    const cam = new KillCam();
+    const ring = history(7, K.KILLCAM_SECONDS);
+    cam.begin(deathMsg(), ring);
+    cam.update(2, ring, { x: 0, y: 0, z: 0 });
+    const v = cam.view();
+    info(`at 2s: ${v.replayAt.toFixed(1)}s in, ${v.replayLeft.toFixed(1)}s to go`);
+    return v.replay === true && Math.abs(v.replayAt - 2) < 0.01
+      && Math.abs(v.replayLeft - (K.KILLCAM_SECONDS - 2)) < 0.01;
+  })());
+
+  check('a killer who leaves mid-replay falls back rather than freezing', (() => {
+    // Their half of the ring goes with them, so `sampleAt` answers null. The
+    // orbit cannot find them either; both say so, and the death screen takes
+    // over — which is what a cam that has lost its subject should do.
+    const cam = new KillCam();
+    const ring = history(7, K.KILLCAM_SECONDS);
+    cam.begin(deathMsg(), ring);
+    cam.update(1, ring, { x: 0, y: 0, z: 0 });
+    const empty = { ...history(99, K.KILLCAM_SECONDS), get: () => undefined };
+    const gone = cam.update(1 / 60, empty, null);
+    return gone === null;
   })());
 
   check('a video creator is offered a longer shot, never a longer wait', (() => {

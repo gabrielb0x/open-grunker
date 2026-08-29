@@ -136,6 +136,18 @@ void main() {
   gl_FragColor = vec4(sRGB(max(col, 0.0)), 1.0);
 }`;
 
+/**
+ * The grade the game is *drawn* at, before anybody touches a slider.
+ *
+ * ACES rolls the highlights off and takes a little colour with them. The maps
+ * are painted in flat, saturated hex; putting some of it back here is what
+ * keeps a cobalt-blue house cobalt blue in full sun instead of powder blue.
+ * The saturation and contrast settings are multipliers on these, so 100% is
+ * this and not "no grade at all".
+ */
+export const BASE_SATURATION = 1.14;
+export const BASE_CONTRAST = 1.03;
+
 /** Bloom resolution divisor per quality level. */
 const BLOOM_DIV = { low: 6, medium: 5, high: 4, ultra: 3 };
 
@@ -179,12 +191,8 @@ export class PostFX {
         bloom: { value: 0.62 }, exposure: { value: 1.16 }, gamma: { value: 1.16 },
         vignette: { value: 0.2 },
         grain: { value: 0.022 }, chroma: { value: 0.5 },
-        // ACES rolls the highlights off and takes a little colour with them.
-        // The maps are painted in flat, saturated hex; putting some of it back
-        // here is what keeps a cobalt-blue house cobalt blue in full sun
-        // instead of powder blue.
-        saturation: { value: 1.14 },
-        contrast: { value: 1.03 }, time: { value: 0 },
+        saturation: { value: BASE_SATURATION },
+        contrast: { value: BASE_CONTRAST }, time: { value: 0 },
         flash: { value: 0 }, flashColor: { value: new THREE.Color(1, 0.86, 0.6) },
         damage: { value: 0 },
       },
@@ -226,6 +234,7 @@ export class PostFX {
   configure({
     enabled, quality = 'high', bloom = 0.62, vignette = 0.2, grain = 0.022,
     chroma = 0.5, exposure = 1.16, gamma = 1.16,
+    saturation = BASE_SATURATION, contrast = BASE_CONTRAST,
   }) {
     this.enabled = !!enabled;
     this.div = BLOOM_DIV[quality] ?? 4;
@@ -236,6 +245,11 @@ export class PostFX {
     u.chroma.value = chroma;
     u.exposure.value = exposure;
     u.gamma.value = Math.max(0.6, gamma);
+    // Both are already in the composite — ACES takes colour out of the
+    // highlights and this puts some of it back. What is new is that a player
+    // may now move them, so they arrive as arguments rather than as constants.
+    u.saturation.value = Math.max(0, saturation);
+    u.contrast.value = Math.max(0.1, contrast);
 
     // Bloom off is three draws off: the bright pass, both blur passes and the
     // extra full-screen fetch in the composite all go away together.

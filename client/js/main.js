@@ -25,6 +25,7 @@ import * as COS from '/shared/cosmetics.js';
  */
 const SLOT_FOR = [COS.SLOT.PRIMARY, COS.SLOT.SECONDARY, COS.SLOT.KNIFE];
 import { settings, set as setSetting, onChange as onSettingsChange, HEAVY_KEYS } from './settings.js';
+import * as i18n from './i18n.js';
 import { binds } from './keybinds.js';
 import { api } from './api.js';
 import { Net } from './net.js';
@@ -226,6 +227,10 @@ export class Game {
     /** The scoreboard is pinned open with the mouse free — see toggleScoreboard. */
     this.scoreboardPinned = false;
     this.renderTime = 0;
+    /** True while the scene is being drawn at a moment in the past. */
+    this.replaying = false;
+    /** Whether the controller legend is up, so the class is toggled on change. */
+    this._padLegend = false;
     this.smooth = new THREE.Vector3();
     this.viewRoll = 0;
     this.fovCurrent = settings.fov;
@@ -372,6 +377,7 @@ export class Game {
     this.hud.hideDeath();
     this.hud.hideKillCam();
     this.killCam.end();
+    this.endReplay();
     // A clean screen belongs to the shot it was turned on for, not to the
     // browser: leaving with the interface off would mean coming back to a menu
     // over a game with no HUD and no obvious way to get it back.
@@ -549,6 +555,17 @@ export class Game {
   /** Are we drawing somebody else's HUD right now? */
   get watchingHud() { return this.specWatching && this.state === 'spectating'; }
 
+  /**
+   * True while something on screen, rather than the match, is what a button
+   * press is aimed at. See the poll in `loop`.
+   */
+  get interfaceOwnsPad() {
+    return this.hud.chatOpen || this.hud.matchEndOpen || this.hud.reportCardOpen
+      || this.menu.classModalOpen || this.menu.playerCardOpen || this.menu.visible
+      || this.scoreboardPinned || this.inGameMenuOpen
+      || !$('pause').classList.contains('hidden');
+  }
+
   /* ── Networking ────────────────────────────────────────────────────────── */
 
   _bindNet() {
@@ -606,6 +623,10 @@ export class Game {
       this.loadMap(msg.map);
       this.entities.reset();
       this.entities.localId = msg.id;
+      // A body for ourselves, drawn by nothing but the kill cam's replay — see
+      // EntityManager.addSelf. Without it the replay is the killer's ten
+      // seconds with the person they were shooting at cut out of them.
+      this.entities.addSelf({ ...msg.you, id: msg.id });
       for (const p of msg.players) this.entities.addPlayer(p);
 
       this.objectives.apply(msg.objectives ?? []);
@@ -689,6 +710,7 @@ export class Game {
       // player who is back in the match must not still be watching a replay.
       this.killCam.end();
       this.hud.hideKillCam();
+      this.endReplay();
       this.deathAt = null;
       this.smooth.set(0, 0, 0);
       if (msg.classId && msg.classId !== this.classId) this.setClass(msg.classId);
@@ -794,7 +816,7 @@ export class Game {
        * one of those, which is why the test is its return value rather than a
        * list of conditions repeated here.
        */
-      const shot = this.entities.get(msg.byId) ? this.killCam.begin(msg) : null;
+      const shot = this.entities.get(msg.byId) ? this.killCam.begin(msg, this.entities) : null;
       if (shot) {
         this.deathCam = null;
         this.hud.hideDeath();
@@ -875,17 +897,21 @@ export class Game {
 
     net.on('shot', (msg) => this.onRemoteShot(msg));
     net.on('impact', (msg) => {
+      // Not during a replay: a spark from the present landing in a picture of
+      // ten seconds ago is the one thing that would give the illusion away.
+      if (this.replaying) return;
       this.effects.impact(msg.x, msg.y, msg.z, msg.nx, msg.ny, msg.nz, msg.s ?? 'concrete');
       sfx.impact(msg, this.listener(), msg.s ?? 'concrete');
     });
     net.on('explosion', (msg) => {
+      // The rocket is gone the instant it goes off, replay or not. Dropping it
+      // from the array was never enough on its own: the mesh belongs to the
+      // scene, so a filtered-out projectile left its warhead hanging in the air
+      // at the point of impact for the rest of the match.
+      this.despawnProjectile(msg.id);
+      if (this.replaying) return;
       this.effects.explosion(msg.x, msg.y, msg.z, msg.r);
       sfx.explosion(msg, this.listener());
-      // The rocket is gone the instant it goes off. Dropping it from the array
-      // was never enough on its own: the mesh belongs to the scene, so a
-      // filtered-out projectile left its warhead hanging in the air at the
-      // point of impact for the rest of the match.
-      this.despawnProjectile(msg.id);
       // Felt as far as it reaches: the falloff is keyed to the blast's own
       // radius rather than a fixed 26 units, so a bigger warhead shakes a
       // bigger room instead of the same one harder.
@@ -1353,6 +1379,7 @@ export class Game {
     this.deathCam = null;
     this.killCam.end();
     this.hud.hideKillCam();
+    this.endReplay();
     this.scoreboardPinned = false;
     this.state = 'spectating';
     this.pending.length = 0;
@@ -1695,8 +1722,42 @@ export class Game {
 
   /* ── Snapshots & reconciliation ────────────────────────────────────────── */
 
+  /**
+   * This client's own snapshot entry, or null while it has no body.
+   *
+   * Byte for byte the layout `Player.netEntry` writes on the server — id,
+   * position, view angles, a flag word, health, weapon slot and ground speed —
+   * because entities.js reads every entry through one code path and a second
+   * shape would mean a second one.
+   */
+  selfEntry(msg) {
+    const y = msg.y;
+    if (!y || !this.alive || !this.myId) return null;
+    let flags = 1;
+    if (y[6]) flags |= 2;
+    if (this.local.crouching) flags |= 4;
+    if (this.local.sliding) flags |= 8;
+    if (this.input.ads) flags |= 16;
+    if (this.input.mouse.left) flags |= 32;
+    return [
+      this.myId, y[0], y[1], y[2], this.input.yaw, this.input.pitch,
+      flags, Math.round(this.health), this.slot,
+      Math.hypot(this.local.vx, this.local.vz),
+    ];
+  }
+
   onSnapshot(msg) {
-    this.entities.pushSnapshot(msg.t, msg.p ?? []);
+    /*
+     * Our own entry, in the shape the server sends everybody else's.
+     *
+     * The position is the server's — `msg.y`, the state it simulated at `msg.t`
+     * — and not the predicted one a few ticks ahead of it, because what the
+     * replay has to line up with is what the *killer* was shooting at, which is
+     * the position on the server's clock. The view angles are this client's
+     * own: nothing else knows them, and they are what makes a replay of a
+     * duel show two people looking at each other.
+     */
+    this.entities.pushSnapshot(msg.t, msg.p ?? [], this.selfEntry(msg));
     if (typeof msg.h === 'number') this.health = msg.h;
     if (typeof msg.m === 'number') this.matchTime = msg.m;
     // Only a spectator is sent this, and only for the body it is watching.
@@ -1796,7 +1857,14 @@ export class Game {
       if (!this.hud.openChat((text) => {
         this.net.chat(text);
         this.grabMouse();
-      })) this.grabMouse();
+      })) { this.grabMouse(); return; }
+      // A controller has no letters of its own. It does now — DONE sends the
+      // line, which is what Enter does on the keyboard this is standing in for.
+      if (this.input.padActive) {
+        this.menu.padKeyboard.open(this.hud.el.chatInput, {
+          done: () => this.hud.el.chatForm.requestSubmit?.(),
+        });
+      }
     });
 
     inp.on('classMenu', () => {
@@ -2074,6 +2142,10 @@ export class Game {
     this.menu?.setLoadoutCard(classId);
     this.weapons = loadoutFor(classId);
     this.refreshCosmetics();
+    // The replay body wears what we wear. Everybody else's is rebuilt off the
+    // join that re-announces a class change; ours never travels, so it is
+    // rebuilt here.
+    if (this.myId) this.entities.setClass(this.myId, classId, undefined, this.cos);
     for (let i = 0; i < this.weapons.length; i++) {
       this.ammo[i] = this.weapons[i].magSize ?? 0;
       this.reserve[i] = -1;
@@ -2320,6 +2392,15 @@ export class Game {
     const e = this.entities.get(msg.id);
     const from = { x: msg.x, y: msg.y, z: msg.z };
 
+    /*
+     * A rocket is an object in the world and has to be tracked whatever is on
+     * screen: it will still be in the air when the replay ends, and the
+     * explosion that removes it is matched by id. Everything below the
+     * projectile branch is a flash, a shell and a tracer — sensory, transient,
+     * and belonging to a moment ten seconds newer than the picture.
+     */
+    if (this.replaying && !msg.projectile) return;
+
     if (msg.projectile) {
       // The drop comes off the weapon rather than out of a literal here: the
       // server steps the real rocket with `projectile.gravity`, and a client
@@ -2456,15 +2537,23 @@ export class Game {
       p.life -= dt;
       p.mesh.position.set(p.x, p.y, p.z);
       p.mesh.lookAt(p.x + p.vx, p.y + p.vy, p.z + p.vz);
-      // On the clock rather than on the frame. Emitting once per frame made a
-      // single rocket cost four times as many particles at 240 fps as at 60,
-      // and both pools hold eleven hundred between everything on screen — so a
-      // fast machine spent its whole particle budget on exhaust and recycled
-      // the trail out from under itself.
-      p.trail = (p.trail ?? TRAIL_INTERVAL) + dt;
-      if (p.trail >= TRAIL_INTERVAL) {
-        p.trail = 0;
-        this.effects.rocketTrail(p.x, p.y, p.z);
+      // Still flown, never drawn, while the scene is ten seconds behind: this
+      // rocket is in the air *now*, and it has to be where the explosion that
+      // removes it says it is the moment the replay hands the screen back. Its
+      // exhaust is the part that must not appear, so only that is skipped —
+      // the flight, the fuse and the disposal all keep running.
+      p.mesh.visible = !this.replaying;
+      if (!this.replaying) {
+        // On the clock rather than on the frame. Emitting once per frame made a
+        // single rocket cost four times as many particles at 240 fps as at 60,
+        // and both pools hold eleven hundred between everything on screen — so a
+        // fast machine spent its whole particle budget on exhaust and recycled
+        // the trail out from under itself.
+        p.trail = (p.trail ?? TRAIL_INTERVAL) + dt;
+        if (p.trail >= TRAIL_INTERVAL) {
+          p.trail = 0;
+          this.effects.rocketTrail(p.x, p.y, p.z);
+        }
       }
       if (p.life <= 0) {
         this.disposeProjectile(p);
@@ -2500,13 +2589,30 @@ export class Game {
     // press PLAY with.
     const playing = this.state === 'playing';
     this.input.aimAssist = playing ? this.aimAssistAmount() : 0;
-    this.input.pollPad(dt, playing);
+    /*
+     * Whose pad it is.
+     *
+     * `playing` alone was not the question. A player standing in a match with
+     * the class picker, the pause card, the end-of-match vote or the scoreboard
+     * open is looking at an interface, and every face button was still firing
+     * the *game's* action at it — so a pad could open all four and press
+     * nothing on any of them. The kill cam is deliberately not on this list:
+     * skipping it is the jump binding, and that has to stay the game's.
+     */
+    this.input.pollPad(dt, playing && !this.interfaceOwnsPad);
     // A pad plugged in before the page loaded fires no connect event, so the
     // hints follow the first *use* rather than the arrival.
     if (this.input.padActive !== this._padHinted) {
       this._padHinted = this.input.padActive;
       document.body.classList.toggle('pad', this._padHinted);
       this.hud.setPadHints(this._padHinted);
+    }
+    // …and the legend, which is about the *interface's* buttons rather than
+    // the game's, so it follows what a press is currently aimed at.
+    const legend = this._padHinted && (!playing || this.interfaceOwnsPad);
+    if (legend !== this._padLegend) {
+      this._padLegend = legend;
+      document.body.classList.toggle('pad-ui', legend);
     }
 
     if (this.state !== 'playing') {
@@ -2589,6 +2695,10 @@ export class Game {
     this.updateTargets(dt);
     this.effects.update(dt, this.gfx.camera);
     this.objectives.update(dt, this.gfx.camera);
+    // A dead player has no weapon on screen. It used to stay drawn through the
+    // whole death — a rifle floating in the middle of somebody else's kill cam,
+    // pointed wherever the corpse had last been facing.
+    this.viewmodel.visible = this.alive;
     this.viewmodel.update(dt, {
       speed: Math.hypot(this.local.vx, this.local.vz),
       grounded: this.local.onGround,
@@ -2600,7 +2710,11 @@ export class Game {
     this.updateHud(dt);
     this.updateNukeCountdown(nowSec);
 
-    this.gfx.followSun(this.local.x, this.local.z);
+    // The shadow frustum follows whatever the camera is looking at. Normally
+    // that is us; during a kill cam it is somebody else, ten seconds ago, and a
+    // frustum still centred on our corpse leaves the replay unshadowed.
+    const sunAt = this.alive ? this.local : this.gfx.camera.position;
+    this.gfx.followSun(sunAt.x, sunAt.z);
     this.gfx.render(dt, () => this.viewmodel.render());
 
     // Last, so the frame it measures is the whole frame. Both calls return on
@@ -2765,7 +2879,13 @@ export class Game {
       const shot = this.killCam.update(dt, this.entities, this.deathAt, this.world);
       if (shot) {
         cam.position.set(shot.from.x, shot.from.y, shot.from.z);
-        cam.lookAt(shot.at.x, shot.at.y, shot.at.z);
+        // The replay hands back the killer's own yaw and pitch and they are set
+        // straight onto the camera: `lookAt` cannot express a view pointing
+        // straight up, and "cannot look straight up" is not a property a
+        // first-person camera is allowed to have. The orbit hands back a point
+        // instead, because an orbit has no view angles of its own.
+        if (shot.rot) cam.rotation.set(shot.rot.pitch, shot.rot.yaw, 0, 'YXZ');
+        else cam.lookAt(shot.at.x, shot.at.y, shot.at.z);
         return;
       }
     }
@@ -2874,16 +2994,62 @@ export class Game {
   }
 
   updateRemote(dt) {
+    const view = {
+      camera: this.gfx.camera,
+      world: this.world,
+      nowSec: performance.now() / 1000,
+    };
+
+    /*
+     * The kill cam's replay, which is this same call pointed at a moment ten
+     * seconds ago. Every body in the room rewinds with the camera because they
+     * are all read out of one buffer by one interpolator — there is no second
+     * playback path to keep in step with this one.
+     */
+    const replay = this.killCam.replayTime;
+    if (replay !== null) {
+      if (!this.replaying) this.beginReplay();
+      this.entities.update(replay, dt, view);
+      return;
+    }
+    if (this.replaying) this.endReplay();
+
     // Render remote entities INTERP_DELAY behind the server clock.
     const target = this.net.serverTime - K.INTERP_DELAY * 1000;
     if (this.renderTime === 0) this.renderTime = target;
     this.renderTime += dt * 1000;
     this.renderTime += (target - this.renderTime) * Math.min(1, dt * 3.5);
-    this.entities.update(this.renderTime, dt, {
-      camera: this.gfx.camera,
-      world: this.world,
-      nowSec: performance.now() / 1000,
-    });
+    this.entities.update(this.renderTime, dt, view);
+  }
+
+  /**
+   * Puts the scene into the past, and takes it out again.
+   *
+   * Three things have to move together, which is why they are a pair of
+   * methods rather than three flags read in three places: the entity manager
+   * has to know it is being asked about a moment that is not now, the killer's
+   * own body has to come off the screen because the camera is standing inside
+   * it, and ours has to go on.
+   */
+  beginReplay() {
+    this.replaying = true;
+    for (const p of this.projectiles) p.mesh.visible = false;
+    this.entities.replaying = true;
+    this.entities.hidden = this.killCam.shot?.targetId ?? 0;
+  }
+
+  endReplay() {
+    this.replaying = false;
+    this.entities.replaying = false;
+    this.entities.hidden = 0;
+    // Ten seconds forward in one frame is not a death, and the interpolator
+    // reads a death out of a body that was alive on the previous frame and is
+    // not on this one. Without this, everybody who died inside the replayed
+    // window falls over a second time as it ends.
+    this.entities.syncAlive(this.net.serverTime - K.INTERP_DELAY * 1000);
+    // …and the render clock has been ignored for ten seconds; let it re-seed
+    // from the server's rather than easing back across the whole gap.
+    this.renderTime = 0;
   }
 
   updateHud(dt) {
@@ -3107,5 +3273,16 @@ window.addEventListener('DOMContentLoaded', () => {
     return;
   }
   window.game = new Game();
+  /*
+   * The interface's language.
+   *
+   * Started after the game rather than before it because it has nothing to do
+   * with WebGL and everything to draw: `init` translates whatever is already on
+   * screen and then watches for the rest, so the order it runs in decides only
+   * how many nodes the first pass has to walk. `/meta` arrives later and hands
+   * over the server's own default, for an operator running this for one
+   * country. An English player pays for none of it — see i18n.js.
+   */
+  i18n.init();
   document.addEventListener('pointerdown', () => { initAudio(); resumeAudio(); }, { once: true });
 });
