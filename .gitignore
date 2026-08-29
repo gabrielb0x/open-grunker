@@ -6,3 +6,4 @@ client/vendor/
 client/dist/
 .DS_Store
 /cheat.user.js
+/todo.md
