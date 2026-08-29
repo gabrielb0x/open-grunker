@@ -331,12 +331,12 @@ export class Hub {
   }
 
   join({ ws, name, userId, level, classId, skin, skins, cos, primaries, verified, clan, clanVerified, role, mutedUntil,
-    ip, roomId, spectate = false }) {
+    creator, anthem, anthemTitle, ip, roomId, spectate = false }) {
     const room = this.pickRoom(roomId, { spectate });
     if (!room) return null;
     const player = new Player({
       ws, name, userId, level, classId, skin, skins, cos, primaries, verified, clan, clanVerified, role, mutedUntil,
-      ip, spectator: spectate,
+      creator, anthem, anthemTitle, ip, spectator: spectate,
     });
     room.add(player);
     this.playersById.set(player.id, { player, room });

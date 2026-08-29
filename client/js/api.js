@@ -15,6 +15,14 @@ export let challenges = null;
  * `{ required, enforced, verified, email }`, or null when signed out.
  */
 export let verification = null;
+/**
+ * What this account may open in developer mode: `{ allowed, pro, need, panels }`.
+ *
+ * Answered by the server and never worked out here — it is a level plus a
+ * creator status, both of which live over there. Restored with the session so
+ * the rail entry exists from the menu rather than only after a match.
+ */
+export let devAccess = null;
 
 function setToken(t) {
   token = t || null;
@@ -163,7 +171,10 @@ export const api = {
 
   /** Restores the session on page load; resolves to null when signed out. */
   async me() {
-    if (!token) { account = null; mastery = {}; challenges = null; verification = null; return null; }
+    if (!token) {
+      account = null; mastery = {}; challenges = null; verification = null; devAccess = null;
+      return null;
+    }
     try {
       const r = await request('GET', '/auth/me');
       account = r.user;
@@ -171,6 +182,7 @@ export const api = {
       mastery = r.mastery ?? {};
       challenges = r.challenges ?? null;
       verification = r.verification ?? null;
+      devAccess = r.dev ?? null;
       return r.user;
     } catch (err) {
       if (err.status === 401) setToken(null);
@@ -178,6 +190,7 @@ export const api = {
       mastery = {};
       challenges = null;
       verification = null;
+      devAccess = null;
       return null;
     }
   },
@@ -267,6 +280,62 @@ export const api = {
 
   /** Every report this account has filed, and what a moderator made of each. */
   myReports() { return request('GET', '/reports/mine'); },
+
+  /* ── Creators ──────────────────────────────────────────────────────────── */
+
+  /** The whole CREATOR tab in one request: rules, standing, briefs, dev access. */
+  creator() { return request('GET', '/creator'); },
+
+  /** @param {{kind:string, pitch:string, links:Array<{platform:string,handle:string}>}} body */
+  applyAsCreator(body) { return request('POST', '/creator/apply', body); },
+
+  /** Withdraws a pending application, or resigns an approved status. */
+  resignCreator() { return request('DELETE', '/creator'); },
+
+  setCreatorLinks(links) { return request('PUT', '/creator/links', { links }); },
+
+  /**
+   * Uploads an anthem.
+   *
+   * Posts the WAV bytes as they are, with no form and no base64 envelope —
+   * exactly like an avatar, and for the same reason: the server is going to
+   * read the header itself either way, so wrapping the bytes in anything only
+   * costs a third more of them on the wire.
+   *
+   * The title rides in the query string rather than the body because the body
+   * *is* the file. Sending it as a header would work too, and would put a
+   * user-typed string somewhere far more surprising.
+   *
+   * @param {ArrayBuffer} wav mono 16-bit PCM — see encodeWav in menu.js
+   * @param {string} title
+   */
+  async uploadAnthem(wav, title = '') {
+    if (!token) throw new ApiError(401, 'unauthorized', 'sign in first');
+    let res;
+    try {
+      res = await fetch(`${BASE}/creator/anthem?title=${encodeURIComponent(title.slice(0, 64))}`, {
+        method: 'POST',
+        headers: { 'content-type': 'audio/wav', authorization: `Bearer ${token}` },
+        body: wav,
+        credentials: 'same-origin',
+      });
+    } catch {
+      throw new ApiError(0, 'network', 'cannot reach the server');
+    }
+    let data = null;
+    try { data = await res.json(); } catch { /* empty body */ }
+    if (!res.ok || data?.ok === false) {
+      throw new ApiError(res.status, data?.error ?? 'upload_failed', data?.message ?? data?.error);
+    }
+    return data ?? {};
+  },
+
+  removeAnthem() { return request('DELETE', '/creator/anthem'); },
+  renameAnthem(title) { return request('PUT', '/creator/anthem', { title }); },
+
+  skinRequests() { return request('GET', '/creator/skin-requests'); },
+  fileSkinRequest(body) { return request('POST', '/creator/skin-requests', body); },
+  withdrawSkinRequest(id) { return request('DELETE', `/creator/skin-requests/${encodeURIComponent(id)}`); },
 
   /* ── Friends ───────────────────────────────────────────────────────────── */
 

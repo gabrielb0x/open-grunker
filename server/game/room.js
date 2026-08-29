@@ -2492,13 +2492,42 @@ export class Room {
       killerStreak: killer?.score.streak ?? 0,
     });
 
+    /*
+     * The kill cam's whole brief, in one message.
+     *
+     * The death screen was already the one place a killer's name is written
+     * large; the cam is ten seconds of looking at them, so it gets the rest of
+     * what makes that a person rather than a nickname — their badges, their
+     * level, how far the shot was and what they had left when it landed.
+     *
+     * The anthem is a *URL the server resolved*, never a filename the client
+     * asked for. That is the whole of the rule: what plays into a dead player's
+     * ears is chosen by the server from a file it levelled itself, and there is
+     * no field here a client could fill in to have something else played.
+     * A killer with no anthem sends null and the cam runs silent, which is the
+     * ordinary case and has to look deliberate rather than broken.
+     */
     this.sendTo(victim, {
       o: K.S2C.DEATH, by: killer ? killer.name : 'the world', byId: killer?.id ?? 0,
-      // The killer's badges travel too: the death screen is the one place their
-      // name is written large, and a clan tag belongs beside it like anywhere else.
       byClan: killer?.clan ?? null, byClanVerified: !!killer?.clanVerified,
+      byLevel: killer?.level ?? 0, byVerified: !!killer?.verified,
+      byCreator: killer?.creatorKind ?? null,
+      anthem: killer?.anthem ?? null, anthemTitle: killer?.anthemTitle ?? null,
       weapon: weaponId, head, respawnIn: K.RESPAWN_TIME,
       killerHealth: killer ? Math.round(killer.health) : 0,
+      // Rounded to a metre: it is a caption, not a measurement, and the extra
+      // digits would be the only place on this screen anybody could read the
+      // exact distance the server thought a shot was.
+      distance: Math.round(ctx.distance ?? 0),
+      // How long the cam runs and when the skip lights up. Sent rather than
+      // assumed so a client and a server that disagree about the numbers still
+      // agree about this death — and so the director's cut is a longer number
+      // here rather than a second rule the client keeps for itself.
+      cam: {
+        seconds: killer && killer !== victim ? K.KILLCAM_SECONDS : 0,
+        skipAfter: K.KILLCAM_SKIP_AFTER,
+        director: K.creatorCan(victim.creator, 'director') ? K.KILLCAM_DIRECTOR_SECONDS : 0,
+      },
     });
 
     // Killing the caller is the only counterplay to a launch, so it has to

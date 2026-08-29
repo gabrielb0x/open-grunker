@@ -156,6 +156,55 @@
     </div>
   </div>
 
+  <!-- ── The kill cam ────────────────────────────────────────────────────
+       Ten seconds looking at whoever killed you, skippable after three. The
+       camera is killcam.js and the death screen above is still what shows when
+       there is nobody to look at — a fall, the void, a killer who left. This is
+       the card that sits over the shot: who they are, what they did it with,
+       and the track playing if they are a music creator.
+
+       Letterboxed on purpose. The bars are what say "this is a replay, not
+       your game", which is the one thing a player has to understand instantly
+       or the whole ten seconds reads as a freeze.
+       ──────────────────────────────────────────────────────────────────── -->
+  <div id="killCam" class="hidden">
+    <div class="kc-bar top"></div>
+    <div class="kc-bar bottom"></div>
+
+    <div class="kc-card">
+      <span class="kc-eyebrow">ELIMINATED BY</span>
+      <h2 class="kc-name" id="kcName">—</h2>
+      <div class="kc-tags" id="kcTags"></div>
+      <div class="kc-facts" id="kcFacts"></div>
+    </div>
+
+    <!-- The anthem credit. Absent, not empty, when the killer has no track:
+         "no anthem" is the ordinary case and must not look like a failure. -->
+    <div class="kc-anthem hidden" id="kcAnthem">
+      <span class="kc-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+      <span class="kc-track"><b id="kcTrack">—</b><small id="kcTrackBy">—</small></span>
+    </div>
+
+    <div class="kc-foot">
+      <div class="kc-timer"><b id="kcRemaining">10</b><span>RESPAWN</span></div>
+      <button type="button" class="kc-skip" id="kcSkip" disabled>
+        <span class="kc-skip-fill" id="kcSkipFill"></span>
+        <span class="kc-skip-label" id="kcSkipLabel">SKIP IN 3</span>
+      </button>
+      <div class="kc-hint" id="kcDirector"></div>
+    </div>
+  </div>
+
+  <!-- ── Developer overlays ──────────────────────────────────────────────
+       Read-only instruments, unlocked at level 10. devmode.js fills this in;
+       the one thing it draws that is not a reading is the render-toggle row,
+       whose clicks the HUD delegates off `data-dev`.
+
+       `pointer-events` is off on the column and back on for the panels, so a
+       stack of overlays down the side of the screen can never swallow a click
+       the game needed. -->
+  <div id="devOverlay" class="hidden" aria-hidden="true"></div>
+
   <div id="scoreboard" class="hidden">
     <div class="sb-card">
       <div class="sb-head">
@@ -424,6 +473,8 @@
             <h6>YOU</h6>
             <button class="tab" data-tab="profile" data-icon="user" data-label="ACCOUNT"
                     data-title="Account" data-sub="Progress, card, privacy and security"></button>
+            <button class="tab" data-tab="creator" data-icon="badge" data-label="CREATOR"
+                    data-title="Creator" data-sub="Apply, and what each discipline earns"></button>
           </div>
 
           <div class="pn-group" data-group="Setup">
@@ -432,6 +483,12 @@
                     data-title="Key bindings" data-sub="Keyboard, mouse and controller"></button>
             <button class="tab" data-tab="settings" data-icon="sliders" data-label="SETTINGS"
                     data-title="Settings" data-sub="Aim, video, audio, HUD and crosshair"></button>
+            <!-- Hidden until the account may open it. `openTab` and the filter
+                 both skip a hidden rail entry, so nothing here needs to know
+                 that developer mode has a level behind it. -->
+            <button class="tab hidden" data-tab="developer" data-locked="1" data-icon="terminal"
+                    data-label="DEVELOPER" data-title="Developer mode"
+                    data-sub="Instruments, and what each one reads"></button>
           </div>
 
           <div class="pn-group" data-group="About">
@@ -920,6 +977,176 @@
              than being written into the page, so a server that changes them
              does not need a new client.
              ─────────────────────────────────────────────────────────────── -->
+        <!-- ── Creator ──────────────────────────────────────────────────
+             One page with three states: you have not applied, you have and
+             nobody has read it yet, or you are one. The catalogue at the top is
+             drawn for all three — somebody deciding whether to apply needs to
+             see what each discipline actually earns, and somebody who has been
+             approved as one still wants to read what the other three get.
+
+             Everything below the catalogue is filled in by menu.js from
+             /creator, which is also where the rules come from: an operator who
+             moved the level or closed the programme in .env has moved it for
+             this page too, without a new client.
+             ─────────────────────────────────────────────────────────────── -->
+        <section class="tab-panel" data-panel="creator">
+          <div id="creatorSignedOut" class="profile-empty">
+            <h3>CREATOR STATUS NEEDS AN ACCOUNT</h3>
+            <p>Make music, art, video or code for this game and ask for the status that goes
+               with it. A human reads every application.</p>
+            <button class="btn-primary" id="btnCreatorSignIn">SIGN IN / REGISTER</button>
+          </div>
+
+          <div id="creatorClosed" class="profile-empty hidden">
+            <h3>NOT ON THIS SERVER</h3>
+            <p>Whoever runs this server has the creator programme switched off.</p>
+          </div>
+
+          <div id="creatorBody" class="hidden">
+            <!-- Where this account stands. Drawn first because it is the one
+                 thing somebody opening this tab twice is here to read. -->
+            <div class="cr-standing" id="crStanding"></div>
+            <div class="form-msg hidden" id="crMsg"></div>
+
+            <!-- The perks, per discipline. -->
+            <div class="panel-head sub">
+              <h4>THE FOUR DISCIPLINES</h4>
+              <span class="panel-note" id="crRules">—</span>
+            </div>
+            <div class="cr-kinds" id="crKinds"></div>
+
+            <!-- The application. Hidden once there is one standing. -->
+            <form class="cr-apply hidden" id="crApplyForm">
+              <div class="panel-head sub"><h4>APPLY</h4>
+                <span class="panel-note">A human reads this. Say what you make and where it lives.</span></div>
+              <label class="field">
+                <span>DISCIPLINE</span>
+                <select id="crKind"></select>
+              </label>
+              <label class="field">
+                <span>WHAT DO YOU MAKE?</span>
+                <textarea id="crPitch" rows="5" maxlength="700" spellcheck="true"
+                          placeholder="What you make, how long you have been making it, and anything you would want somebody to look at first."></textarea>
+                <small class="field-note"><b id="crPitchCount">0</b> / <span id="crPitchMax">700</span></small>
+              </label>
+              <div class="field">
+                <span>LINKS</span>
+                <p class="panel-note">Where your work lives. Pick a platform and give the handle —
+                   the address is built for you, so nothing you type here becomes a URL on
+                   somebody else&rsquo;s screen.</p>
+                <div class="cr-links" id="crLinks"></div>
+                <button type="button" class="btn-ghost" id="crAddLink">ADD A LINK</button>
+              </div>
+              <div class="cr-actions">
+                <button type="submit" class="btn-primary" id="crSubmit">SEND IT</button>
+              </div>
+            </form>
+
+            <!-- ── The perks, once approved ────────────────────────────────
+                 Each block is drawn only for a discipline that was granted it,
+                 off the same `grants` list the server checks. A musician never
+                 sees the skin brief and an artist never sees the uploader. -->
+            <div class="cr-perk hidden" id="crAnthemPerk">
+              <div class="panel-head sub"><h4>YOUR ANTHEM</h4>
+                <span class="panel-note" id="crAnthemNote">—</span></div>
+              <div class="cr-anthem" id="crAnthemState"></div>
+              <div class="cr-actions">
+                <button type="button" class="btn-ghost" id="crAnthemPick">CHOOSE A TRACK</button>
+                <button type="button" class="btn-ghost hidden" id="crAnthemPlay">PREVIEW</button>
+                <button type="button" class="btn-ghost danger hidden" id="crAnthemRemove">REMOVE</button>
+                <input type="file" id="crAnthemFile" accept="audio/*" class="hidden">
+              </div>
+              <!-- The trim, shown only once a file has been decoded. Ten
+                   seconds out of a longer track, chosen by its owner rather
+                   than taken off the front. -->
+              <div class="cr-trim hidden" id="crTrim">
+                <label class="field">
+                  <span>START AT <b id="crTrimAt">0.0s</b></span>
+                  <input type="range" id="crTrimRange" min="0" max="100" step="0.1" value="0">
+                </label>
+                <label class="field">
+                  <span>TITLE</span>
+                  <input id="crAnthemTitle" class="mini-input" maxlength="48" autocomplete="off"
+                         placeholder="What the track is called">
+                </label>
+                <div class="cr-actions">
+                  <button type="button" class="btn-primary" id="crAnthemUpload">UPLOAD</button>
+                  <button type="button" class="btn-ghost" id="crAnthemCancel">CANCEL</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="cr-perk hidden" id="crSkinPerk">
+              <div class="panel-head sub"><h4>COMMISSION A FINISH</h4>
+                <span class="panel-note" id="crSkinNote">—</span></div>
+              <div class="cr-briefs" id="crBriefs"></div>
+              <form class="cr-brief-form hidden" id="crBriefForm">
+                <label class="field"><span>NAME</span>
+                  <input id="crBriefName" class="mini-input" maxlength="28" autocomplete="off"
+                         placeholder="What the finish is called"></label>
+                <label class="field"><span>SLOT</span><select id="crBriefSlot"></select></label>
+                <label class="field"><span>THE BRIEF</span>
+                  <textarea id="crBriefText" rows="5" maxlength="900"
+                            placeholder="What it looks like, what it is of, and why it belongs in this game."></textarea></label>
+                <div class="field"><span>PALETTE</span>
+                  <div class="cr-palette" id="crPalette"></div></div>
+                <label class="field"><span>REFERENCE</span><select id="crBriefRef"></select></label>
+                <div class="cr-actions">
+                  <button type="submit" class="btn-primary">FILE IT</button>
+                  <button type="button" class="btn-ghost" id="crBriefCancel">CANCEL</button>
+                </div>
+              </form>
+              <button type="button" class="btn-ghost" id="crBriefNew">NEW BRIEF</button>
+            </div>
+
+            <div class="cr-perk hidden" id="crLinksPerk">
+              <div class="panel-head sub"><h4>LINKS ON YOUR CARD</h4>
+                <span class="panel-note">Anyone who opens your profile sees these.</span></div>
+              <div class="cr-links" id="crCardLinks"></div>
+              <div class="cr-actions">
+                <button type="button" class="btn-ghost" id="crAddCardLink">ADD A LINK</button>
+                <button type="button" class="btn-primary" id="crSaveLinks">SAVE</button>
+              </div>
+            </div>
+
+            <div class="cr-perk hidden" id="crResignPerk">
+              <div class="panel-head sub"><h4>STEP DOWN</h4>
+                <span class="panel-note">Gives the status back. Your anthem goes with it.</span></div>
+              <div class="cr-actions">
+                <button type="button" class="btn-ghost danger" id="crResign">GIVE UP CREATOR STATUS</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ── Developer mode ───────────────────────────────────────────────
+             The tab is hidden outright below the level, so this page is only
+             ever read by somebody who can turn the thing on. It is a switch, a
+             list of panels and a paragraph about what each one reads — plus the
+             one sentence that matters, which is that none of them reads
+             anything about anybody else.
+             ─────────────────────────────────────────────────────────────── -->
+        <section class="tab-panel" data-panel="developer">
+          <div class="dv-head">
+            <div>
+              <h3>DEVELOPER MODE</h3>
+              <p class="panel-note" id="dvNote">—</p>
+            </div>
+            <button type="button" class="btn-primary" id="dvToggle">TURN ON</button>
+          </div>
+
+          <p class="dv-rule">
+            Instruments, not powers. Everything here reads something this browser already
+            had and draws it — nothing asks the server for anything, and nothing shows you
+            one fact about another player that your screen was not already going to.
+            That is why there is no hitbox overlay for anybody but you.
+          </p>
+
+          <div class="panel-head sub"><h4>PANELS</h4>
+            <span class="panel-note" id="dvBind">—</span></div>
+          <div class="dv-panels" id="dvPanels"></div>
+        </section>
+
         <!-- ── Friends ──────────────────────────────────────────────────
              Presence is the point. A list of names is an address book; what
              anybody opens this for is "who is on, and can I get into their

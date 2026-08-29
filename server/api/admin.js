@@ -18,6 +18,7 @@ import { getMap } from '../../shared/maps.js';
 import { getClass } from '../../shared/weapons.js';
 import * as COS from '../../shared/cosmetics.js';
 import { clanAvatars } from '../util/avatar.js';
+import * as anthems from '../util/anthem.js';
 import config from '../config.js';
 import log, { recent as recentLogs } from '../util/log.js';
 import { SERIES_META, GAUGES, COUNTERS } from '../game/telemetry.js';
@@ -491,6 +492,9 @@ export function createAdminApi({ db, hub, telemetry = null, banPayload = null })
       rooms: hub.list(),
       online: hub.humanCount,
       openReports: db.reports.countOpen(),
+      // Two more queues on the same badge line as the reports one.
+      pendingCreators: config.creators.enabled ? db.creators.countPending() : 0,
+      openSkinRequests: config.creators.enabled ? db.creators.skinRequests.list({ status: 'open', limit: 1 }).open : 0,
       uptime: Math.round(process.uptime()),
       currency: K.CURRENCY,
       version: K.API_VERSION,
@@ -989,6 +993,166 @@ export function createAdminApi({ db, hub, telemetry = null, banPayload = null })
     const removed = db.reports.remove(report.id);
     audit('report.delete', `#${report.id} ${report.targetName}`, null);
     ok(ctx.res, { removed });
+  });
+
+  /* ── Creators ──────────────────────────────────────────────────────────────
+   *
+   * The queue behind the CREATOR tab. Everything here is somebody reading an
+   * application and answering it — there is no automatic path from applying to
+   * being one, which is the entire point of the status.
+   * ────────────────────────────────────────────────────────────────────────── */
+
+  const findCreator = (ctx) => {
+    const raw = String(ctx.params.id ?? '');
+    const user = (isUuid(raw) ? db.users.byId(raw) : null) ?? db.users.byName(raw);
+    if (!user) throw new ApiError(404, 'not_found', 'no such account');
+    const creator = db.creators.get(user.id);
+    if (!creator) throw new ApiError(404, 'not_found', 'that account has not applied');
+    return { user, creator };
+  };
+
+  /**
+   * One application, as the panel draws it.
+   *
+   * The links are resolved to URLs here rather than in the browser for the same
+   * reason they are on the public card: shared/constants.js is the only thing
+   * that turns a handle into a destination, and a moderator is about to click
+   * these to go and look at somebody's work.
+   */
+  const creatorPayload = (c) => ({
+    ...c,
+    kindName: K.getCreatorKind(c.kind)?.name ?? c.kind,
+    askedName: K.getCreatorKind(c.asked)?.name ?? c.asked,
+    links: c.links.map((l) => ({
+      ...l, label: K.creatorLinkLabel(l), url: K.creatorLinkUrl(l),
+    })).filter((l) => l.url),
+    anthemUrl: anthems.urlFor(c.anthem),
+  });
+
+  r.get('/admin/creators', (ctx) => {
+    requireAdmin(ctx);
+    const { rows, total, pending, approved } = db.creators.list({
+      status: ctx.query.get('status') ?? '',
+      kind: ctx.query.get('kind') ?? '',
+      q: ctx.query.get('q') ?? '',
+      limit: num(ctx.query.get('limit'), 1, 200, 50),
+      offset: num(ctx.query.get('offset'), 0, 1e6, 0),
+    });
+    ok(ctx.res, {
+      total, pending, approved,
+      byKind: db.creators.byKind(),
+      kinds: K.CREATOR_KINDS,
+      creators: rows.map(creatorPayload),
+    });
+  });
+
+  r.get('/admin/creators/:id', (ctx) => {
+    requireAdmin(ctx);
+    const { user, creator } = findCreator(ctx);
+    ok(ctx.res, {
+      creator: creatorPayload(creator),
+      // Who this is, so a decision can be made without leaving the queue: an
+      // application from an account with three open reports against it is a
+      // different application.
+      account: adminUser(user, db.stats.get(user.id), db.ipBans.forUser(user.id),
+        db.chatBans.active(user.id), db.reportBans.active(user.id)),
+      reports: db.reports.against(user.id, user.username, 10),
+      skinRequests: db.creators.skinRequests.forUser(user.id, 20),
+    });
+  });
+
+  /**
+   * Answers one application.
+   *
+   * `kind` is part of the decision rather than read back off the application,
+   * because the person reading it is the one who knows which queue somebody
+   * belongs in — a pitch filed as music that is really a portfolio of skin
+   * concepts gets approved as art, in one call, and the row keeps `asked` so it
+   * still reads honestly afterwards.
+   *
+   * Revoking sweeps the anthem off the disk. A perk that outlives the status it
+   * came from is a perk nobody took away.
+   */
+  r.post('/admin/creators/:id/decide', async (ctx) => {
+    requireAdmin(ctx);
+    const { user, creator } = findCreator(ctx);
+    const body = await readJson(ctx.req);
+
+    const status = K.CREATOR_STATUSES.includes(body.status) ? body.status : null;
+    if (!status || status === 'pending') {
+      throw new ApiError(400, 'bad_status', 'approve, reject or revoke');
+    }
+    const kind = K.CREATOR_KIND_IDS.includes(body.kind) ? body.kind : null;
+    const verdict = typeof body.verdict === 'string' && body.verdict.trim()
+      ? body.verdict.trim().slice(0, K.CREATOR_VERDICT_MAX)
+      : null;
+
+    if (status !== 'approved' && creator.anthem) {
+      await anthems.remove(user.id);
+      db.creators.setAnthem(user.id, null, null);
+    }
+    const updated = db.creators.decide({
+      userId: user.id, status, kind, verdict, actor: 'admin@local',
+    });
+    db.events.add({
+      kind: `creator.${status}`, userId: user.id, name: user.username, detail: updated.kind,
+    });
+    audit('creator.decide', user.username, `${status} · ${updated.kind}`);
+    // The badge follows the nickname, so a session already in a match is
+    // re-badged rather than made to reconnect to stop wearing one.
+    for (const { player, room } of hub.findConnections({ userId: user.id })) {
+      player.setCreator(db.creators.standing(user.id));
+      room.pushScore();
+    }
+    ok(ctx.res, { creator: creatorPayload(updated) });
+  });
+
+  /** Takes an anthem down without touching the status behind it. */
+  r.delete('/admin/creators/:id/anthem', async (ctx) => {
+    requireAdmin(ctx);
+    const { user, creator } = findCreator(ctx);
+    if (!creator.anthem) throw new ApiError(404, 'not_found', 'no anthem on that account');
+    const removed = await anthems.remove(user.id);
+    const updated = db.creators.setAnthem(user.id, null, null);
+    audit('creator.anthem.remove', user.username, creator.anthemTitle ?? null);
+    for (const { player } of hub.findConnections({ userId: user.id })) player.setAnthem(null, null);
+    ok(ctx.res, { removed, creator: creatorPayload(updated) });
+  });
+
+  /* ── Skin commissions ──────────────────────────────────────────────────── */
+
+  r.get('/admin/skin-requests', (ctx) => {
+    requireAdmin(ctx);
+    const { rows, total, open } = db.creators.skinRequests.list({
+      status: ctx.query.get('status') ?? '',
+      q: ctx.query.get('q') ?? '',
+      limit: num(ctx.query.get('limit'), 1, 200, 50),
+      offset: num(ctx.query.get('offset'), 0, 1e6, 0),
+    });
+    ok(ctx.res, { total, open, requests: rows });
+  });
+
+  r.post('/admin/skin-requests/:id/decide', async (ctx) => {
+    requireAdmin(ctx);
+    const request = db.creators.skinRequests.get(String(ctx.params.id ?? ''));
+    if (!request) throw new ApiError(404, 'not_found', 'no such brief');
+    const body = await readJson(ctx.req);
+    const status = K.SKIN_REQUEST_STATUSES.includes(body.status) ? body.status : null;
+    if (!status || status === 'open') {
+      throw new ApiError(400, 'bad_status', 'accept, ship or decline it');
+    }
+    // The item id is only meaningful once the finish really exists, so it is
+    // checked against the catalogue rather than stored as whatever was typed.
+    const itemId = COS.ITEMS?.[body.itemId] ? String(body.itemId) : null;
+    const updated = db.creators.skinRequests.decide({
+      id: request.id,
+      status,
+      verdict: typeof body.verdict === 'string' ? body.verdict.trim() : null,
+      actor: 'admin@local',
+      itemId,
+    });
+    audit('creator.skin.decide', `${request.username ?? request.userId} · ${request.name}`, status);
+    ok(ctx.res, { request: updated });
   });
 
   /* ── Clans ─────────────────────────────────────────────────────────────── */

@@ -107,6 +107,7 @@ for (const tab of document.querySelectorAll('.tab')) {
     if (tab.dataset.tab === 'logs') loadLogs(true);
     if (tab.dataset.tab === 'reports') loadReports();
     if (tab.dataset.tab === 'clans') loadClans();
+    if (tab.dataset.tab === 'creators') loadCreators();
     if (tab.dataset.tab === 'stats') loadStats();
     if (tab.dataset.tab === 'cosmetics') loadCosmetics();
   });
@@ -130,6 +131,7 @@ async function loadOverview() {
     const h = Math.floor(o.uptime / 3600), m = Math.floor((o.uptime % 3600) / 60);
     tile('statUptime', h >= 1 ? `${h}h ${m}m` : `${m}m`, `${o.memoryMb} MB`);
     setReportBadge(o.openReports ?? 0);
+    setCreatorBadge(o.pendingCreators ?? 0);
   } catch { /* the toast on the failing action is enough */ }
 }
 
@@ -1717,3 +1719,292 @@ for (const b of document.querySelectorAll('#cosActivityNav .subtab')) {
     if (s.authed) start();
   } catch { /* stay on the gate */ }
 })();
+
+/* ── Creators ────────────────────────────────────────────────────────────────
+ *
+ * Two queues on one page. Applications for the status, and the finish briefs
+ * that art creators file once they have it — two halves of one job, so one
+ * page, with the queue tabs deciding which is on screen.
+ *
+ * Nothing here is automatic and nothing here is meant to be. Approving somebody
+ * *is* the feature: everything else in this game is a number that goes up on
+ * its own, and creator status is the one thing behind a person reading what
+ * somebody made and deciding.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+let crPage = 0, crTotal = 0, crSelected = null, crQueue = 'pending';
+function setCreatorBadge(pending) {
+  const badge = $('creatorBadge');
+  if (!badge) return;
+  badge.textContent = String(pending);
+  badge.classList.toggle('hidden', !pending);
+}
+
+async function loadCreators() {
+  if (crQueue === 'briefs') return loadBriefs();
+  const q = $('creatorSearch').value.trim();
+  try {
+    const res = await call('GET',
+      `/creators?status=${encodeURIComponent(crQueue)}&kind=${encodeURIComponent($('creatorKind').value)}`
+      + `&q=${encodeURIComponent(q)}&limit=${pageSize}&offset=${crPage * pageSize}`);
+    crTotal = res.total;
+    setCreatorBadge(res.pending ?? 0);
+    $('creatorPendingCount').textContent = String(res.pending ?? 0);
+    $('creatorApprovedCount').textContent = String(res.approved ?? 0);
+    $('creatorCount').textContent = `${res.total} application${res.total === 1 ? '' : 's'}`;
+    $('creatorPageInfo').textContent =
+      `${Math.min(crTotal, crPage * pageSize + 1)}–${Math.min(crTotal, (crPage + 1) * pageSize)} of ${crTotal}`;
+    $('btnCreatorPrev').disabled = crPage === 0;
+    $('btnCreatorNext').disabled = (crPage + 1) * pageSize >= crTotal;
+
+    $('creatorRows').innerHTML = res.creators.map((c) => `
+      <tr data-id="${esc(c.userId)}" class="${crSelected?.userId === c.userId ? 'sel' : ''}${
+  c.status === 'pending' ? ' unread' : ''}">
+        <td><span class="p-name">${esc(c.username ?? c.userId)}</span></td>
+        <td>${esc(c.kindName)}${c.asked !== c.kind ? ` <span class="tag">asked ${esc(c.askedName)}</span>` : ''}</td>
+        <td class="r-when">${fmtAgo(c.appliedAt)}</td>
+        <td><span class="tag ${esc(c.status)}">${esc(c.status.toUpperCase())}</span></td>
+      </tr>`).join('')
+      || '<tr><td colspan="4" style="text-align:center;color:var(--muted)">Nothing here.</td></tr>';
+
+    for (const row of $('creatorRows').querySelectorAll('tr[data-id]')) {
+      row.addEventListener('click', () => selectCreator(row.dataset.id));
+    }
+  } catch (err) {
+    toast(err.message, 'bad');
+  }
+}
+
+async function selectCreator(id) {
+  try {
+    const res = await call('GET', `/creators/${encodeURIComponent(id)}`);
+    crSelected = res.creator;
+    renderCreator(res);
+    for (const row of $('creatorRows').querySelectorAll('tr[data-id]')) {
+      row.classList.toggle('sel', row.dataset.id === id);
+    }
+  } catch (err) {
+    toast(err.message, 'bad');
+  }
+}
+
+/**
+ * One application, with everything needed to answer it without leaving the pane.
+ *
+ * The links are real anchors because the whole job is going and looking at
+ * somebody's work; they carry `noopener noreferrer` like every other outbound
+ * link in this project, and what they *show* is the handle rather than the URL,
+ * so the label can never disagree with the destination.
+ */
+function renderCreator({ creator: c, account, reports = [], skinRequests = [] }) {
+  $('creatorDetailEmpty').classList.add('hidden');
+  const body = $('creatorDetailBody');
+  body.classList.remove('hidden');
+
+  const links = c.links.length
+    ? `<div class="cr-linkrow">${c.links.map((l) =>
+      `<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer nofollow">${esc(l.label)}
+        <small>${esc(l.platform)}</small></a>`).join('')}</div>`
+    : '<div class="snap-empty">No links — which is itself an answer.</div>';
+
+  // An anthem is played, not described. A track nobody listened to is a track
+  // nobody moderated, and the levelling means it is safe to press.
+  const anthem = c.anthemUrl
+    ? `<div class="cr-audio">
+         <b>${esc(c.anthemTitle || 'Untitled')}</b>
+         <audio controls preload="none" src="${esc(c.anthemUrl)}"></audio>
+         <button class="btn danger" data-act="drop-anthem">DELETE THE TRACK</button>
+       </div>`
+    : '';
+
+  const briefs = skinRequests.length
+    ? `<h3>THEIR BRIEFS</h3>${skinRequests.map((r) =>
+      `<div class="cr-brief-mini"><b>${esc(r.name)}</b> <span class="tag ${esc(r.status)}">${
+        esc(r.status)}</span><p>${esc(r.brief)}</p></div>`).join('')}`
+    : '';
+
+  body.innerHTML = `
+    <div class="subject">
+      <div class="who">
+        <b>${esc(c.username ?? c.userId)}</b>
+        <span class="tag ${esc(c.status)}">${esc(c.status.toUpperCase())}</span>
+        ${reports.length ? `<span class="tag ban">${reports.length} REPORT${
+  reports.length === 1 ? '' : 'S'}</span>` : ''}
+        <div>${account ? `level ${account.level} · ${account.stats?.matches ?? 0} matches · `
+    + `joined ${fmtAgo(account.createdAt)}` : 'account gone'}</div>
+      </div>
+    </div>
+    <div class="sub">Applied as <b>${esc(c.askedName)}</b> ${fmtAgo(c.appliedAt)}${
+  c.asked !== c.kind ? ` · standing as ${esc(c.kindName)}` : ''}</div>
+
+    <h3>WHAT THEY SAID</h3>
+    <div class="quote">${esc(c.pitch ?? 'Nothing — which is itself an answer.')}</div>
+
+    <h3>WHERE TO LOOK</h3>
+    ${links}
+    ${anthem ? `<h3>THEIR ANTHEM</h3>${anthem}` : ''}
+    ${briefs}
+    ${c.verdict ? `<h3>LAST DECISION</h3><div class="quote">${esc(c.verdict)}
+      <br><small>— ${esc(c.decidedBy ?? 'unknown')}</small></div>` : ''}
+
+    <h3>DECIDE</h3>
+    <div class="field"><label>APPROVE AS</label><select id="crDecideKind">
+      ${['music', 'art', 'video', 'code'].map((k) =>
+    `<option value="${k}"${k === c.kind ? ' selected' : ''}>${k}</option>`).join('')}
+    </select></div>
+    <div class="field"><label>WHAT THEY ARE TOLD</label>
+      <input id="crVerdictInput" maxlength="240" placeholder="One line. They read this."></div>
+    <div class="hint">The applicant reads this in their own CREATOR tab. It is the only thing
+      they ever hear back, so a sentence beats silence — and a rejection that says what to fix
+      is the difference between one more application and ten.</div>
+    <div class="row">
+      <button class="btn primary" data-act="approve">APPROVE</button>
+      <button class="btn" data-act="reject">REJECT</button>
+      ${c.status === 'approved' ? '<button class="btn danger" data-act="revoke">REVOKE</button>' : ''}
+    </div>`;
+
+  for (const btn of body.querySelectorAll('[data-act]')) {
+    btn.addEventListener('click', () => creatorAction(c.userId, btn.dataset.act));
+  }
+}
+
+async function creatorAction(id, act) {
+  const verdict = $('crVerdictInput')?.value.trim() || null;
+  try {
+    if (act === 'drop-anthem') {
+      if (!confirm('Delete this track? Their kill cam runs silent until they upload another.')) return;
+      await call('DELETE', `/creators/${encodeURIComponent(id)}/anthem`);
+      toast('Track deleted.', 'good');
+    } else {
+      const status = act === 'approve' ? 'approved' : act === 'reject' ? 'rejected' : 'revoked';
+      if (status !== 'approved' && !verdict
+        && !confirm('Send this back with no explanation?')) return;
+      await call('POST', `/creators/${encodeURIComponent(id)}/decide`, {
+        status, kind: status === 'approved' ? $('crDecideKind').value : undefined, verdict,
+      });
+      toast(`Marked ${status}.`, status === 'approved' ? 'good' : '');
+    }
+    await selectCreator(id);
+    await loadCreators();
+  } catch (err) {
+    toast(err.message, 'bad');
+  }
+}
+
+/* ── Skin briefs ─────────────────────────────────────────────────────────── */
+
+async function loadBriefs() {
+  const q = $('creatorSearch').value.trim();
+  try {
+    const res = await call('GET',
+      `/skin-requests?q=${encodeURIComponent(q)}&limit=${pageSize}&offset=${crPage * pageSize}`);
+    crTotal = res.total;
+    $('creatorBriefCount').textContent = String(res.open ?? 0);
+    $('creatorCount').textContent = `${res.total} brief${res.total === 1 ? '' : 's'}`;
+    $('creatorPageInfo').textContent =
+      `${Math.min(crTotal, crPage * pageSize + 1)}–${Math.min(crTotal, (crPage + 1) * pageSize)} of ${crTotal}`;
+    $('btnCreatorPrev').disabled = crPage === 0;
+    $('btnCreatorNext').disabled = (crPage + 1) * pageSize >= crTotal;
+
+    $('creatorRows').innerHTML = res.requests.map((r) => `
+      <tr data-brief="${esc(r.id)}" class="${r.status === 'open' ? 'unread' : ''}">
+        <td><span class="p-name">${esc(r.username ?? r.userId)}</span></td>
+        <td>${esc(r.name)}</td>
+        <td class="r-when">${fmtAgo(r.createdAt)}</td>
+        <td><span class="tag ${esc(r.status)}">${esc(r.status.toUpperCase())}</span></td>
+      </tr>`).join('')
+      || '<tr><td colspan="4" style="text-align:center;color:var(--muted)">No briefs filed.</td></tr>';
+
+    for (const row of $('creatorRows').querySelectorAll('tr[data-brief]')) {
+      row.addEventListener('click', () => {
+        const brief = res.requests.find((r) => r.id === row.dataset.brief);
+        if (brief) renderBrief(brief);
+      });
+    }
+  } catch (err) {
+    toast(err.message, 'bad');
+  }
+}
+
+function renderBrief(r) {
+  $('creatorDetailEmpty').classList.add('hidden');
+  const body = $('creatorDetailBody');
+  body.classList.remove('hidden');
+  body.innerHTML = `
+    <div class="subject">
+      <div class="who">
+        <b>${esc(r.name)}</b>
+        <span class="tag ${esc(r.status)}">${esc(r.status.toUpperCase())}</span>
+        <div>${esc(r.username ?? r.userId)} · ${esc(r.slot)} · ${fmtAgo(r.createdAt)}</div>
+      </div>
+    </div>
+
+    <h3>THE BRIEF</h3>
+    <div class="quote">${esc(r.brief)}</div>
+
+    <h3>PALETTE</h3>
+    <div class="cr-swatchrow">${r.palette.map((hex) =>
+    `<i style="background:${esc(hex)}" title="${esc(hex)}"></i>`).join('')
+  || '<span class="snap-empty">None given.</span>'}</div>
+    ${r.reference ? `<h3>REFERENCE</h3><div class="sub">Their ${esc(r.reference)} link — open it
+      from their application.</div>` : ''}
+    ${r.verdict ? `<h3>LAST DECISION</h3><div class="quote">${esc(r.verdict)}</div>` : ''}
+
+    <h3>DECIDE</h3>
+    <div class="field"><label>WHAT THEY ARE TOLD</label>
+      <input id="crBriefVerdict" maxlength="240" placeholder="One line. They read this."></div>
+    <div class="field"><label>ITEM ID</label>
+      <input id="crBriefItem" maxlength="64" value="${esc(r.itemId ?? '')}"
+        placeholder="e.g. primary:gold-rush — once the finish really exists"></div>
+    <div class="hint">Nothing here mints a cosmetic. shared/cosmetics.js stays the only thing
+      that decides what exists in the game; the id is recorded once the finish has shipped.</div>
+    <div class="row">
+      <button class="btn primary" data-brief-act="accepted">ACCEPT</button>
+      <button class="btn" data-brief-act="shipped">SHIPPED</button>
+      <button class="btn danger" data-brief-act="declined">DECLINE</button>
+    </div>`;
+  for (const btn of body.querySelectorAll('[data-brief-act]')) {
+    btn.addEventListener('click', async () => {
+      try {
+        await call('POST', `/skin-requests/${encodeURIComponent(r.id)}/decide`, {
+          status: btn.dataset.briefAct,
+          verdict: $('crBriefVerdict').value.trim() || null,
+          itemId: $('crBriefItem').value.trim() || null,
+        });
+        toast(`Marked ${btn.dataset.briefAct}.`, 'good');
+        await loadBriefs();
+      } catch (err) {
+        toast(err.message, 'bad');
+      }
+    });
+  }
+}
+
+/* ── Wiring ──────────────────────────────────────────────────────────────── */
+
+let creatorSearchTimer = null;
+$('creatorSearch')?.addEventListener('input', () => {
+  clearTimeout(creatorSearchTimer);
+  creatorSearchTimer = setTimeout(() => { crPage = 0; loadCreators(); }, 220);
+});
+$('creatorKind')?.addEventListener('change', () => { crPage = 0; loadCreators(); });
+$('creatorQueues')?.addEventListener('click', (e) => {
+  const tab = e.target.closest('.queue-tab');
+  if (!tab) return;
+  crQueue = tab.dataset.queue;
+  crPage = 0;
+  crSelected = null;
+  for (const t of $('creatorQueues').querySelectorAll('.queue-tab')) {
+    t.classList.toggle('active', t === tab);
+  }
+  // The discipline filter is meaningless over briefs, which have no discipline.
+  $('creatorKind').disabled = crQueue === 'briefs';
+  $('creatorDetailBody').classList.add('hidden');
+  $('creatorDetailEmpty').classList.remove('hidden');
+  loadCreators();
+});
+$('btnCreatorReload')?.addEventListener('click', () => loadCreators());
+$('btnCreatorPrev')?.addEventListener('click', () => { if (crPage > 0) { crPage--; loadCreators(); } });
+$('btnCreatorNext')?.addEventListener('click', () => {
+  if ((crPage + 1) * pageSize < crTotal) { crPage++; loadCreators(); }
+});

@@ -1414,6 +1414,554 @@ export function canSee(audience, relation) {
   return true;
 }
 
+
+/* ── The kill cam ─────────────────────────────────────────────────────────────
+ *
+ * Ten seconds looking at whoever just killed you, skippable after three.
+ *
+ * The three is not a compromise between the ten and impatience — it is the
+ * whole shape of the thing. A death screen you cannot leave is a punishment,
+ * and one you can leave instantly is one nobody ever sees. Three seconds is
+ * long enough that the cam has said what it came to say — who, with what, from
+ * how far, and on how much health — and short enough that a player in a hurry
+ * is never really held.
+ *
+ * None of this is a server rule. The room's respawn timer is unchanged at
+ * RESPAWN_TIME; the cam simply does not ask for a spawn while it is running, in
+ * exactly the way the pause menu and the open scoreboard already do not. A
+ * client that skipped the cam entirely would still respawn at RESPAWN_TIME and
+ * be no better off than one that pressed the button — which is the correct
+ * amount of power for a client to have over its own camera.
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+export const KILLCAM_SECONDS = 10;
+export const KILLCAM_SKIP_AFTER = 3;
+/** How far past the ten a video creator may hold the shot. */
+export const KILLCAM_DIRECTOR_SECONDS = 30;
+
+/* ── Player anthems ───────────────────────────────────────────────────────────
+ *
+ * Ten seconds a music creator uploads, played to whoever they just killed.
+ *
+ * The design question here is one sentence long: *somebody will upload a
+ * scream*. Everything below is the answer, and the answer is that loudness is
+ * not something the uploader gets to decide. The server measures what it was
+ * sent and rewrites the samples to a fixed loudness before a byte is stored —
+ * see server/util/audio.js — and the client then plays every anthem through one
+ * limited bus at the listener's own volume, so a file that somehow got past the
+ * first rule still cannot get past the second.
+ *
+ * The format is deliberately the dullest one there is. A server with no audio
+ * library cannot decode an MP3, and a server that cannot decode what it stores
+ * cannot measure it. So the browser — which has a full decoder built in —
+ * decodes, and what it uploads is plain PCM the server can read with a `for`
+ * loop. That is the same trade util/image.js makes for pictures, for the same
+ * reason: the magic bytes are the fact, and nothing else is.
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+/** Length of an anthem. The kill cam is ten seconds, so an anthem is too. */
+export const ANTHEM_MAX_SECONDS = KILLCAM_SECONDS;
+/** Under this there is nothing to play: a click is not a track. */
+export const ANTHEM_MIN_SECONDS = 1;
+/** Mono, because it is a sting on a death screen and not an album. */
+export const ANTHEM_CHANNELS = 1;
+/** 16 kHz of bandwidth: a stinger's worth, at a third of a CD's size. */
+export const ANTHEM_SAMPLE_RATE = 32000;
+/** Signed 16-bit PCM — the one encoding every browser both writes and reads. */
+export const ANTHEM_BITS = 16;
+
+/**
+ * Hard ceiling on the stored file.
+ *
+ * Ten seconds of mono 32 kHz 16-bit PCM is 640 KB, plus a 44-byte header. The
+ * slack is for a file that rounds up, never for a longer one: duration comes
+ * from the header, and is never inferred from the size.
+ */
+export const ANTHEM_MAX_BYTES = 704 * 1024;
+
+/** Biggest file the picker will even open, before it decodes and re-encodes. */
+export const ANTHEM_SOURCE_MAX_BYTES = 24 * 1024 * 1024;
+
+/** Room for the track's name, credited under the killer's on the cam. */
+export const ANTHEM_TITLE_MAX = 48;
+
+/**
+ * The loudness every stored anthem is rewritten to.
+ *
+ * Two numbers doing different jobs. The RMS target is what a track is
+ * *levelled* to, so a whisper and a wall of distortion arrive at the same
+ * perceived volume. The peak ceiling is what stops that levelling from clipping
+ * anything on the way up. The gain applied is whichever of the two asks for
+ * less, which is why a brickwalled troll upload comes out quieter than it went
+ * in and a quiet piano comes out louder.
+ */
+export const ANTHEM_TARGET_RMS_DB = -19;
+export const ANTHEM_PEAK_CEILING_DB = -1.5;
+
+/**
+ * The window the RMS is measured over, and why it is a window at all.
+ *
+ * Averaged across a whole file, "nine seconds of silence and one air horn"
+ * measures as a quiet track and gets turned *up*. Measured as the loudest
+ * 400 ms in it, it measures as an air horn. Loudness is a short-term quantity,
+ * and the trick only ever worked against the long-term one.
+ */
+export const ANTHEM_WINDOW_MS = 400;
+export const ANTHEM_HOP_MS = 100;
+
+/** Anything quieter than this across its whole length is silence, not a track. */
+export const ANTHEM_SILENCE_DB = -60;
+
+/** Milliseconds of ramp welded onto both ends, so no anthem starts on a click. */
+export const ANTHEM_FADE_MS = 25;
+
+/* ── Developer mode ───────────────────────────────────────────────────────────
+ *
+ * Instruments, not powers. Everything here reads something the client already
+ * has and draws it; nothing asks the server for anything, and nothing shows a
+ * player one fact about anybody else that their own screen was not already
+ * about to tell them.
+ *
+ * That line is the whole design constraint, and it is why there is no enemy
+ * hitbox overlay in this list. "Draw a box around every player" is a debugging
+ * tool right up until the boxes are visible through a wall, at which point it
+ * is a wallhack that shipped with the game — so the reconciliation trace is of
+ * the local player's own body, and the collision overlay is of the map, which
+ * is static data every client already downloaded.
+ *
+ * The level gate is the second half of the same thought: a panel this dense is
+ * a way to have a much worse first ten minutes, so it is not on the table until
+ * somebody has had a good ten hours instead.
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+export const DEV_MODE_LEVEL = 10;
+
+/**
+ * The panels, in the order they stack down the side of the screen.
+ *
+ * `pro` marks the three a code creator gets and the level gate does not open —
+ * not because they are dangerous, but because they are unreadable without
+ * already knowing what they are readings of.
+ */
+export const DEV_PANELS = [
+  {
+    id: 'perf',
+    name: 'Performance',
+    note: "Frame time, the renderer's own counters, and what the heap is doing.",
+  },
+  {
+    id: 'net',
+    name: 'Network',
+    note: 'Round trip, jitter, packet and byte rates, and how deep the snapshot buffer is.',
+  },
+  {
+    id: 'state',
+    name: 'Player state',
+    note: 'Position, velocity, the ground under you, and what the movement code thinks you are doing.',
+  },
+  {
+    id: 'render',
+    name: 'Render toggles',
+    note: "Wireframe, post-processing, the map's collision volumes, and a frozen frustum.",
+  },
+  {
+    id: 'wire',
+    name: 'Wire inspector',
+    pro: true,
+    note: 'Every opcode the socket carries, counted and rated, newest first.',
+  },
+  {
+    id: 'recon',
+    name: 'Reconciliation',
+    pro: true,
+    note: "Your own prediction against the server's correction, tick by tick.",
+  },
+  {
+    id: 'frames',
+    name: 'Frame histogram',
+    pro: true,
+    note: 'Where the long frames are, as a distribution rather than an average.',
+  },
+];
+
+export const DEV_PANEL_IDS = DEV_PANELS.map((p) => p.id);
+/** The three that need a code creator behind them. */
+export const DEV_PRO_PANEL_IDS = DEV_PANELS.filter((p) => p.pro).map((p) => p.id);
+
+/* ── Creators ─────────────────────────────────────────────────────────────────
+ *
+ * A creator is a player the people running a server have looked at and said yes
+ * to. It is not a rank, it buys nothing that decides a fight, and it cannot be
+ * earned by playing — which is exactly what makes it worth having. Everything
+ * else in this file is a number that goes up on its own; this is the one status
+ * with a human reading something somebody made behind it.
+ *
+ * Four disciplines, and each gets a perk built out of what that discipline
+ * actually produces rather than a badge in a different colour. A musician's
+ * work is heard, so theirs is heard. An artist's is seen, so theirs is a skin.
+ * Someone who films the game gets the camera; someone who writes code gets the
+ * instruments. The badge and the links are what all four share, and they are
+ * the part really being asked for: a way to say "this is mine" on a card other
+ * people already open.
+ *
+ * The catalogue is shared rather than living in the client for the same reason
+ * every other catalogue here is — the server is what refuses an unknown kind, a
+ * perk that kind was never granted, or a link to somewhere nobody vetted, and
+ * it cannot do any of that from a list only the browser has.
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+/** The level an account has to reach before it may even apply. */
+export const CREATOR_MIN_LEVEL = 5;
+
+/**
+ * The four disciplines, and what each is handed on approval.
+ *
+ * `perks` is prose for the panel. `grants` is the machine-readable half every
+ * gate in the game actually asks — `creatorCan(creator, 'anthem')` is the one
+ * question, asked in one place, and a kind that does not list a grant cannot
+ * reach the route behind it however the request is shaped.
+ */
+export const CREATOR_KINDS = [
+  {
+    id: 'music',
+    name: 'Music',
+    icon: 'note',
+    blurb: 'Composers, sound designers, anyone who writes the thing you hear.',
+    grants: ['anthem'],
+    perks: [
+      `A player anthem: up to ${ANTHEM_MAX_SECONDS} seconds of your own music, played over the `
+      + 'kill cam of everyone you kill. Levelled by the server on the way in, so nobody can be '
+      + 'shouted at.',
+      'Your track title, credited under your name on the cam that plays it.',
+    ],
+  },
+  {
+    id: 'art',
+    name: 'Art',
+    icon: 'palette',
+    blurb: 'Illustrators, modellers, texture artists — anyone who makes it look like something.',
+    grants: ['skinRequest', 'frame'],
+    perks: [
+      'Commission your own finish: brief it, pick the palette, link the reference, and it goes '
+      + 'into a queue a human reads and answers.',
+      'The engraved card frame, which is not for sale and never will be.',
+    ],
+  },
+  {
+    id: 'video',
+    name: 'Video',
+    icon: 'film',
+    blurb: 'Editors, streamers, anyone whose output is footage of this game.',
+    grants: ['director'],
+    perks: [
+      "The director's cut kill cam: letterboxed, interface-free, orbiting, and yours to hold "
+      + `for ${KILLCAM_DIRECTOR_SECONDS} seconds instead of ${KILLCAM_SECONDS}.`,
+      'A clean-screen key that strips the HUD for a shot, mid-match, without touching settings.',
+    ],
+  },
+  {
+    id: 'code',
+    name: 'Code',
+    icon: 'terminal',
+    blurb: 'Anyone who has sent a patch, written a tool, or run a server of their own.',
+    grants: ['devPro'],
+    perks: [
+      `Developer mode with no level gate — it is level ${DEV_MODE_LEVEL} for everyone else.`,
+      'The instruments that gate does not open: the wire inspector, the reconciliation trace '
+      + 'and the frame-time histogram.',
+    ],
+  },
+];
+
+export const CREATOR_KIND_IDS = CREATOR_KINDS.map((k) => k.id);
+
+/** One kind by id, or null. */
+export const getCreatorKind = (id) => CREATOR_KINDS.find((k) => k.id === id) ?? null;
+
+/** Where an application can be in its life. */
+export const CREATOR_STATUSES = ['pending', 'approved', 'rejected', 'revoked'];
+
+/**
+ * May this creator do this thing?
+ *
+ * The single gate. Every route, every panel and every draw call asks this
+ * rather than testing `kind === 'music'` in fourteen places, which is what makes
+ * adding a fifth discipline a line in the catalogue above rather than a search
+ * for everywhere the fourth was spelled out.
+ *
+ * The status is checked here and not by the caller, so the one thing nobody may
+ * ever forget — that a *pending* application grants absolutely nothing — cannot
+ * be forgotten anywhere.
+ *
+ * @param {{kind?:string, status?:string}|null|undefined} creator
+ * @param {string} grant
+ */
+export function creatorCan(creator, grant) {
+  if (!creator || creator.status !== 'approved') return false;
+  return !!getCreatorKind(creator.kind)?.grants.includes(grant);
+}
+
+/** Room for the applicant to say what they make and where it lives. */
+export const CREATOR_PITCH_MIN = 40;
+export const CREATOR_PITCH_MAX = 700;
+/** The one line a decision comes back with, which the applicant reads. */
+export const CREATOR_VERDICT_MAX = 240;
+
+/**
+ * How long a rejected application waits before it may be sent again.
+ *
+ * Long enough that "apply again immediately" is not the reflex, short enough
+ * that somebody who was told *what* to fix can go and fix it. A withdrawn
+ * application waits no time at all — nobody read it.
+ */
+export const CREATOR_REAPPLY_DAYS = 14;
+
+/**
+ * May this account apply right now, and if not, why not?
+ *
+ * Shared so the panel can grey the button out for exactly the reason the route
+ * would have refused the request. The route still decides.
+ *
+ * @param {{level?:number, emailVerified?:boolean}|null} account
+ * @param {{status?:string, decidedAt?:number}|null} creator existing application
+ * @param {{minLevel?:number, needEmail?:boolean, now?:number}} rules
+ * @returns {{can:boolean, why:string|null, retryAt:number}}
+ */
+export function creatorApplyState(account, creator, rules = {}) {
+  const { minLevel = CREATOR_MIN_LEVEL, needEmail = false, now = Math.floor(Date.now() / 1000) } = rules;
+  const no = (why, retryAt = 0) => ({ can: false, why, retryAt });
+
+  if (!account) return no('sign in to apply');
+  if (needEmail && !account.emailVerified) return no('confirm your email address first');
+  const level = Math.max(0, Math.floor(account.level ?? 0));
+  if (level < minLevel) return no(`reach level ${minLevel} first — you are ${level}`);
+
+  const status = creator?.status ?? null;
+  if (status === 'pending') return no('your application is already in the queue');
+  if (status === 'approved') return no('you are already a creator');
+  if (status === 'rejected' || status === 'revoked') {
+    const retryAt = (creator.decidedAt ?? 0) + CREATOR_REAPPLY_DAYS * 86400;
+    if (now < retryAt) {
+      const days = Math.max(1, Math.ceil((retryAt - now) / 86400));
+      return no(`you can apply again in ${days} day${days === 1 ? '' : 's'}`, retryAt);
+    }
+  }
+  return { can: true, why: null, retryAt: 0 };
+}
+
+/**
+ * May this account open developer mode, and how much of it?
+ *
+ * One function, so the tab, the keybind and the overlay cannot disagree. The
+ * creator status buys exactly one thing here: `pro`. A level-10 account and a
+ * code creator see the same four panels; the creator sees three more.
+ *
+ * `enabled` is checked first and beats everything, the creator status
+ * included. An operator who has closed developer mode has closed it — a perk
+ * that reaches past a server-wide switch is not a perk, it is a bug.
+ *
+ * @param {{level?:number, creator?:{kind?:string, status?:string}}|null} account
+ * @param {{devLevel?:number, enabled?:boolean}} rules
+ */
+export function devModeAccess(account, { devLevel = DEV_MODE_LEVEL, enabled = true } = {}) {
+  const level = Math.max(0, Math.floor(account?.level ?? 0));
+  const pro = enabled && creatorCan(account?.creator, 'devPro');
+  return {
+    allowed: enabled && (pro || level >= devLevel),
+    pro,
+    need: devLevel,
+    level,
+    panels: enabled ? DEV_PANELS.filter((p) => !p.pro || pro).map((p) => p.id) : [],
+  };
+}
+
+/* ── Creator links ────────────────────────────────────────────────────────────
+ *
+ * The part of this feature with a real attack surface, so the part with the
+ * most rules.
+ *
+ * A card is drawn inside other people's screens. A free URL field on one is a
+ * phishing form with a distribution channel attached, and "only approved
+ * creators get one" is not an answer — approval happens once, and the field
+ * stays editable forever afterwards.
+ *
+ * So there is no free URL field. A link is a *platform id and a handle*, and
+ * the URL is built here, from the catalogue below, out of a handle that had to
+ * match that platform's own character rules to be stored at all. Nothing a
+ * player types ever becomes a scheme, a host, a port, a query or a fragment.
+ *
+ * `site` is the one exception, because a creator with their own domain and no
+ * platform account is a real person and refusing them would be silly. That one
+ * is https-only and host-only — no path, no port, no userinfo, no unicode — and
+ * the client puts an interstitial in front of it naming where it goes.
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+/**
+ * @typedef {{id:string, name:string, base:string|null, handle:RegExp,
+ *            prefix?:string, placeholder:string, suffix?:string}} CreatorPlatform
+ */
+
+/** @type {CreatorPlatform[]} */
+export const CREATOR_PLATFORMS = [
+  { id: 'youtube', name: 'YouTube', base: 'https://www.youtube.com/@', handle: /^[A-Za-z0-9._-]{3,30}$/, prefix: '@', placeholder: 'handle' },
+  { id: 'twitch', name: 'Twitch', base: 'https://www.twitch.tv/', handle: /^[a-z0-9_]{4,25}$/, placeholder: 'channel' },
+  { id: 'kick', name: 'Kick', base: 'https://kick.com/', handle: /^[a-z0-9_-]{3,25}$/, placeholder: 'channel' },
+  { id: 'x', name: 'X', base: 'https://x.com/', handle: /^[A-Za-z0-9_]{1,15}$/, prefix: '@', placeholder: 'handle' },
+  { id: 'bluesky', name: 'Bluesky', base: 'https://bsky.app/profile/', handle: /^[a-z0-9][a-z0-9.-]{2,58}[a-z0-9]$/, placeholder: 'you.bsky.social' },
+  { id: 'instagram', name: 'Instagram', base: 'https://www.instagram.com/', handle: /^[a-z0-9._]{1,30}$/, prefix: '@', placeholder: 'handle' },
+  { id: 'tiktok', name: 'TikTok', base: 'https://www.tiktok.com/@', handle: /^[a-z0-9._]{2,24}$/, prefix: '@', placeholder: 'handle' },
+  { id: 'soundcloud', name: 'SoundCloud', base: 'https://soundcloud.com/', handle: /^[a-z0-9_-]{3,40}$/, placeholder: 'artist' },
+  { id: 'bandcamp', name: 'Bandcamp', base: 'https://', suffix: '.bandcamp.com', handle: /^[a-z0-9-]{3,40}$/, placeholder: 'artist' },
+  { id: 'spotify', name: 'Spotify', base: 'https://open.spotify.com/artist/', handle: /^[A-Za-z0-9]{22}$/, placeholder: 'artist id' },
+  { id: 'github', name: 'GitHub', base: 'https://github.com/', handle: /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/, placeholder: 'user' },
+  { id: 'artstation', name: 'ArtStation', base: 'https://www.artstation.com/', handle: /^[a-z0-9_-]{3,40}$/, placeholder: 'artist' },
+  { id: 'itch', name: 'itch.io', base: 'https://', suffix: '.itch.io', handle: /^[a-z0-9-]{3,40}$/, placeholder: 'user' },
+  { id: 'kofi', name: 'Ko-fi', base: 'https://ko-fi.com/', handle: /^[A-Za-z0-9_]{3,30}$/, placeholder: 'page' },
+  /*
+   * The free one, and the only pattern here worth reading twice.
+   *
+   * A hostname and nothing else: no scheme to choose, no port, no userinfo, no
+   * path, no query. `(?!xn--)` on every label refuses punycode outright, which
+   * is what stops a homograph domain from reading as somebody else's in the
+   * interstitial that names it — and the trailing `[a-z]{2,24}` requires a real
+   * alphabetic TLD, which incidentally refuses a bare IP address.
+   */
+  {
+    id: 'site',
+    name: 'Website',
+    base: 'https://',
+    handle: /^(?!xn--)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.(?!xn--)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,24}$/,
+    placeholder: 'example.com',
+  },
+];
+
+export const CREATOR_PLATFORM_IDS = CREATOR_PLATFORMS.map((p) => p.id);
+
+/** How many a card carries. Enough for a real footprint, few enough to read. */
+export const CREATOR_LINKS_MAX = 5;
+
+/** One platform by id, or null. */
+export const getCreatorPlatform = (id) => CREATOR_PLATFORMS.find((p) => p.id === id) ?? null;
+
+/**
+ * The URL one stored link points at — built here, never sent by a client.
+ *
+ * @param {{platform?:string, handle?:string}} link
+ * @returns {string|null} null when the pair is not one this file recognises,
+ *   which is also what every renderer treats as "draw nothing".
+ */
+export function creatorLinkUrl(link) {
+  const spec = getCreatorPlatform(link?.platform);
+  if (!spec) return null;
+  const handle = String(link.handle ?? '');
+  if (!spec.handle.test(handle)) return null;
+  return `${spec.base}${handle}${spec.suffix ?? ''}`;
+}
+
+/** What a link reads as beside its icon: the handle, never the URL. */
+export function creatorLinkLabel(link) {
+  const spec = getCreatorPlatform(link?.platform);
+  if (!spec) return '';
+  return `${spec.prefix ?? ''}${link.handle}${spec.suffix ?? ''}`;
+}
+
+/**
+ * Folds a typed handle into the shape its platform stores.
+ *
+ * A leading @, a trailing slash and a pasted `https://twitch.tv/` prefix are
+ * typos rather than attacks, and refusing them teaches nobody anything — so
+ * they are trimmed. Case is folded only for the platforms whose own handles are
+ * lower-case, which is why the rule reads off the pattern rather than being a
+ * flag somebody has to remember to set.
+ */
+export function normaliseCreatorHandle(platform, raw) {
+  const spec = getCreatorPlatform(platform);
+  if (!spec) return '';
+  let handle = String(raw ?? '').trim()
+    .replace(/^[a-z]+:\/\//i, '')
+    .replace(/^(?:www\.)?[a-z0-9.-]+\//i, (m) => (spec.id === 'site' ? m : ''))
+    .replace(/^@+/, '')
+    .replace(/\/+$/, '');
+  if (spec.suffix) handle = handle.replace(new RegExp(`${spec.suffix.replace(/\./g, '\\.')}$`, 'i'), '');
+  if (spec.id === 'site') handle = handle.replace(/^https?:\/\//i, '').replace(/[/?#].*$/, '');
+  if (!/[A-Z]/.test(spec.handle.source)) handle = handle.toLowerCase();
+  return handle;
+}
+
+/**
+ * Sanitises a set of links into something safe to store and to draw.
+ *
+ * Same contract as `normaliseCard`: never throws, and never rejects a whole set
+ * over one bad member. Anything unrecognised is dropped rather than corrected,
+ * because a link that has been "fixed" points somewhere its owner did not ask
+ * for — and each platform is kept at most once, so a card cannot be six copies
+ * of the same handle.
+ */
+export function normaliseCreatorLinks(raw) {
+  const list = Array.isArray(raw) ? raw : [];
+  const seen = new Set();
+  const out = [];
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object') continue;
+    const platform = String(entry.platform ?? '');
+    if (seen.has(platform) || !getCreatorPlatform(platform)) continue;
+    const handle = normaliseCreatorHandle(platform, entry.handle);
+    // Built rather than trusted: a pair that cannot make a URL is not a link,
+    // whatever it claims to be.
+    if (!creatorLinkUrl({ platform, handle })) continue;
+    seen.add(platform);
+    out.push({ platform, handle });
+    if (out.length >= CREATOR_LINKS_MAX) break;
+  }
+  return out;
+}
+
+/** Why a set of links is unacceptable, or null. Drawn under the editor. */
+export function creatorLinksError(raw) {
+  const list = Array.isArray(raw) ? raw : [];
+  if (list.length > CREATOR_LINKS_MAX) return `${CREATOR_LINKS_MAX} links at most`;
+  const seen = new Set();
+  for (const entry of list) {
+    const spec = getCreatorPlatform(entry?.platform);
+    if (!spec) return 'pick a platform for every link';
+    if (seen.has(spec.id)) return `one ${spec.name} link is enough`;
+    seen.add(spec.id);
+    const handle = normaliseCreatorHandle(spec.id, entry?.handle);
+    if (!handle) return `${spec.name} needs a ${spec.placeholder}`;
+    if (!spec.handle.test(handle)) return `that is not a ${spec.name} ${spec.placeholder}`;
+  }
+  return null;
+}
+
+/* ── Skin commissions ─────────────────────────────────────────────────────────
+ *
+ * What an art creator's grant actually is: a brief, a palette and a reference,
+ * queued for a human. Nothing here mints a cosmetic — the request is a
+ * conversation, and shared/cosmetics.js stays the only thing that decides what
+ * exists in the game.
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+export const SKIN_REQUEST_NAME_MAX = 28;
+export const SKIN_REQUEST_BRIEF_MIN = 40;
+export const SKIN_REQUEST_BRIEF_MAX = 900;
+export const SKIN_REQUEST_PALETTE_MAX = 6;
+/** Open requests one creator may hold. A queue, not a wishlist. */
+export const SKIN_REQUEST_OPEN_MAX = 2;
+export const SKIN_REQUEST_STATUSES = ['open', 'accepted', 'shipped', 'declined'];
+
+/** Sanitises a proposed palette into hex the panel can draw. */
+export function normalisePalette(raw) {
+  const list = Array.isArray(raw) ? raw : [];
+  const out = [];
+  for (const entry of list) {
+    const hex = String(entry ?? '').trim().toLowerCase();
+    if (!/^#[0-9a-f]{6}$/.test(hex) || out.includes(hex)) continue;
+    out.push(hex);
+    if (out.length >= SKIN_REQUEST_PALETTE_MAX) break;
+  }
+  return out;
+}
+
 /* ── Wire protocol opcodes ────────────────────────────────────────────────── */
 
 /** Client → server */
@@ -1520,7 +2068,8 @@ export const SKINS_VETERAN_LEVEL = 15;
  *
  * @param {{chatLevel?:number, reportLevel?:number, clanJoinLevel?:number,
  *          clanCreateLevel?:number, clanCreateCost?:number, clansEnabled?:boolean,
- *          reportsEnabled?:boolean}} rules
+ *          reportsEnabled?:boolean, devLevel?:number, devEnabled?:boolean,
+ *          creatorLevel?:number, creatorsEnabled?:boolean}} rules
  * @returns {Array<{level:number, title:string, desc:string}>} ascending by level
  */
 export function progressionLadder(rules = {}) {
@@ -1532,6 +2081,10 @@ export function progressionLadder(rules = {}) {
     clanCreateCost = CLAN_CREATE_COST,
     clansEnabled = true,
     reportsEnabled = true,
+    devLevel = DEV_MODE_LEVEL,
+    devEnabled = true,
+    creatorLevel = CREATOR_MIN_LEVEL,
+    creatorsEnabled = true,
   } = rules;
 
   const steps = [
@@ -1565,6 +2118,21 @@ export function progressionLadder(rules = {}) {
       title: 'JOIN A CLAN',
       desc: 'Accept an invitation and wear the tag in front of your name on every '
         + 'scoreboard, killfeed and nametag in the game.',
+    }] : []),
+    ...(creatorsEnabled ? [{
+      level: creatorLevel,
+      title: 'APPLY AS A CREATOR',
+      desc: 'Make music, art, video or code for this game and ask for the status that goes with '
+        + 'it. A human reads the application. Approved creators wear the badge, put their links '
+        + 'on their card, and get the perk their discipline earns — an anthem over the kill cam, '
+        + 'a commissioned finish, the director\'s camera, or the instruments.',
+    }] : []),
+    ...(devEnabled ? [{
+      level: devLevel,
+      title: 'DEVELOPER MODE',
+      desc: 'Frame time, the network, your own movement state and a set of render toggles, on '
+        + 'screen while you play. Instruments only: nothing in it tells you anything about '
+        + 'anybody else that your screen was not already going to.',
     }] : []),
     {
       level: SKINS_VETERAN_LEVEL,

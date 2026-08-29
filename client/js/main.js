@@ -38,6 +38,8 @@ import { Objectives } from './objectives.js';
 import { Hud } from './hud.js';
 import { Menu } from './menu.js';
 import { initAudio, resumeAudio, setMasterVolume, sfx } from './audio.js';
+import { KillCam } from './killcam.js';
+import { DevMode } from './devmode.js';
 
 const $ = (id) => document.getElementById(id);
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -157,7 +159,28 @@ export class Game {
      */
     this.cos = { ...COS.DEFAULT_EQUIP };
     this.classId = 'triggerman';
+    /*
+     * The kill cam, and the plain death camera it did not replace.
+     *
+     * `deathCam` is still here and still the fallback: a fall, a suicide, a
+     * killer who disconnected, and a player who has switched the cam off all
+     * end up on it — which is exactly the screen the game had before
+     * killcam.js existed. The two are never both running; `onDeath` picks one.
+     */
     this.deathCam = null;
+    this.killCam = new KillCam();
+    /** The last DEATH, for the screen that takes over when the cam ends early. */
+    this.lastKiller = null;
+    /** This account's creator discipline, or null. Set from the handshake. */
+    this.myCreator = null;
+    /** Where the local body fell, so the cam can rise out of it. */
+    this.deathAt = null;
+    /** Read-only instruments — see devmode.js. Off, and gated, until told. */
+    this.dev = new DevMode();
+    this.devWireframe = false;
+    this.devNoPost = false;
+    this.devCollision = false;
+    this.devFreezeFrustum = false;
     this.projectiles = [];
     this.scoreboardRows = [];
     this.teamMode = false;
@@ -347,6 +370,12 @@ export class Game {
     this.clearProjectiles();
     this.hud.hide();
     this.hud.hideDeath();
+    this.hud.hideKillCam();
+    this.killCam.end();
+    // A clean screen belongs to the shot it was turned on for, not to the
+    // browser: leaving with the interface off would mean coming back to a menu
+    // over a game with no HUD and no obvious way to get it back.
+    document.body.classList.remove('clean');
     this.hud.hideMatchEnd();
     this.nukeArmed = false;
     this.nukeAt = 0;
@@ -540,6 +569,30 @@ export class Game {
       this.myLevel = msg.you.level ?? 1;
       this.myVerified = !!(msg.account?.verified ?? msg.you.verified);
       this.myRole = msg.account?.role ?? 'player';
+      /*
+       * Creator status and developer access, both straight off the handshake.
+       *
+       * Neither is worked out here. The status is a decision a human made and
+       * the access is a level plus that status, so both live on the server —
+       * and a client that derived either for itself would be a client that
+       * could be told to derive it differently. `setAccess` is the only way
+       * devmode.js ever learns what it may open.
+       */
+      this.myCreator = msg.account?.creator?.status === 'approved'
+        ? msg.account.creator.kind : null;
+      this.dev.setAccess(msg.account?.dev ?? null);
+      this.dev.el = this.hud.el.devOverlay;
+      // The rail entry and the page behind it. The menu draws both; only the
+      // game knows what the server answered, so it is handed over rather than
+      // worked out twice.
+      this.menu.onDevToggle = () => this.setDevMode(!this.dev.open);
+      this.menu.setDevAccess(this.dev.access, this.dev.open);
+      // The wire inspector's feed. Attached only for an account that may open
+      // it at all, so a session that cannot see the panel does not pay for it.
+      this.net.onPacket = this.dev.access.allowed
+        ? (dir, op, bytes) => this.dev.samplePacket(dir, op, bytes)
+        : null;
+      this.setDevMode(settings.devMode);
       this.matchTime = msg.match?.endsIn ?? -1;
       this.matchPhase = msg.match?.phase ?? 'live';
       this.modeId = msg.mode;
@@ -632,6 +685,11 @@ export class Game {
       this.alive = true;
       this.health = msg.health;
       this.deathCam = null;
+      // A spawn always closes the cam, whether it was skipped or ran out: a
+      // player who is back in the match must not still be watching a replay.
+      this.killCam.end();
+      this.hud.hideKillCam();
+      this.deathAt = null;
       this.smooth.set(0, 0, 0);
       if (msg.classId && msg.classId !== this.classId) this.setClass(msg.classId);
       for (let i = 0; i < this.weapons.length; i++) {
@@ -712,13 +770,42 @@ export class Game {
       this.nukeArmed = false;
       this.hud.setNukeArmed(false);
       this.respawnAt = performance.now() / 1000 + msg.respawnIn;
-      this.hud.showDeath(msg.by, msg.weapon, msg.respawnIn, msg.killerHealth,
-        { clan: msg.byClan, clanVerified: msg.byClanVerified });
       sfx.die();
       this.input.gamepad.rumble(1, 320);
-      const killer = this.entities.get(msg.byId);
-      this.deathCam = killer ? { targetId: msg.byId } : null;
       this.input.clearRecoil();
+      // Remembered before anything moves: the cam rises out of where the body
+      // fell, and by the next frame `local` has begun easing somewhere else.
+      this.deathAt = { x: this.local.x, y: this.local.y, z: this.local.z };
+      // Kept so the plain death screen can take over if the cam ends before the
+      // respawn does — which is the normal case for anyone who turned the hold
+      // off, and the only case for a cam that lost the body it was orbiting.
+      this.lastKiller = {
+        name: msg.by, weapon: msg.weapon, health: msg.killerHealth,
+        clan: msg.byClan, clanVerified: msg.byClanVerified,
+      };
+
+      /*
+       * One of two screens, never both.
+       *
+       * The cam is the interesting case and the plain death screen is the
+       * fallback, and the fallback is what runs whenever there is nothing worth
+       * looking at: the world killed us, the killer has already left the room,
+       * or this player has turned the cam off. `begin` answers null for every
+       * one of those, which is why the test is its return value rather than a
+       * list of conditions repeated here.
+       */
+      const shot = this.entities.get(msg.byId) ? this.killCam.begin(msg) : null;
+      if (shot) {
+        this.deathCam = null;
+        this.hud.hideDeath();
+        this.hud.showKillCam(this.killCam.view());
+      } else {
+        this.killCam.end();
+        this.hud.hideKillCam();
+        this.hud.showDeath(msg.by, msg.weapon, msg.respawnIn, msg.killerHealth,
+          { clan: msg.byClan, clanVerified: msg.byClanVerified });
+        this.deathCam = this.entities.get(msg.byId) ? { targetId: msg.byId } : null;
+      }
     });
 
     net.on('ammo', (msg) => {
@@ -1264,6 +1351,8 @@ export class Game {
     this.specName = msg.name ?? null;
     this.alive = false;
     this.deathCam = null;
+    this.killCam.end();
+    this.hud.hideKillCam();
     this.scoreboardPinned = false;
     this.state = 'spectating';
     this.pending.length = 0;
@@ -1645,6 +1734,10 @@ export class Game {
     // Any residual error is absorbed visually instead of snapping the camera.
     const dx = before.x - this.local.x, dy = before.y - this.local.y, dz = before.z - this.local.z;
     const err = Math.hypot(dx, dy, dz);
+    // The error and the queue depth, for the reconciliation trace. Neither is
+    // computed for it — both are already here, which is the only reason a
+    // sampler on this path is acceptable at all.
+    this.dev.sampleRecon(err, this.pending.length);
     if (err > 0.0005 && err < 4) {
       this.smooth.set(dx, dy, dz);
     } else if (err >= 4) {
@@ -1739,6 +1832,28 @@ export class Game {
       settings.showFps = !settings.showFps;
       this.hud.applySettings();
     });
+    // Unbound by default and refused for an account that has not unlocked it,
+    // so a stray press on a fresh keyboard layout does nothing at all.
+    inp.on('devMode', () => {
+      if (!this.dev.access.allowed) return;
+      sfx.ui(this.setDevMode(!this.dev.open) ? 'ok' : 'click');
+    });
+    /*
+     * The video creator's clean screen.
+     *
+     * Takes the whole interface off for a shot without touching a single
+     * setting, so it comes back the moment the key is pressed again rather than
+     * being something to remember to undo. It is a capture tool and nothing
+     * else — losing your health, your ammo and your minimap is a
+     * *disadvantage*, which is exactly why it can be a perk rather than an
+     * advantage somebody would want for the wrong reason.
+     */
+    inp.on('cleanScreen', () => {
+      if (this.myCreator !== 'video') return;
+      const on = document.body.classList.toggle('clean');
+      sfx.ui(on ? 'ok' : 'click');
+    });
+
 
     inp.on('unlock', () => {
       if (this.state === 'playing' && !this.hud.chatOpen && !this.menu.classModalOpen
@@ -1754,6 +1869,14 @@ export class Game {
     inp.on('keydown', (code) => {
       if (this.state !== 'playing' || this.alive || this.matchPhase !== 'live') return;
       if (!(binds.jump ?? []).includes(code)) return;
+      // While the cam is up the same key is the skip, and pressing it early is
+      // not a respawn request that gets to jump the three seconds — it is a
+      // press the cam declines. Falling through to `requestRespawn` here would
+      // have made the skip delay decorative.
+      if (this.killCam.active) {
+        if (this.killCam.skip()) { sfx.ui('ok'); this.hud.hideKillCam(); }
+        return;
+      }
       this.respawnHeld = false;
       this.requestRespawn();
     });
@@ -1776,6 +1899,24 @@ export class Game {
   }
 
   _bindUi() {
+    // The kill cam's own two controls. The button is a second way to do what
+    // the jump key already does, for anyone playing with a mouse in one hand
+    // and a drink in the other; the overlay column delegates its render
+    // toggles off `data-dev`, so devmode.js can rewrite its own markup every
+    // eighth of a second without ever leaking a listener.
+    $('kcSkip').addEventListener('click', () => {
+      if (this.killCam.skip()) { sfx.ui('ok'); this.hud.hideKillCam(); }
+      else sfx.ui('error');
+    });
+    $('devOverlay').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-dev]');
+      if (!btn) return;
+      sfx.ui();
+      this.toggleDevRender(btn.dataset.dev);
+      this.dev.drawAt = 0;                       // repaint the row on this frame
+      this.dev.update(this);
+    });
+
     $('btnResume').addEventListener('click', () => this.togglePause(false));
     $('btnQuit').addEventListener('click', () => this.leaveMatch());
 
@@ -2461,6 +2602,72 @@ export class Game {
 
     this.gfx.followSun(this.local.x, this.local.z);
     this.gfx.render(dt, () => this.viewmodel.render());
+
+    // Last, so the frame it measures is the whole frame. Both calls return on
+    // their first line when the mode is shut, which is what makes it safe to
+    // leave them unconditionally in the hot loop.
+    this.dev.sampleFrame(dt * 1000);
+    this.dev.update(this);
+  }
+
+  /* ── Developer mode ─────────────────────────────────────────────────────
+   *
+   * The switch and the four render toggles. Everything that *reads* anything
+   * lives in devmode.js; what is here is the part that has to touch the game,
+   * and it is deliberately small — four local render flags and nothing else.
+   * ───────────────────────────────────────────────────────────────────────── */
+
+  /**
+   * Opens or closes the overlays. Refused, quietly, for an account that may
+   * not have them: the server said so at the handshake and this is not a
+   * decision the client gets to revisit.
+   */
+  setDevMode(on) {
+    const open = this.dev.toggle(!!on);
+    setSetting('devMode', open);
+    this.hud.setDevOverlay(open);
+    this.menu.devOpen = open;
+    this.menu.renderDeveloper?.();
+    if (!open) this.applyDevRender({ wireframe: false, nopost: false, collision: false, freeze: false });
+    return open;
+  }
+
+  /** One render toggle, from the overlay's own button row. */
+  toggleDevRender(id) {
+    const map = {
+      wireframe: 'devWireframe', nopost: 'devNoPost',
+      collision: 'devCollision', freeze: 'devFreezeFrustum',
+    };
+    const field = map[id];
+    if (!field) return;
+    this.applyDevRender({ [id]: !this[field] });
+  }
+
+  /**
+   * Applies whichever render flags were named.
+   *
+   * Every one of these is a *local* drawing choice with no effect on the
+   * simulation and nothing to tell the server about. The collision overlay
+   * draws the map's own volumes, which is static data this client downloaded
+   * before the match began — it shows nobody's position and never has.
+   */
+  applyDevRender(want) {
+    if ('wireframe' in want) {
+      this.devWireframe = !!want.wireframe;
+      this.gfx.setWireframe?.(this.devWireframe);
+    }
+    if ('nopost' in want) {
+      this.devNoPost = !!want.nopost;
+      this.gfx.setPostEnabled?.(!this.devNoPost);
+    }
+    if ('collision' in want) {
+      this.devCollision = !!want.collision;
+      this.gfx.setCollisionDebug?.(this.devCollision, this.world);
+    }
+    if ('freeze' in want) {
+      this.devFreezeFrustum = !!want.freeze;
+      this.gfx.setFrustumFrozen?.(this.devFreezeFrustum);
+    }
   }
 
   simulateTick() {
@@ -2544,6 +2751,24 @@ export class Game {
     // Absorb prediction error over ~120 ms instead of snapping.
     this.smooth.multiplyScalar(Math.max(0, 1 - dt * 9));
     if (this.smooth.lengthSq() < 1e-8) this.smooth.set(0, 0, 0);
+
+    /*
+     * The kill cam owns the camera outright while it is running.
+     *
+     * It hands back a position and a look-at rather than moving anything
+     * itself — killcam.js has no business touching a three.js camera — and a
+     * frame where it cannot find its subject returns null and falls through to
+     * the ordinary rules below, which is the right failure: a cam that has lost
+     * the body it was orbiting should get out of the way, not point at nothing.
+     */
+    if (!this.alive && this.killCam.active) {
+      const shot = this.killCam.update(dt, this.entities, this.deathAt, this.world);
+      if (shot) {
+        cam.position.set(shot.from.x, shot.from.y, shot.from.z);
+        cam.lookAt(shot.at.x, shot.at.y, shot.at.z);
+        return;
+      }
+    }
 
     if (!this.alive && this.deathCam) {
       const target = this.entities.get(this.deathCam.targetId);
@@ -2671,11 +2896,29 @@ export class Game {
       // Anything on screen that wants the mouse is a reason to stay down: the
       // class picker, the scoreboard, the end card. Pressing Escape is the
       // deliberate version of the same thing.
+      // The kill cam holds the respawn the same way everything else on this
+      // line does — by being one more reason not to ask for one. That is the
+      // whole of its authority over the match: it never moves the server's
+      // timer, it only declines to spend it.
       const busy = this.respawnHeld || this.inGameMenuOpen || this.hud.chatOpen
         || this.menu.classModalOpen || this.menu.visible || this.hud.matchEndOpen
-        || this.scoreboardPinned || !!this.afkNotice
+        || this.scoreboardPinned || !!this.afkNotice || this.killCam.holding
         || !$('pause').classList.contains('hidden');
-      this.hud.updateDeathTimer(this.respawnAt - nowSec, busy);
+
+      if (this.killCam.active) {
+        const view = this.killCam.view();
+        if (view) this.hud.updateKillCam(view, this.respawnAt - nowSec);
+      } else if (this.hud.killCamOpen) {
+        // The cam ended itself — ran out, or lost its subject. The plain death
+        // screen takes over for whatever is left of the respawn, so a player
+        // is never left looking at nothing.
+        this.hud.hideKillCam();
+        this.hud.showDeath(this.lastKiller?.name ?? 'the world', this.lastKiller?.weapon,
+          Math.max(0, this.respawnAt - nowSec), this.lastKiller?.health,
+          { clan: this.lastKiller?.clan, clanVerified: this.lastKiller?.clanVerified });
+      } else {
+        this.hud.updateDeathTimer(this.respawnAt - nowSec, busy);
+      }
       if (!busy && this.matchPhase === 'live') this.requestRespawn();
     }
     if (this.matchEndAt > nowSec) this.hud.updateMatchEndTimer(this.matchEndAt - nowSec);

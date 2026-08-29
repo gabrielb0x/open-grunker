@@ -479,6 +479,74 @@ CREATE TABLE IF NOT EXISTS trade_items (
   PRIMARY KEY (trade_id, unit_id)
 );
 
+-- ── Creators ──────────────────────────────────────────────────────────────
+--
+-- One row per account that has ever applied, and the row is the application,
+-- the decision and the perks all at once. There is no separate "applications"
+-- table because an account has at most one standing relationship with the
+-- programme: it has applied, or been approved, or been told no. A second
+-- attempt overwrites the first, which is exactly what CREATOR_REAPPLY_DAYS in
+-- shared/constants.js exists to pace.
+--
+-- `status` is the whole state machine:
+--   pending  -> sent, nobody has read it
+--   approved -> a human said yes; `kind` is what they said yes to
+--   rejected -> a human said no; `verdict` is what the applicant is told
+--   revoked  -> was approved and no longer is
+--
+-- `kind` is what the *decision* granted, not what was asked for: an applicant
+-- who pitches as a musician and is approved as an artist gets the artist's
+-- perks, because the person who read it is the one who decides which queue this
+-- belongs in. What they asked for is kept in `asked` so the decision can be
+-- read back honestly afterwards.
+--
+-- `anthem` holds a filename and never bytes, exactly like users.avatar: the
+-- levelled WAV lives under data/anthems so it can be served straight off disk.
+CREATE TABLE IF NOT EXISTS creators (
+  user_id      TEXT    PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  kind         TEXT    NOT NULL,              -- music | art | video | code
+  asked        TEXT,                          -- the kind they applied for
+  status       TEXT    NOT NULL DEFAULT 'pending',
+  pitch        TEXT,                          -- the applicant's own words
+  links        TEXT    NOT NULL DEFAULT '[]', -- JSON [{platform, handle}]
+  applied_at   INTEGER NOT NULL,
+  decided_at   INTEGER,
+  decided_by   TEXT,                          -- who read it
+  verdict      TEXT,                          -- the one line the applicant reads
+  anthem       TEXT,                          -- "<userId>-<hash>.wav" under data/anthems
+  anthem_title TEXT,
+  anthem_at    INTEGER,
+  -- Denormalised so the admin queue lists an application without a join, and
+  -- so a decision stays legible in the log after a rename.
+  username     TEXT
+);
+
+-- Skin commissions. An art creator's grant is a brief in a queue, and this is
+-- the queue. Nothing here mints a cosmetic — shared/cosmetics.js stays the only
+-- thing that decides what exists — so `item_id` is filled in by hand once the
+-- finish it describes has actually shipped.
+CREATE TABLE IF NOT EXISTS skin_requests (
+  id         TEXT    PRIMARY KEY,
+  user_id    TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  username   TEXT,
+  name       TEXT    NOT NULL,
+  slot       TEXT    NOT NULL,
+  brief      TEXT    NOT NULL,
+  palette    TEXT    NOT NULL DEFAULT '[]',   -- JSON array of #rrggbb
+  reference  TEXT,                            -- one creator link, by platform id
+  status     TEXT    NOT NULL DEFAULT 'open', -- open | accepted | shipped | declined
+  created_at INTEGER NOT NULL,
+  decided_at INTEGER,
+  decided_by TEXT,
+  verdict    TEXT,
+  item_id    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_creators_status ON creators(status, applied_at);
+CREATE INDEX IF NOT EXISTS idx_creators_kind   ON creators(kind) WHERE status = 'approved';
+CREATE INDEX IF NOT EXISTS idx_skinreq_status  ON skin_requests(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_skinreq_user    ON skin_requests(user_id, created_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_inventory_user   ON inventory(user_id, acquired_at DESC);
 CREATE INDEX IF NOT EXISTS idx_inventory_item   ON inventory(item_id);
 CREATE INDEX IF NOT EXISTS idx_case_openings_at ON case_openings(at DESC);

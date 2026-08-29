@@ -77,6 +77,11 @@ export class Hud {
       playerNameTag: $('playerNameTag'), playerVerified: $('playerVerified'),
       playerLevel: $('playerLevel'), hintRespawn: $('hintRespawn'), hintClass: $('hintClass'),
       hintClass2: $('hintClass2'), deathHint: $('deathHint'), deathHintHeld: $('deathHintHeld'),
+      killCam: $('killCam'), kcName: $('kcName'), kcTags: $('kcTags'), kcFacts: $('kcFacts'),
+      kcAnthem: $('kcAnthem'), kcTrack: $('kcTrack'), kcTrackBy: $('kcTrackBy'),
+      kcRemaining: $('kcRemaining'), kcSkip: $('kcSkip'), kcSkipFill: $('kcSkipFill'),
+      kcSkipLabel: $('kcSkipLabel'), kcDirector: $('kcDirector'),
+      devOverlay: $('devOverlay'),
       nukePrompt: $('nukePrompt'), nukeKey: $('nukeKey'), nukeWarning: $('nukeWarning'),
       nukeBy: $('nukeBy'), nukeCount: $('nukeCount'), nukeSub: $('nukeSub'), nukeFlash: $('nukeFlash'),
       specBar: $('specBar'), specViewLabel: $('specViewLabel'), specXrayLabel: $('specXrayLabel'),
@@ -101,6 +106,14 @@ export class Hud {
     this.hitmarkerTimer = 0;
     this.scoreboardOpen = false;
     this.matchEndOpen = false;
+    /**
+     * Whether the kill cam's overlay is up.
+     *
+     * Read every frame while dead — it is what tells main.js that the cam ended
+     * itself and the plain death screen has to take over — so it starts as a
+     * real boolean rather than as `undefined` that happens to be falsy.
+     */
+    this.killCamOpen = false;
     this.fpsSamples = [];
     this.lastFpsUpdate = 0;
     this.lastLiveKey = '';
@@ -830,6 +843,78 @@ export class Hud {
 
   hideDeath() { this.el.deathScreen.classList.add('hidden'); }
 
+  /* ── The kill cam ─────────────────────────────────────────────────────────
+   *
+   * Two methods and a hide. `showKillCam` paints the half that never changes —
+   * who killed you and how — once, and `updateKillCam` paints the half that
+   * ticks. Splitting them is the whole performance story here: the name, the
+   * badges and the facts are four `innerHTML` writes on one frame instead of
+   * four a frame for ten seconds.
+   * ─────────────────────────────────────────────────────────────────────── */
+
+  showKillCam(view) {
+    const el = this.el;
+    el.kcName.textContent = view.name ?? '—';
+    el.kcTags.innerHTML = clanTag(view.clan, view.clanVerified)
+      + verifiedTag(view.verified, 16)
+      + creatorTag(view.creator)
+      + (view.level ? `<span class="kc-level">LEVEL ${view.level | 0}</span>` : '');
+
+    // Only what is true. A melee has no distance worth printing, a headshot is
+    // worth saying out loud, and a killer left standing on 8 HP is the single
+    // most interesting number on this screen — so it is only drawn when the
+    // fight was actually close.
+    const facts = [['WITH', WEAPON_LABEL[view.weapon] ?? view.weapon ?? '—']];
+    if (view.head) facts.push(['', 'HEADSHOT']);
+    if (view.distance > 2) facts.push(['FROM', `${view.distance | 0} m`]);
+    if (view.health > 0) facts.push(['THEY HAD', `${view.health | 0} HP`]);
+    el.kcFacts.innerHTML = facts.map(([k, v]) =>
+      `<span class="kc-fact${k ? '' : ' flag'}">${k ? `<small>${k}</small>` : ''}<b>${escapeHtml(v)}</b></span>`)
+      .join('');
+
+    const hasTrack = !!view.anthemTitle;
+    el.kcAnthem.classList.toggle('hidden', !hasTrack);
+    if (hasTrack) {
+      el.kcTrack.textContent = view.anthemTitle;
+      el.kcTrackBy.textContent = `${view.name} · MUSIC CREATOR`;
+    }
+    el.kcDirector.textContent = view.director ? "DIRECTOR'S CUT" : '';
+    el.killCam.classList.remove('hidden');
+    this.killCamOpen = true;
+  }
+
+  updateKillCam(view, respawnIn) {
+    const el = this.el;
+    // The countdown is the respawn, not the cam: what a dead player wants to
+    // know is when they are back in, and the two only agree if nobody skips.
+    el.kcRemaining.textContent = Math.max(0, Math.ceil(Math.max(respawnIn, view.remaining)));
+    el.kcSkipFill.style.width = `${Math.round(view.skipProgress * 100)}%`;
+    el.kcSkip.disabled = !view.canSkip;
+    el.kcSkip.classList.toggle('ready', view.canSkip);
+    el.kcSkipLabel.textContent = view.canSkip
+      ? 'SKIP'
+      : `SKIP IN ${Math.max(1, Math.ceil(view.skipIn))}`;
+    // The credit only appears once the track is really playing — a fetch that
+    // lands late must not have promised music that never arrives.
+    if (view.anthemTitle && el.kcAnthem.classList.contains('hidden')) {
+      el.kcTrack.textContent = view.anthemTitle;
+      el.kcTrackBy.textContent = `${view.name} · MUSIC CREATOR`;
+      el.kcAnthem.classList.remove('hidden');
+    }
+  }
+
+  hideKillCam() {
+    this.el.killCam.classList.add('hidden');
+    this.el.kcAnthem.classList.add('hidden');
+    this.killCamOpen = false;
+  }
+
+  /** Shows or hides the developer overlay column. devmode.js fills it. */
+  setDevOverlay(on) {
+    this.el.devOverlay.classList.toggle('hidden', !on);
+    this.el.devOverlay.setAttribute('aria-hidden', on ? 'false' : 'true');
+  }
+
   /** Full-screen end-of-match card: it stays up for the whole intermission. */
   showMatchEnd({ winner, nextIn, scoreboard, myId, mapName, modeName, teamMode, teamScore, duration, vote }) {
     this.matchEndOpen = true;
@@ -1375,6 +1460,26 @@ const clanTag = (clan, verified = false) => (clan
     verified ? ' title="Verified clan"' : ''}>[${escapeHtml(String(clan).slice(0, 4))}]</span>`
   : '');
 
+/**
+ * The creator badge, or nothing.
+ *
+ * One chip per discipline, drawn wherever a nickname is — the scoreboard, the
+ * killfeed, the chat, the kill cam, a card. It is deliberately small and
+ * deliberately not gold: the clan tag already owns gold, and a second thing
+ * shouting for attention beside a name makes both of them harder to read.
+ *
+ * An unknown kind draws nothing rather than a placeholder, so a client one
+ * build behind a server that added a fifth discipline degrades to no badge
+ * instead of to a broken one.
+ */
+const creatorTag = (kind) => {
+  const meta = K.getCreatorKind(kind);
+  return meta
+    ? `<span class="creator-tag ${escapeHtml(kind)}" title="${escapeHtml(meta.name)} creator">${
+      escapeHtml(meta.name.slice(0, 1).toUpperCase())}</span>`
+    : '';
+};
+
 /** ADMIN / MOD. Roles without a chip (plain players) render nothing. */
 const roleTag = (role) => {
   const tag = K.ROLE_TAG[role];
@@ -1395,6 +1500,7 @@ const playerName = (row, size = 12, { role = true, link = false } = {}) => {
   const badges = clanTag(row?.clan, row?.clanVerified)
     + `<span class="n-text">${escapeHtml(row?.name ?? '')}</span>`
     + verifiedTag(row?.verified, size)
+    + creatorTag(row?.creator)
     + (role ? roleTag(row?.role) : '');
   // Only an account has a profile to open. A bot has nobody behind it and a
   // guest has no row, so neither gets a link that could only ever 404.

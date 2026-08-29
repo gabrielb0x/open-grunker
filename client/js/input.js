@@ -347,6 +347,8 @@ export class Input {
         case 'classMenu': this.emit('classMenu'); break;
         case 'toggleMinimap': this.emit('toggleMinimap'); break;
         case 'toggleFps': this.emit('toggleFps'); break;
+        case 'devMode': this.emit('devMode'); break;
+        case 'cleanScreen': this.emit('cleanScreen'); break;
         case 'crouch':
           if (settings.toggleCrouch) this.crouchToggled = !this.crouchToggled;
           break;

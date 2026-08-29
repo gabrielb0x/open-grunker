@@ -32,6 +32,7 @@ register('./client-loader.mjs', import.meta.url);
 // own, so they are the last two, in that order.
 const suites = ['movement', 'combat', 'lagcomp', 'simulation', 'keybinds', 'modes', 'rooms',
   'anticheat', 'godmode', 'progression', 'twofactor', 'moderation', 'accounts', 'clans', 'friends', 'cosmetics',
+  'creators',
   'client', 'gamepad', 'charts', 'admin', 'build'];
 const only = process.argv[2];
 

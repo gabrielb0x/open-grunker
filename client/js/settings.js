@@ -37,8 +37,27 @@ export const DEFAULTS = {
   /* Audio */
   masterVolume: 0.7,
   sfxVolume: 1.0,
+  /**
+   * How loud other players' anthems are, on their own fader.
+   *
+   * Separate from the effects volume on purpose: an anthem is somebody else's
+   * music playing on your screen, and "I want the game but not that" is a
+   * completely reasonable thing to want without turning the game down too.
+   * Zero is the same as having no anthem at all — the cam just runs silent.
+   */
+  anthemVolume: 0.8,
   hitSound: true,
   announcer: true,
+
+  /* Kill cam */
+  killCam: true,
+  /**
+   * Whether the cam holds for its full ten seconds or ends the moment it may be
+   * skipped. Off is the escape hatch for anyone who finds ten seconds long —
+   * the skip is still there either way, this only decides what happens when
+   * nobody presses it.
+   */
+  killCamHold: true,
 
   /* Video */
   quality: 'high',          // low | medium | high | ultra
@@ -84,6 +103,18 @@ export const DEFAULTS = {
   specXray: false,
   specThirdPerson: false,
 
+  /*
+   * Developer mode.
+   *
+   * Which overlays are on, and whether the mode itself is. Both are stored here
+   * rather than on the account because they are a preference about this screen,
+   * not a permission — the permission is a level and a creator status, both of
+   * which the server answers and neither of which this file can influence.
+   * A panel listed here that the account may not open is simply not drawn.
+   */
+  devMode: false,
+  devPanels: ['perf', 'net'],
+
   crosshairColor: '#ffffff',
   crosshairSize: 9,
   crosshairGap: 5,
@@ -92,6 +123,24 @@ export const DEFAULTS = {
   crosshairDynamic: true,
   crosshairOutline: true,
 };
+
+/**
+ * Settings whose control lives on a panel of its own rather than in SETTINGS.
+ *
+ * Everything a player can persist has to be adjustable *somewhere* — an option
+ * that is stored and unreachable is a bug that only ever surfaces as "why is
+ * this on". SCHEMA below is the usual answer to that, and these two are the
+ * exceptions: they belong to the DEVELOPER tab, which is a level-10 unlock most
+ * accounts never see, and putting a panel picker for overlays nobody can open
+ * into the audio-and-video panel would be the wrong shape of honesty.
+ *
+ * The list is named rather than inferred so the invariant survives: a key can
+ * only escape the settings panel by being written down here, and the test suite
+ * checks both that nothing else escapes *and* that everything named here really
+ * is somewhere else. Adding a key to this list to silence a failure is
+ * therefore a thing somebody has to do on purpose.
+ */
+export const PANEL_OWNED_KEYS = ['devMode', 'devPanels'];
 
 /** Live settings object — mutate through `set()` so listeners fire. */
 export const settings = { ...DEFAULTS, ...load() };
@@ -189,6 +238,13 @@ export function importText(text) {
   for (const [k, v] of Object.entries(incoming)) {
     if (!(k in DEFAULTS)) continue;
     if (typeof v !== typeof DEFAULTS[k]) continue;
+    // `typeof` alone is not enough for anything whose default is an object:
+    // `typeof null` and `typeof []` are both 'object', so a file could plant a
+    // null — or a plain object — where the code expects a list and reads
+    // `.includes` off it. One array-valued setting exists (`devPanels`) and
+    // that is one more than this check used to allow for.
+    if (Array.isArray(DEFAULTS[k]) !== Array.isArray(v)) continue;
+    if (v === null) continue;
     patch[k] = v;
   }
   const applied = Object.keys(patch).length;
@@ -299,8 +355,26 @@ export const SCHEMA = [
     group: 'Audio', icon: '🔊', items: [
       { key: 'masterVolume', label: 'Master volume', type: 'range', min: 0, max: 1, step: 0.05, fmt: pct },
       { key: 'sfxVolume', label: 'Effects volume', type: 'range', min: 0, max: 1, step: 0.05, fmt: pct },
+      {
+        key: 'anthemVolume', label: 'Player anthems', type: 'range', min: 0, max: 1, step: 0.05, fmt: pct,
+        hint: 'Music creators\u2019 tracks, played over the kill cam of whoever they kill. '
+          + 'Every one is levelled by the server, so none can be louder than another.',
+      },
       { key: 'hitSound', label: 'Hitmarker sound', type: 'bool' },
       { key: 'announcer', label: 'Killstreak & objective stings', type: 'bool' },
+    ],
+  },
+  {
+    group: 'Kill cam', icon: '\ud83c\udfa5', items: [
+      {
+        key: 'killCam', label: 'Show the kill cam', type: 'bool',
+        hint: 'Ten seconds looking at whoever killed you, skippable after three. '
+          + 'Off goes straight back to the plain death screen.',
+      },
+      {
+        key: 'killCamHold', label: 'Hold it for the full ten seconds', type: 'bool',
+        hint: 'Off ends the cam the moment the skip lights up, without you pressing anything.',
+      },
     ],
   },
   {

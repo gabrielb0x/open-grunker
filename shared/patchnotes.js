@@ -17,7 +17,7 @@
  * wrote it: what they can now do, or what stopped going wrong.
  */
 
-export const GAME_VERSION = '2.0.0';
+export const GAME_VERSION = '2.1.0';
 
 export const PATCH_KINDS = {
   new: { label: 'NEW', color: '#4ddb7a' },
@@ -26,6 +26,20 @@ export const PATCH_KINDS = {
 };
 
 export const PATCH_NOTES = [
+  {
+    version: '2.1.0',
+    date: '2026-08-29',
+    title: 'A kill cam with the killer’s own music over it, creator status for the people who make things, and instruments for anyone who wants to see what the client is doing',
+    changes: [
+      { kind: 'new', text: 'Dying now shows you who did it. The camera lifts out of your body, settles into an orbit around whoever killed you and holds it for ten seconds, with their name, their level, their clan, the weapon, how far the shot was and how much health they had left when it landed. You can skip it from three seconds in — the bar under the button fills until then — and skipping puts you straight back in, because the respawn timer never moved.' },
+      { kind: 'new', text: 'If the person who killed you is a music creator, their track plays over it. Ten seconds of their own music, chosen by them, played to everybody they kill. If they are not one, there is no sound, which is the ordinary case and is meant to read as deliberate rather than broken.' },
+      { kind: 'new', text: 'Nobody can be shouted at. Every anthem is levelled by the server before a byte of it is stored — measured over its loudest four hundred milliseconds and rewritten to a fixed loudness — so a wall of distortion arrives quieter than it went in and a quiet piano arrives louder. The trick of nine seconds of silence and one air horn does not work either: it is measured as an air horn. On top of that they play through a limited channel with a volume slider of their own, under SETTINGS ▸ AUDIO, and turning it to nothing means the cam simply runs silent.' },
+      { kind: 'new', text: 'Creator status: a new tab under YOU, open from level 5. Say what you make, link to it, and a human reads it. Four disciplines, each with a perk built out of what that discipline actually produces — music creators get the anthem, art creators can commission their own finish through a queue somebody answers, video creators get a director’s cut of the kill cam that runs for thirty seconds without any interface on it, and code creators get developer mode with no level gate plus the three instruments the gate does not open.' },
+      { kind: 'new', text: 'Approved creators wear a badge beside their name everywhere one is drawn, and get links on their profile card — YouTube, Twitch, SoundCloud, Bandcamp, ArtStation, GitHub, a personal site and eight more. You give a handle rather than an address and the game builds the link, so nothing anybody types ever becomes a destination on somebody else’s screen; clicking one says where it goes before it takes you.' },
+      { kind: 'new', text: 'Developer mode, unlocked at level 10. Four overlays down the side of the screen while you play: frame time as a distribution rather than an average, what the socket is really carrying, where the movement code thinks you are, and toggles for wireframe, post-processing, the map’s collision volumes and a frozen frustum. Code creators get three more — a wire inspector, a reconciliation trace and a frame-time histogram. It is instruments only: nothing in it shows you one thing about another player that your screen was not already going to.' },
+      { kind: 'change', text: 'The death screen is still there, and it is still what you get when the world killed you, when the person who did has already left, or when you have turned the cam off under SETTINGS ▸ KILL CAM.' },
+    ],
+  },
   {
     version: '2.0.0',
     date: '2026-08-29',

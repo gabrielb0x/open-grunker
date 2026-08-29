@@ -21,6 +21,15 @@ export class Net {
     this.bytesIn = 0;
     this.bytesOut = 0;
     this.myId = 0;
+    /**
+     * An optional `(dir, opcode, bytes) => void`, set by developer mode.
+     *
+     * A hook rather than an import, so this file has no idea the overlay
+     * exists and the overlay cannot become something the network layer has to
+     * keep working. Null in every session that never opens it, and the two
+     * call sites below then cost one truthiness test each.
+     */
+    this.onPacket = null;
   }
 
   on(event, fn) {
@@ -66,9 +75,13 @@ export class Net {
 
     ws.addEventListener('message', (ev) => {
       if (!current()) return;
-      this.bytesIn += ev.data.length ?? 0;
+      const bytes = ev.data.length ?? 0;
+      this.bytesIn += bytes;
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
+      // The opcode and the size, never the body: what is inside somebody
+      // else's snapshot is not a debugging question. See devmode.js.
+      this.onPacket?.('in', msg.o, bytes);
       this._handle(msg);
     });
 
@@ -166,6 +179,7 @@ export class Net {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     const data = JSON.stringify(msg);
     this.bytesOut += data.length;
+    this.onPacket?.('out', msg.o, data.length);
     this.ws.send(data);
   }
 

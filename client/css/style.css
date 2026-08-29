@@ -616,6 +616,226 @@ kbd {
 .death-timer b { color: var(--accent); font-size: 24px; }
 .death-hint { margin-top: 10px; font-size: 12px; color: var(--muted); }
 
+/* ── The clean screen ────────────────────────────────────────────────────────
+ *
+ * A video creator's capture key: the whole interface off for a shot, without
+ * touching a setting, so it comes back on the next press rather than being
+ * something to remember to undo.
+ *
+ * Hidden with opacity rather than `display`, so nothing reflows on the way out
+ * or the way back — a HUD that re-lays-out mid-recording is a frame nobody can
+ * use — and `transition` makes it a fade rather than a cut. The kill cam is
+ * deliberately *not* in here: it is the shot, not the interface over it.
+ * ────────────────────────────────────────────────────────────────────────── */
+body.clean #hud,
+body.clean #devOverlay,
+body.clean #deathScreen { opacity: 0; transition: opacity .2s; }
+
+/* ── The kill cam ────────────────────────────────────────────────────────────
+ *
+ * Ten seconds over the shot of whoever killed you. The letterbox bars are the
+ * load-bearing part: they are what says "this is a replay" before anybody has
+ * read a word, and without them ten seconds of orbiting camera reads as the
+ * game having frozen. Everything else sits inside them and is deliberately
+ * quiet — the thing worth looking at is the shot, not the card over it.
+ * ────────────────────────────────────────────────────────────────────────── */
+#killCam {
+  position: absolute; inset: 0; pointer-events: none;
+  animation: kcIn .4s cubic-bezier(.16, 1, .3, 1);
+}
+@keyframes kcIn { from { opacity: 0; } }
+
+.kc-bar {
+  position: absolute; left: 0; right: 0; height: 9vh; background: #05070b;
+  box-shadow: 0 0 40px rgba(0, 0, 0, .8);
+  animation: kcBar .45s cubic-bezier(.16, 1, .3, 1);
+}
+.kc-bar.top { top: 0; }
+.kc-bar.bottom { bottom: 0; }
+@keyframes kcBar { from { height: 0; } }
+
+.kc-card {
+  position: absolute; left: 5vw; bottom: calc(9vh + 128px); max-width: min(560px, 62vw);
+  animation: kcRise .5s .1s backwards cubic-bezier(.16, 1, .3, 1);
+}
+@keyframes kcRise { from { opacity: 0; transform: translateY(14px); } }
+
+.kc-eyebrow { font-size: 11px; letter-spacing: .34em; color: var(--muted); }
+.kc-name {
+  margin: 2px 0 8px; font-size: clamp(30px, 4.6vw, 52px); font-weight: 800; line-height: 1;
+  color: var(--red); text-shadow: 0 4px 28px rgba(255, 60, 60, .34);
+  overflow-wrap: anywhere;
+}
+.kc-tags { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 20px; }
+.kc-level {
+  padding: 2px 8px; border-radius: var(--r-pill); font-size: 10px; letter-spacing: .16em;
+  color: var(--muted); background: rgba(255, 255, 255, .06); border: 1px solid var(--line);
+}
+
+.kc-facts { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 14px; }
+.kc-fact { display: flex; flex-direction: column; gap: 1px; }
+.kc-fact small { font-size: 9.5px; letter-spacing: .22em; color: var(--dim); }
+.kc-fact b { font-size: 15px; letter-spacing: .06em; color: var(--text); }
+/* A headshot has no caption — it is the caption. */
+.kc-fact.flag { justify-content: flex-end; }
+.kc-fact.flag b {
+  padding: 2px 9px; border-radius: var(--r-xs); font-size: 11px; letter-spacing: .18em;
+  color: #05070b; background: var(--accent);
+}
+
+/* — The anthem credit —
+   Present only while a track is actually playing. A killer with no anthem gets
+   no empty box: silence is the ordinary case and must not look like a fault. */
+.kc-anthem {
+  position: absolute; right: 5vw; bottom: calc(9vh + 24px);
+  display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+  border: 1px solid var(--line); border-radius: var(--r); backdrop-filter: blur(8px);
+  background: rgba(13, 17, 24, .72);
+  animation: kcRise .45s cubic-bezier(.16, 1, .3, 1);
+}
+.kc-track { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.kc-track b { font-size: 14px; letter-spacing: .04em; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 32ch; }
+.kc-track small { font-size: 9.5px; letter-spacing: .2em; color: var(--purple); }
+
+/* Five bars that breathe. Not driven by the audio — an analyser node per death
+   for five bars of decoration would be a real cost for a fake reading — so they
+   are staggered sines that simply say "something is playing". */
+.kc-wave { display: flex; align-items: flex-end; gap: 2.5px; height: 20px; }
+.kc-wave i {
+  width: 3px; border-radius: var(--r-pill); background: var(--purple);
+  animation: kcWave 1.1s ease-in-out infinite;
+}
+.kc-wave i:nth-child(1) { animation-delay: -.9s; }
+.kc-wave i:nth-child(2) { animation-delay: -.5s; }
+.kc-wave i:nth-child(3) { animation-delay: -.15s; }
+.kc-wave i:nth-child(4) { animation-delay: -.7s; }
+.kc-wave i:nth-child(5) { animation-delay: -.35s; }
+@keyframes kcWave { 0%, 100% { height: 5px; } 50% { height: 20px; } }
+
+.kc-foot {
+  position: absolute; left: 5vw; bottom: calc(9vh + 26px);
+  display: flex; align-items: center; gap: 20px;
+}
+.kc-timer { display: flex; align-items: baseline; gap: 7px; }
+.kc-timer b { font-size: 26px; font-weight: 800; color: var(--accent);
+  font-variant-numeric: tabular-nums; }
+.kc-timer span { font-size: 10px; letter-spacing: .22em; color: var(--dim); }
+
+/* The skip button fills over the three seconds before it works. The fill *is*
+   the explanation — a disabled button with a countdown in it needs no tooltip. */
+.kc-skip {
+  position: relative; overflow: hidden; pointer-events: auto; cursor: default;
+  min-width: 148px; padding: 10px 20px; font: inherit;
+  border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, .04); color: var(--dim);
+  transition: color .16s, border-color .16s, background .16s;
+}
+.kc-skip-fill {
+  position: absolute; inset: 0 auto 0 0; width: 0;
+  background: rgba(245, 166, 35, .14); transition: width .12s linear;
+}
+.kc-skip-label { position: relative; font-size: 12px; letter-spacing: .2em; }
+.kc-skip.ready {
+  cursor: pointer; color: var(--accent); border-color: var(--accent);
+  background: rgba(245, 166, 35, .1);
+}
+.kc-skip.ready:hover { background: rgba(245, 166, 35, .2); color: var(--text); }
+.kc-skip.ready .kc-skip-fill { background: transparent; }
+
+.kc-hint { font-size: 10px; letter-spacing: .24em; color: var(--purple); }
+
+/* Portrait phones: the card and the credit stack rather than fighting for a
+   line, and the letterbox thins so there is a game left to look at. */
+@media (max-width: 700px) {
+  .kc-bar { height: 6vh; }
+  .kc-card { left: 5vw; right: 5vw; max-width: none; bottom: calc(6vh + 150px); }
+  .kc-anthem { left: 5vw; right: 5vw; bottom: calc(6vh + 82px); }
+  .kc-foot { left: 5vw; right: 5vw; bottom: calc(6vh + 22px); }
+  .kc-track b { max-width: none; }
+}
+
+/* ── Developer overlays ──────────────────────────────────────────────────────
+ *
+ * A column down the right, under the HUD's own readouts. `pointer-events` is
+ * off on the column and back on for the panels, so a stack of instruments can
+ * never swallow a click the game needed — which is the same rule every other
+ * overlay in this file follows.
+ * ────────────────────────────────────────────────────────────────────────── */
+#devOverlay {
+  position: absolute; top: 96px; right: 12px; bottom: 96px; width: 260px;
+  display: flex; flex-direction: column; gap: 8px; overflow-y: auto;
+  pointer-events: none; z-index: 5;
+  scrollbar-width: thin;
+}
+.dev-panel {
+  pointer-events: auto; padding: 9px 11px 10px;
+  background: rgba(8, 11, 16, .82); backdrop-filter: blur(6px);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  font: 11px/1.45 var(--mono);
+}
+.dev-panel h6 {
+  margin: 0 0 6px; display: flex; align-items: center; gap: 6px;
+  font: 700 9.5px/1 var(--hud-font); letter-spacing: .22em; color: var(--muted);
+}
+.dev-panel h6 i {
+  font-style: normal; padding: 1px 5px; border-radius: var(--r-xs);
+  font-size: 8px; letter-spacing: .12em; color: var(--purple);
+  background: rgba(176, 124, 255, .14);
+}
+.dev-rows { display: grid; grid-template-columns: 1fr auto; gap: 1px 10px; }
+.dev-k { color: var(--dim); }
+.dev-v { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+.dev-v.dim { color: var(--dim); }
+.dev-v.warn { color: var(--accent); }
+.dev-v.bad { color: var(--red); }
+
+.dev-wire { display: grid; grid-template-columns: auto 1fr auto auto; gap: 1px 8px; }
+.dev-op { color: var(--muted); }
+.dev-op.in { color: var(--blue); }
+.dev-op.out { color: var(--green); }
+
+/* Sparklines. Both the reconciliation trace and the frame histogram are the
+   same primitive: a row of bars whose *shape* is the reading. */
+.dev-spark {
+  display: flex; align-items: flex-end; gap: 1px; height: 28px; margin-bottom: 7px;
+  padding: 2px 0; border-bottom: 1px solid var(--line);
+}
+.dev-spark.tall { height: 36px; }
+.dev-bar { flex: 1; min-width: 2px; background: var(--green); border-radius: 1px 1px 0 0; }
+.dev-bar.warn { background: var(--accent); }
+.dev-bar.bad { background: var(--red); }
+
+.dev-toggles { display: flex; flex-direction: column; gap: 4px; }
+.dev-toggle {
+  padding: 5px 8px; cursor: pointer; text-align: left;
+  font: 10.5px/1 var(--hud-font); letter-spacing: .1em; color: var(--muted);
+  background: rgba(255, 255, 255, .03); border: 1px solid var(--line);
+  border-radius: var(--r-xs); transition: color .12s, border-color .12s, background .12s;
+}
+.dev-toggle:hover { color: var(--text); border-color: var(--line-2); }
+.dev-toggle.on { color: var(--accent); border-color: var(--accent); background: rgba(245, 166, 35, .12); }
+
+@media (max-width: 900px) { #devOverlay { display: none; } }
+
+/* ── The creator badge ───────────────────────────────────────────────────────
+ *
+ * One letter beside a nickname, wherever one is drawn. Deliberately small and
+ * deliberately not gold — the clan tag already owns gold, and two things
+ * shouting beside one name makes both harder to read. Each discipline gets its
+ * own hue so the four are told apart at a glance rather than by hovering.
+ * ────────────────────────────────────────────────────────────────────────── */
+.creator-tag {
+  flex: none; display: inline-grid; place-items: center; margin-left: 5px;
+  width: 14px; height: 14px; border-radius: var(--r-xs);
+  font: 700 9px/1 var(--hud-font); letter-spacing: 0; vertical-align: -2px;
+  color: #05070b; background: var(--muted);
+}
+.creator-tag.music { background: var(--purple); }
+.creator-tag.art { background: var(--accent-2); }
+.creator-tag.video { background: var(--blue); }
+.creator-tag.code { background: var(--green); }
+
 /* — Scoreboard — */
 #scoreboard { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(4,6,10,.66); }
 .sb-card {
@@ -3231,3 +3451,172 @@ body.pad button:focus, body.pad select:focus, body.pad input:focus, body.pad [ta
   .lo-equipped { grid-template-columns: repeat(2, 1fr); }
   .skin-grid { grid-template-columns: repeat(auto-fill, minmax(136px, 1fr)); }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Creators
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* — Where this account stands. The first thing on the page, because it is what
+     somebody opening this tab twice came back to read. — */
+.cr-standing {
+  display: flex; align-items: center; gap: 13px; padding: 14px 16px; margin-bottom: 18px;
+  border: 1px solid var(--line); border-left-width: 3px; border-radius: var(--r);
+  background: var(--panel-2);
+}
+.cr-standing .ic { flex: none; width: 22px; height: 22px; color: var(--muted); }
+.cr-standing div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cr-standing b { font-size: 14px; letter-spacing: .14em; }
+.cr-standing span { font-size: 12px; color: var(--muted); }
+.cr-standing.pending { border-left-color: var(--accent); }
+.cr-standing.pending .ic, .cr-standing.pending b { color: var(--accent); }
+.cr-standing.approved { border-left-color: var(--green); }
+.cr-standing.approved .ic, .cr-standing.approved b { color: var(--green); }
+.cr-standing.rejected, .cr-standing.revoked { border-left-color: var(--red); }
+.cr-standing.rejected b, .cr-standing.revoked b { color: var(--red); }
+
+/* — The four disciplines — */
+.cr-kinds { display: grid; grid-template-columns: repeat(auto-fit, minmax(238px, 1fr)); gap: 12px; }
+.cr-kind {
+  padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--panel-2);
+}
+.cr-kind.mine { border-color: var(--green); background: rgba(77, 219, 122, .07); }
+.cr-kind h5 {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 6px;
+  font-size: 13px; letter-spacing: .16em;
+}
+.cr-kind h5 .ic { flex: none; width: 17px; height: 17px; color: var(--accent); }
+.cr-kind.mine h5 .ic { color: var(--green); }
+.cr-kind h5 i {
+  margin-left: auto; font-style: normal; padding: 2px 7px; border-radius: var(--r-pill);
+  font-size: 9px; letter-spacing: .14em; color: #05070b; background: var(--green);
+}
+.cr-blurb { margin: 0 0 9px; font-size: 12px; color: var(--muted); }
+.cr-kind ul { margin: 0; padding-left: 17px; display: flex; flex-direction: column; gap: 6px; }
+.cr-kind li { font-size: 12px; line-height: 1.5; color: var(--text); }
+
+/* — The application, and the perks below it — */
+.cr-apply, .cr-perk { margin-top: 26px; }
+.cr-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 12px; }
+.field-note { display: block; margin-top: 4px; font-size: 11px; color: var(--dim); }
+
+.cr-links { display: flex; flex-direction: column; gap: 7px; margin: 9px 0; }
+.cr-link { display: flex; align-items: center; gap: 8px; }
+.cr-link select { flex: none; width: 148px; }
+.cr-link .cr-link-handle { flex: 1; min-width: 0; }
+.btn-icon {
+  flex: none; width: 30px; height: 30px; cursor: pointer; font: 16px/1 var(--hud-font);
+  color: var(--dim); background: transparent; border: 1px solid var(--line);
+  border-radius: var(--r-sm); transition: color .12s, border-color .12s;
+}
+.btn-icon:hover { color: var(--red); border-color: var(--red); }
+
+/* — The anthem — */
+.cr-anthem {
+  display: flex; align-items: center; gap: 12px; padding: 13px 15px;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2);
+}
+.cr-anthem .ic { flex: none; width: 20px; height: 20px; color: var(--dim); }
+.cr-anthem.has { border-color: var(--purple); }
+.cr-anthem.has .ic { color: var(--purple); }
+.cr-anthem div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cr-anthem b { font-size: 14px; }
+.cr-anthem span { font-size: 11.5px; color: var(--muted); }
+.cr-trim { margin-top: 14px; padding: 14px 16px; border: 1px solid var(--line);
+  border-radius: var(--r); background: var(--panel); }
+.cr-trim .field span b { color: var(--accent); font-variant-numeric: tabular-nums; }
+
+/* — Skin briefs — */
+.cr-briefs { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.cr-brief {
+  padding: 13px 15px; border: 1px solid var(--line); border-left-width: 3px;
+  border-radius: var(--r); background: var(--panel-2);
+}
+.cr-brief.open { border-left-color: var(--accent); }
+.cr-brief.accepted { border-left-color: var(--blue); }
+.cr-brief.shipped { border-left-color: var(--green); }
+.cr-brief.declined { border-left-color: var(--red); opacity: .7; }
+.cr-brief header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.cr-brief header b { font-size: 14px; letter-spacing: .06em; }
+.cr-brief header span { font-size: 9.5px; letter-spacing: .18em; color: var(--muted); }
+.cr-brief p { margin: 7px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.55; }
+.cr-verdict { color: var(--text) !important; border-left: 2px solid var(--line-2); padding-left: 10px; }
+.cr-swatches, .cr-palette { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.cr-swatches i { width: 22px; height: 22px; border-radius: var(--r-xs); border: 1px solid var(--line-2); }
+.cr-swatch { position: relative; display: inline-flex; }
+.cr-swatch input[type=color] {
+  width: 44px; height: 32px; padding: 0; cursor: pointer;
+  background: transparent; border: 1px solid var(--line-2); border-radius: var(--r-xs);
+  transition: opacity .12s;
+}
+/* Off is dim, not gone: the colour is still there to be turned back on, which
+   is the whole thing the first version of this got wrong. */
+.cr-swatch input[data-off] { opacity: .28; }
+.cr-swatch-toggle {
+  position: absolute; top: -5px; right: -5px; width: 16px; height: 16px; padding: 0;
+  cursor: pointer; display: grid; place-items: center;
+  font: 700 11px/1 var(--hud-font); color: var(--text);
+  background: var(--panel-3); border: 1px solid var(--line-2); border-radius: var(--r-pill);
+}
+.cr-swatch-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.cr-brief-form { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
+.btn-ghost.small { margin-top: 10px; padding: 4px 10px; font-size: 10px; }
+.btn-ghost.danger:hover { color: var(--red); border-color: var(--red); }
+
+/* — On a profile card —
+     The links are the only outbound anchors in the game. They show the handle,
+     never the address, and every one goes through the confirm in menu.js. — */
+.pc-creator {
+  margin: 14px 0 0; padding: 12px 14px;
+  border: 1px solid var(--line); border-left: 3px solid var(--purple);
+  border-radius: var(--r); background: rgba(255, 255, 255, .03);
+}
+.pc-creator.art { border-left-color: var(--accent-2); }
+.pc-creator.video { border-left-color: var(--blue); }
+.pc-creator.code { border-left-color: var(--green); }
+.pc-creator-kind { font-size: 9.5px; letter-spacing: .24em; color: var(--muted); }
+.pc-anthem { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+.pc-anthem .ic { flex: none; width: 15px; height: 15px; color: var(--purple); }
+.pc-anthem b { font-size: 13px; }
+.pc-anthem small { font-size: 9px; letter-spacing: .16em; color: var(--dim); }
+.pc-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.pc-link {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: var(--r-pill);
+  font-size: 11.5px; color: var(--muted); text-decoration: none;
+  transition: color .12s, border-color .12s, background .12s;
+}
+.pc-link:hover { color: var(--text); border-color: var(--line-2); background: rgba(255, 255, 255, .05); }
+.pc-link .ic { flex: none; width: 13px; height: 13px; }
+.pill.creator { color: #05070b; background: var(--purple); border-color: transparent; }
+.pill.creator.art { background: var(--accent-2); }
+.pill.creator.video { background: var(--blue); }
+.pill.creator.code { background: var(--green); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   The developer page
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.dv-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.dv-head h3 { margin: 0 0 4px; font-size: 15px; letter-spacing: .18em; }
+.dv-rule {
+  margin: 16px 0 22px; padding: 13px 16px; font-size: 12.5px; line-height: 1.6;
+  color: var(--muted); border-left: 3px solid var(--green);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0; background: rgba(77, 219, 122, .06);
+}
+.dv-panels { display: flex; flex-direction: column; gap: 8px; }
+.dv-panel {
+  display: grid; grid-template-columns: auto 1fr; gap: 3px 11px; align-items: center;
+  padding: 11px 14px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2);
+  transition: border-color .12s;
+}
+.dv-panel:hover { border-color: var(--line-2); }
+.dv-panel.locked { opacity: .5; cursor: not-allowed; }
+.dv-panel input { grid-row: span 2; width: 15px; height: 15px; accent-color: var(--accent); }
+.dv-panel-id { display: flex; align-items: center; gap: 8px; font-size: 13px; letter-spacing: .1em; }
+.dv-panel-id i {
+  font-style: normal; padding: 2px 7px; border-radius: var(--r-pill);
+  font-size: 8.5px; letter-spacing: .12em; color: #05070b; background: var(--green);
+}
+.dv-panel-note { font-size: 11.5px; color: var(--muted); }

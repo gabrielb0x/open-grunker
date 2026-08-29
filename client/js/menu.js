@@ -17,7 +17,7 @@ import {
 import { getMap, ALL_MAP_IDS } from '/shared/maps.js';
 import { GAME_VERSION, PATCH_NOTES, PATCH_KINDS, latestPatch } from '/shared/patchnotes.js';
 import * as keys from './keybinds.js';
-import { sfx } from './audio.js';
+import { sfx, initAudio, loadAnthem, playAnthem, stopAnthem } from './audio.js';
 import { icon } from './icons.js';
 import { avatarAccent, nameAccent } from './avatarcolor.js';
 
@@ -108,6 +108,8 @@ export class Menu {
     this._bindAvatar();
     this._bindClans();
     this._bindFriends();
+    this._bindCreator();
+    this._bindDeveloper();
     this._bindPlayerCard();
     this._bindCardEditor();
     this._bindPrivacy();
@@ -305,6 +307,8 @@ export class Menu {
     if (name === 'servers') this.refreshServers();
     if (['classes', 'cases', 'market', 'trades'].includes(name)) this.wardrobe?.onTab(name);
     if (name === 'profile') this.refreshAccount();
+    if (name === 'creator') this.refreshCreator();
+    if (name === 'developer') this.renderDeveloper();
     if (name === 'controls') this.buildBinds();
     if (name === 'challenges') this.buildProgress();
   }
@@ -334,6 +338,11 @@ export class Menu {
       for (const group of document.querySelectorAll('.pn-group')) {
         let hits = 0;
         for (const tab of group.querySelectorAll('.tab')) {
+          // A locked entry is not a search miss, it is a page this account may
+          // not open — so the filter leaves it hidden rather than revealing it
+          // the moment the box is cleared. `data-locked` is set by whoever owns
+          // the gate (see `setDevAccess`), never by this function.
+          if (tab.dataset.locked === '1') { tab.classList.add('hidden'); continue; }
           const hay = `${tab.dataset.tab} ${tab.dataset.label ?? ''} ${tab.dataset.title ?? ''} ${
             tab.dataset.sub ?? ''} ${group.dataset.group ?? ''}`.toLowerCase();
           const hit = !q || hay.includes(q);
@@ -1317,6 +1326,24 @@ export class Menu {
     const card = $('playerCard');
     $('playerCardClose')?.addEventListener('click', () => this.closePlayerCard());
     card?.addEventListener('mousedown', (e) => { if (e.target === card) this.closePlayerCard(); });
+
+    /*
+     * The interstitial in front of a creator's links.
+     *
+     * These are the only outbound links in the game and they are put there by
+     * one player for another to click, so leaving is a thing somebody agrees to
+     * rather than a thing that happens. The host is read back off the anchor's
+     * own href — never off anything in the markup — so what the confirm names
+     * is exactly where the browser is about to go.
+     */
+    document.addEventListener('click', (e) => {
+      const link = e.target.closest?.('a[data-external]');
+      if (!link) return;
+      let host;
+      try { host = new URL(link.href).host; } catch { e.preventDefault(); return; }
+      if (window.confirm(`Leave Open Grunker for ${host}?`)) return;
+      e.preventDefault();
+    });
     // One listener on the card rather than one per button: the card is rebuilt
     // from scratch after every action it offers.
     card?.addEventListener('click', (e) => {
@@ -3276,6 +3303,11 @@ export class Menu {
   async refreshAccount() {
     const user = await api.me();
 
+    // Both rail entries follow the session, not a match. `/auth/me` is what
+    // restores it, so this is where the DEVELOPER page appears and disappears
+    // — signing out has to take it away as surely as signing in brings it.
+    this.setDevAccess(api.devAccess, this.devOpen);
+
     $('profileSignedIn').classList.toggle('hidden', !user);
     $('profileSignedOut').classList.toggle('hidden', !!user);
 
@@ -3456,6 +3488,737 @@ export class Menu {
   closeClassModal() { $('classModal').classList.add('hidden'); }
   get classModalOpen() { return !$('classModal').classList.contains('hidden'); }
   get authModalOpen() { return !$('authModal').classList.contains('hidden'); }
+
+  /* ── Creator ────────────────────────────────────────────────────────────────
+   *
+   * One page with three states — never applied, applied and waiting, approved —
+   * and the state is the row at the top rather than three different screens.
+   * The catalogue below it is drawn in all three, because somebody deciding
+   * whether to apply needs to see what each discipline earns and somebody
+   * already approved still wants to read what the other three get.
+   *
+   * The rules come from `/creator` rather than from the constants, so an
+   * operator who moved the level or closed the programme in .env has moved it
+   * for this page too. Nothing here decides anything: every button below asks a
+   * route, and the route is what refuses.
+   * ─────────────────────────────────────────────────────────────────────────── */
+
+  _bindCreator() {
+    $('btnCreatorSignIn')?.addEventListener('click', () => { sfx.ui(); this.openAuth('login'); });
+
+    // The application.
+    $('crApplyForm')?.addEventListener('submit', (e) => { e.preventDefault(); this.submitCreatorApplication(); });
+    $('crAddLink')?.addEventListener('click', () => { sfx.ui(); this.addCreatorLinkRow('crLinks'); });
+    $('crPitch')?.addEventListener('input', () => {
+      $('crPitchCount').textContent = String($('crPitch').value.length);
+    });
+
+    // Links on an approved card. Deliberately a separate editor from the one in
+    // the application: the first is part of a pitch and the second is what
+    // strangers see, and editing one must not quietly rewrite the other until
+    // SAVE is pressed.
+    $('crAddCardLink')?.addEventListener('click', () => { sfx.ui(); this.addCreatorLinkRow('crCardLinks'); });
+    $('crSaveLinks')?.addEventListener('click', () => this.saveCreatorLinks());
+
+    $('crResign')?.addEventListener('click', () => this.resignCreator());
+
+    this._bindAnthem();
+    this._bindBriefs();
+
+    // Delegated, because every list on this page is redrawn wholesale.
+    $('creatorBody')?.addEventListener('click', (e) => {
+      const drop = e.target.closest('[data-drop-link]');
+      if (drop) {
+        sfx.ui();
+        drop.closest('.cr-link')?.remove();
+        return;
+      }
+      const withdraw = e.target.closest('[data-withdraw-brief]');
+      if (withdraw) this.withdrawBrief(withdraw.dataset.withdrawBrief);
+    });
+  }
+
+  crNote(text, kind = '') {
+    const el = $('crMsg');
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = `form-msg${text ? '' : ' hidden'}${kind ? ` ${kind}` : ''}`;
+  }
+
+  /** Pulls the whole page's state in one request and redraws. */
+  async refreshCreator({ quiet = false } = {}) {
+    const signedOut = !api.isAuthed;
+    $('creatorSignedOut')?.classList.toggle('hidden', !signedOut);
+    $('creatorBody')?.classList.toggle('hidden', signedOut);
+    $('creatorClosed')?.classList.add('hidden');
+    if (signedOut) return;
+
+    try {
+      this.creatorState = await api.creator();
+    } catch (ex) {
+      if (ex.code === 'creators_disabled') {
+        $('creatorBody')?.classList.add('hidden');
+        $('creatorClosed')?.classList.remove('hidden');
+        return;
+      }
+      if (!quiet) this.crNote(ex.message || 'Creator status is unavailable right now.', 'error');
+      return;
+    }
+    // This answer is fresher than the one the session restore brought: somebody
+    // approved as a code creator two minutes ago should not have to reload to
+    // find the DEVELOPER page they were just given.
+    this.setDevAccess(this.creatorState.dev, this.devOpen);
+    this.renderCreator();
+  }
+
+  renderCreator() {
+    const state = this.creatorState;
+    if (!state) return;
+    const { rules, creator, apply, skinRequests = [] } = state;
+
+    $('creatorBody')?.classList.remove('hidden');
+    $('crRules').textContent = `Level ${rules.minLevel}+`
+      + (rules.needEmail ? ', with a confirmed email address' : '')
+      + `. ${rules.linksMax} links, ${rules.reapplyDays} days between attempts.`;
+
+    this.renderCreatorStanding(creator, apply);
+    this.renderCreatorKinds(rules, creator);
+
+    // The form is up only when there is no application standing. `apply.can` is
+    // the server's own answer, so a level too low and a wait still running both
+    // grey the button with the sentence the route would have refused with.
+    const form = $('crApplyForm');
+    const showForm = !creator || creator.status === 'rejected' || creator.status === 'revoked';
+    form?.classList.toggle('hidden', !showForm);
+    if (showForm) {
+      $('crPitchMax').textContent = String(rules.pitchMax);
+      const select = $('crKind');
+      if (select && !select.options.length) {
+        select.innerHTML = rules.kinds
+          .map((k) => `<option value="${escapeHtml(k.id)}">${escapeHtml(k.name)}</option>`).join('');
+      }
+      if (!$('crLinks').children.length) this.addCreatorLinkRow('crLinks');
+      const btn = $('crSubmit');
+      btn.disabled = !apply.can;
+      btn.textContent = apply.can ? 'SEND IT' : (apply.why ?? 'NOT YET').toUpperCase();
+    }
+
+    const grants = creator?.status === 'approved' ? (creator.grants ?? []) : [];
+    $('crAnthemPerk')?.classList.toggle('hidden', !grants.includes('anthem'));
+    $('crSkinPerk')?.classList.toggle('hidden', !grants.includes('skinRequest'));
+    $('crLinksPerk')?.classList.toggle('hidden', creator?.status !== 'approved');
+    $('crResignPerk')?.classList.toggle('hidden', creator?.status !== 'approved');
+
+    if (grants.includes('anthem')) this.renderAnthem(creator, rules);
+    if (grants.includes('skinRequest')) this.renderBriefs(skinRequests, creator, rules);
+    if (creator?.status === 'approved') this.fillCreatorLinks('crCardLinks', creator.links, rules);
+  }
+
+  /** The one row at the top: where this account stands, and what to do next. */
+  renderCreatorStanding(creator, apply) {
+    const el = $('crStanding');
+    if (!el) return;
+    if (!creator) {
+      el.className = 'cr-standing none';
+      el.innerHTML = `${icon('badge')}<div><b>NOT A CREATOR</b>`
+        + `<span>${escapeHtml(apply?.can ? 'You can apply below.' : (apply?.why ?? ''))}</span></div>`;
+      return;
+    }
+    const kind = K.getCreatorKind(creator.kind);
+    const lines = {
+      pending: ['IN THE QUEUE', 'Somebody will read it. You will see the answer here.'],
+      approved: [`${(kind?.name ?? creator.kind).toUpperCase()} CREATOR`,
+        creator.since ? `Since ${fmtDate(creator.since)}.` : 'Approved.'],
+      rejected: ['NOT THIS TIME', creator.verdict ?? 'No reason was given.'],
+      revoked: ['STATUS ENDED', creator.verdict ?? 'The status was withdrawn.'],
+    };
+    const [title, note] = lines[creator.status] ?? ['—', ''];
+    el.className = `cr-standing ${creator.status}`;
+    el.innerHTML = `${icon(kind?.icon ?? 'badge')}<div><b>${escapeHtml(title)}</b>`
+      + `<span>${escapeHtml(note)}</span></div>`;
+  }
+
+  /** The four cards. The one this account holds is marked; the rest are read. */
+  renderCreatorKinds(rules, creator) {
+    const el = $('crKinds');
+    if (!el) return;
+    el.innerHTML = rules.kinds.map((kind) => {
+      const mine = creator?.status === 'approved' && creator.kind === kind.id;
+      return `<article class="cr-kind${mine ? ' mine' : ''}">
+        <h5>${icon(kind.icon)}${escapeHtml(kind.name)}${mine ? '<i>YOURS</i>' : ''}</h5>
+        <p class="cr-blurb">${escapeHtml(kind.blurb)}</p>
+        <ul>${kind.perks.map((p) => `<li>${escapeHtml(p)}</li>`).join('')}</ul>
+      </article>`;
+    }).join('');
+  }
+
+  /* ── The link editor ─────────────────────────────────────────────────────
+   *
+   * A platform and a handle, never a URL. The address is built by the server
+   * out of the pair — see the block comment on CREATOR_PLATFORMS in
+   * shared/constants.js — so this editor cannot be used to put an arbitrary
+   * destination on somebody else's screen, and does not have to be trusted not
+   * to be.
+   * ────────────────────────────────────────────────────────────────────────── */
+
+  addCreatorLinkRow(hostId, link = null) {
+    const host = $(hostId);
+    const rules = this.creatorState?.rules;
+    if (!host || !rules) return;
+    if (host.children.length >= rules.linksMax) {
+      this.crNote(`${rules.linksMax} links is the limit.`, 'error');
+      return;
+    }
+    /*
+     * Built from nodes rather than from a string, and that is not a style
+     * choice. The one value on this row that came from a person is the handle,
+     * and putting it through `innerHTML` means escaping it correctly every time
+     * this function is edited. Setting `.value` on an input is not markup at
+     * all, so there is nothing to escape and nothing to get wrong.
+     */
+    const row = document.createElement('div');
+    row.className = 'cr-link';
+
+    const select = document.createElement('select');
+    select.className = 'cr-link-platform';
+    for (const spec of rules.platforms) {
+      const opt = document.createElement('option');
+      opt.value = spec.id;
+      opt.textContent = spec.name;
+      if (spec.id === link?.platform) opt.selected = true;
+      select.appendChild(opt);
+    }
+    if (link?.platform) select.value = link.platform;
+
+    const input = document.createElement('input');
+    input.className = 'mini-input cr-link-handle';
+    input.maxLength = 80;
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.value = link?.handle ?? '';
+
+    const drop = document.createElement('button');
+    drop.type = 'button';
+    drop.className = 'btn-icon';
+    drop.dataset.dropLink = '';
+    drop.setAttribute('aria-label', 'Remove');
+    drop.textContent = '\u00d7';
+
+    row.append(select, input, drop);
+    host.appendChild(row);
+
+    // The placeholder is the whole of the instruction: "@handle", "channel",
+    // "you.bsky.social". It follows the platform, because the shape of what
+    // goes in the box is different for every one of them.
+    const hint = () => {
+      const spec = rules.platforms.find((p) => p.id === select.value);
+      input.placeholder = spec ? `${spec.prefix ?? ''}${spec.placeholder}${spec.suffix ?? ''}` : '';
+    };
+    select.addEventListener('change', hint);
+    hint();
+  }
+
+  /** Reads one editor back out as `[{platform, handle}]`, dropping blanks. */
+  readCreatorLinks(hostId) {
+    return [...($(hostId)?.querySelectorAll('.cr-link') ?? [])]
+      .map((row) => ({
+        platform: row.querySelector('.cr-link-platform').value,
+        handle: row.querySelector('.cr-link-handle').value.trim(),
+      }))
+      .filter((l) => l.handle);
+  }
+
+  fillCreatorLinks(hostId, links, rules) {
+    const host = $(hostId);
+    if (!host) return;
+    host.innerHTML = '';
+    for (const link of links ?? []) this.addCreatorLinkRow(hostId, link);
+    if (!host.children.length && rules) this.addCreatorLinkRow(hostId);
+  }
+
+  async submitCreatorApplication() {
+    const links = this.readCreatorLinks('crLinks');
+    // Checked here for the message, and again on the server for the rule.
+    const error = K.creatorLinksError(links);
+    if (error) { sfx.ui('error'); this.crNote(error, 'error'); return; }
+    try {
+      this.crNote('Sending…');
+      const r = await api.applyAsCreator({
+        kind: $('crKind').value,
+        pitch: $('crPitch').value,
+        links,
+      });
+      this.creatorState.creator = r.creator;
+      sfx.ui('ok');
+      this.crNote('Sent. Somebody will read it.', 'ok');
+      await this.refreshCreator({ quiet: true });
+    } catch (ex) {
+      sfx.ui('error');
+      this.crNote(ex.message || 'That did not go through.', 'error');
+    }
+  }
+
+  async saveCreatorLinks() {
+    const links = this.readCreatorLinks('crCardLinks');
+    const error = K.creatorLinksError(links);
+    if (error) { sfx.ui('error'); this.crNote(error, 'error'); return; }
+    try {
+      const r = await api.setCreatorLinks(links);
+      this.creatorState.creator = r.creator;
+      sfx.ui('ok');
+      this.crNote('Saved.', 'ok');
+    } catch (ex) {
+      sfx.ui('error');
+      this.crNote(ex.message || 'Could not save those.', 'error');
+    }
+  }
+
+  async resignCreator() {
+    if (!window.confirm('Give up creator status? Your anthem is deleted with it, '
+      + `and you cannot apply again for ${this.creatorState?.rules?.reapplyDays ?? 14} days.`)) return;
+    try {
+      await api.resignCreator();
+      sfx.ui('ok');
+      this.crNote('Done.', 'ok');
+      await this.refreshCreator({ quiet: true });
+    } catch (ex) {
+      sfx.ui('error');
+      this.crNote(ex.message || 'That did not go through.', 'error');
+    }
+  }
+
+  /* ── The anthem uploader ────────────────────────────────────────────────────
+   *
+   * Takes whatever a musician has — an MP3, an OGG, a FLAC, a WAV off a
+   * phone — and turns it into the one thing the server can measure: ten seconds
+   * of mono 16-bit PCM at ANTHEM_SAMPLE_RATE.
+   *
+   * The browser does the decoding because the browser is the only side of this
+   * with a decoder. A server that cannot decode what it stores cannot measure
+   * how loud it is, and a loudness rule that cannot be checked is not a rule —
+   * so the expensive, format-aware half happens here and the arithmetic that
+   * actually protects a listener happens there. See server/util/audio.js.
+   *
+   * Nothing here is a security control. Everything below is *convenience*: the
+   * trim, the resample, the level meter. The server re-measures the samples it
+   * is sent and rewrites them whatever this file did, which is exactly why this
+   * file is allowed to be helpful rather than suspicious.
+   * ────────────────────────────────────────────────────────────────────────── */
+
+  _bindAnthem() {
+    const file = $('crAnthemFile');
+    $('crAnthemPick')?.addEventListener('click', () => { sfx.ui(); file?.click(); });
+    file?.addEventListener('change', () => this.loadAnthemFile(file.files?.[0] ?? null));
+    $('crAnthemCancel')?.addEventListener('click', () => { sfx.ui(); this.clearAnthemDraft(); });
+    $('crAnthemUpload')?.addEventListener('click', () => this.uploadAnthem());
+    $('crAnthemRemove')?.addEventListener('click', () => this.removeAnthem());
+    $('crAnthemPlay')?.addEventListener('click', () => this.previewAnthem());
+    $('crTrimRange')?.addEventListener('input', () => {
+      const at = Number($('crTrimRange').value) || 0;
+      $('crTrimAt').textContent = `${at.toFixed(1)}s`;
+    });
+  }
+
+  renderAnthem(creator, rules) {
+    const el = $('crAnthemState');
+    if (!el) return;
+    const max = rules.anthem.maxSeconds;
+    $('crAnthemNote').textContent = `Up to ${max} seconds, played over the kill cam of everyone `
+      + `you kill. Levelled to ${rules.anthem.targetDb} dB on the way in, so nobody can be shouted at.`;
+
+    if (creator.anthem) {
+      el.className = 'cr-anthem has';
+      el.innerHTML = `${icon('wave')}<div><b>${escapeHtml(creator.anthemTitle || 'Untitled')}</b>`
+        + `<span>Playing on your kills.</span></div>`;
+    } else {
+      el.className = 'cr-anthem none';
+      el.innerHTML = `${icon('note')}<div><b>NO TRACK YET</b>`
+        + '<span>The kill cam runs silent until you upload one.</span></div>';
+    }
+    $('crAnthemPlay')?.classList.toggle('hidden', !creator.anthem);
+    $('crAnthemRemove')?.classList.toggle('hidden', !creator.anthem);
+    $('crAnthemPick').textContent = creator.anthem ? 'REPLACE IT' : 'CHOOSE A TRACK';
+  }
+
+  /**
+   * Decodes a chosen file and offers the trim.
+   *
+   * The whole file is decoded, not just the first ten seconds, because a
+   * musician's ten seconds is almost never the first ten — the point of the
+   * slider below is that they pick it. Decoding is done in an AudioContext the
+   * page already has; a file too large to read at all is refused before that,
+   * since decoding a hundred-megabyte upload to tell somebody it was too big is
+   * a way to hang a tab.
+   */
+  async loadAnthemFile(file) {
+    if (!file) return;
+    const rules = this.creatorState?.rules?.anthem;
+    if (!rules) return;
+    if (file.size > K.ANTHEM_SOURCE_MAX_BYTES) {
+      sfx.ui('error');
+      this.crNote(`That file is ${(file.size / 1048576).toFixed(0)} MB — `
+        + `open something under ${K.ANTHEM_SOURCE_MAX_BYTES / 1048576} MB.`, 'error');
+      return;
+    }
+    this.crNote('Decoding…');
+    try {
+      const ctx = initAudio();
+      if (!ctx) throw new Error('this browser has no audio');
+      const decoded = await ctx.decodeAudioData(await file.arrayBuffer());
+      this.anthemDraft = { buffer: decoded, name: file.name };
+
+      const room = Math.max(0, decoded.duration - rules.maxSeconds);
+      const range = $('crTrimRange');
+      range.max = String(Math.round(room * 10) / 10);
+      range.value = '0';
+      range.disabled = room <= 0;
+      $('crTrimAt').textContent = '0.0s';
+      $('crTrim').classList.remove('hidden');
+      if (!$('crAnthemTitle').value) {
+        $('crAnthemTitle').value = file.name.replace(/\.[^.]+$/, '').slice(0, K.ANTHEM_TITLE_MAX);
+      }
+      sfx.ui('ok');
+      this.crNote(room > 0
+        ? `${decoded.duration.toFixed(1)}s decoded — pick which ${rules.maxSeconds} seconds to use.`
+        : `${decoded.duration.toFixed(1)}s decoded.`, 'ok');
+    } catch (ex) {
+      sfx.ui('error');
+      this.crNote(`Could not read that file — ${ex.message || 'unsupported format'}.`, 'error');
+      this.clearAnthemDraft();
+    }
+  }
+
+  clearAnthemDraft() {
+    this.anthemDraft = null;
+    $('crTrim')?.classList.add('hidden');
+    const file = $('crAnthemFile');
+    if (file) file.value = '';
+  }
+
+  /**
+   * Renders the chosen window down to mono at the server's rate, and uploads it.
+   *
+   * `OfflineAudioContext` does the resample, which is the right tool: it is the
+   * browser's own high-quality resampler and it runs faster than real time. But
+   * a context does not have to honour the rate it was asked for — Safari
+   * historically ignored it — so the result is checked and resampled by hand if
+   * it came back at something else. Uploading at the wrong rate would be
+   * refused by the server with a message about sample rates, which is not a
+   * sentence anybody should have to read.
+   */
+  async uploadAnthem() {
+    const draft = this.anthemDraft;
+    const rules = this.creatorState?.rules?.anthem;
+    if (!draft || !rules) return;
+
+    const btn = $('crAnthemUpload');
+    btn.disabled = true;
+    this.crNote('Encoding…');
+    try {
+      const start = Number($('crTrimRange').value) || 0;
+      const seconds = Math.min(rules.maxSeconds, draft.buffer.duration - start);
+      if (seconds < rules.minSeconds) throw new Error(`that leaves under ${rules.minSeconds}s`);
+
+      const samples = await this.renderAnthemMono(draft.buffer, start, seconds, rules.sampleRate);
+      const wav = encodeWav(samples, rules.sampleRate);
+      this.crNote(`Uploading ${(wav.byteLength / 1024) | 0} KB…`);
+
+      const r = await api.uploadAnthem(wav, $('crAnthemTitle').value);
+      this.creatorState.creator = r.creator;
+      this.clearAnthemDraft();
+      sfx.ui('ok');
+      // The levelling report, verbatim. "We turned your track down 19 dB" is
+      // the one piece of feedback that stops the next upload being the same
+      // track, louder — and hiding it would make the levelling feel like a bug.
+      const lv = r.levelling;
+      this.crNote(lv
+        ? `Done — ${lv.seconds}s, levelled ${lv.gainDb > 0 ? '+' : ''}${lv.gainDb} dB `
+          + `(peak ${lv.before.peakDb} → ${lv.after.peakDb} dB).`
+        : 'Done.', 'ok');
+      this.renderCreator();
+    } catch (ex) {
+      sfx.ui('error');
+      this.crNote(ex.message || 'That did not upload.', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  /**
+   * One channel of PCM at exactly `rate`, from a window of a decoded buffer.
+   *
+   * Mixed to mono by the OfflineAudioContext's own channel-count rule rather
+   * than by averaging the channels here: a stereo track with a wide mix loses
+   * less that way than it does to a naive L+R.
+   */
+  async renderAnthemMono(buffer, start, seconds, rate) {
+    const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    const frames = Math.max(1, Math.round(seconds * rate));
+    const off = new OAC(1, frames, rate);
+    const src = off.createBufferSource();
+    src.buffer = buffer;
+    src.connect(off.destination);
+    src.start(0, start, seconds);
+    const rendered = await off.startRendering();
+    const data = rendered.getChannelData(0);
+    // The context honoured the rate: nothing else to do.
+    if (Math.abs(rendered.sampleRate - rate) < 1) return data;
+
+    // It did not. Linear resample by hand — the material is already
+    // band-limited by the render above, so this is a rate correction rather
+    // than a real downsample and linear is entirely adequate for it.
+    const ratio = rendered.sampleRate / rate;
+    const out = new Float32Array(Math.floor(data.length / ratio));
+    for (let i = 0; i < out.length; i++) {
+      const at = i * ratio;
+      const a = Math.floor(at);
+      const b = Math.min(data.length - 1, a + 1);
+      const t = at - a;
+      out[i] = data[a] * (1 - t) + data[b] * t;
+    }
+    return out;
+  }
+
+  /** Plays the stored anthem back, through the same bus a kill cam uses. */
+  async previewAnthem() {
+    const url = this.creatorState?.creator?.anthem;
+    if (!url) return;
+    initAudio();
+    const buffer = await loadAnthem(url);
+    if (!buffer) { sfx.ui('error'); this.crNote('That track would not load.', 'error'); return; }
+    playAnthem(buffer, { volume: Math.max(0.35, settings.anthemVolume) });
+    this.crNote('Playing it back at your own anthem volume.', 'ok');
+  }
+
+  async removeAnthem() {
+    if (!window.confirm('Delete your anthem? Your kill cam runs silent until you upload another.')) return;
+    try {
+      stopAnthem(0.1);
+      const r = await api.removeAnthem();
+      this.creatorState.creator = r.creator;
+      sfx.ui('ok');
+      this.crNote('Removed.', 'ok');
+      this.renderCreator();
+    } catch (ex) {
+      sfx.ui('error');
+      this.crNote(ex.message || 'Could not remove it.', 'error');
+    }
+  }
+
+  /* ── Skin commissions ───────────────────────────────────────────────────── */
+
+  _bindBriefs() {
+    $('crBriefNew')?.addEventListener('click', () => {
+      sfx.ui();
+      $('crBriefForm')?.classList.remove('hidden');
+      $('crBriefNew')?.classList.add('hidden');
+    });
+    $('crBriefCancel')?.addEventListener('click', () => {
+      sfx.ui();
+      $('crBriefForm')?.classList.add('hidden');
+      $('crBriefNew')?.classList.remove('hidden');
+    });
+    $('crBriefForm')?.addEventListener('submit', (e) => { e.preventDefault(); this.submitBrief(); });
+  }
+
+  renderBriefs(requests, creator, rules) {
+    const open = requests.filter((r) => r.status === 'open').length;
+    $('crSkinNote').textContent = `${open} of ${rules.skinRequest.openMax} open. `
+      + 'A brief goes into a queue a human reads and answers.';
+
+    const list = $('crBriefs');
+    list.innerHTML = requests.length ? requests.map((r) => `
+      <article class="cr-brief ${escapeHtml(r.status)}">
+        <header><b>${escapeHtml(r.name)}</b><span>${escapeHtml(r.status.toUpperCase())}</span></header>
+        <p>${escapeHtml(r.brief)}</p>
+        <div class="cr-swatches">${r.palette.map((hex) =>
+    `<i style="background:${escapeHtml(hex)}" title="${escapeHtml(hex)}"></i>`).join('')}</div>
+        ${r.verdict ? `<p class="cr-verdict">${escapeHtml(r.verdict)}</p>` : ''}
+        ${r.status === 'open'
+    ? `<button type="button" class="btn-ghost small" data-withdraw-brief="${escapeHtml(r.id)}">WITHDRAW</button>`
+    : ''}
+      </article>`).join('') : '<p class="empty small">No briefs filed yet.</p>';
+
+    // Full is full: the button goes rather than failing on submit.
+    $('crBriefNew')?.classList.toggle('hidden',
+      open >= rules.skinRequest.openMax || !$('crBriefForm').classList.contains('hidden'));
+
+    const slot = $('crBriefSlot');
+    if (slot && !slot.options.length) {
+      slot.innerHTML = rules.skinRequest.slots
+        .map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join('');
+    }
+    // The reference is one of this creator's *own* links, picked by platform —
+    // never a URL typed into a box. Same rule as the card links.
+    const ref = $('crBriefRef');
+    if (ref) {
+      ref.innerHTML = '<option value="">— none —</option>'
+        + (creator.links ?? []).map((l) =>
+          `<option value="${escapeHtml(l.platform)}">${escapeHtml(l.label)}</option>`).join('');
+    }
+    this.renderPalette();
+  }
+
+  /**
+   * The palette editor: up to six swatches, each one on or off.
+   *
+   * Colour inputs rather than hex fields, because "#f5a623" is a spelling test
+   * and a colour is a thing you look at. Three start on and the rest start off,
+   * since most finishes are two or three colours and a brief that ships six by
+   * default is a brief nobody chose the colours of — but every one of them can
+   * be turned on, which the first version of this forgot: it drew three greyed
+   * swatches with nothing to click.
+   *
+   * The × beside each is what toggles it. `data-off` is the state, read back by
+   * `submitBrief`, so what is sent is exactly what is lit.
+   */
+  renderPalette() {
+    const host = $('crPalette');
+    if (!host || host.children.length) return;
+    const seed = ['#f5a623', '#1a2230', '#e6edf6', '#ff7a2f', '#4ddb7a', '#b07cff'];
+    for (const [i, hex] of seed.slice(0, this.creatorState.rules.skinRequest.paletteMax).entries()) {
+      const label = document.createElement('label');
+      label.className = 'cr-swatch';
+      const input = document.createElement('input');
+      input.type = 'color';
+      input.value = hex;
+      if (i > 2) input.setAttribute('data-off', '');
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'cr-swatch-toggle';
+      toggle.title = 'Use this colour';
+      toggle.textContent = i > 2 ? '+' : '\u00d7';
+      toggle.addEventListener('click', () => {
+        const off = input.hasAttribute('data-off');
+        if (off) input.removeAttribute('data-off'); else input.setAttribute('data-off', '');
+        toggle.textContent = off ? '\u00d7' : '+';
+        sfx.ui();
+      });
+      label.append(input, toggle);
+      host.appendChild(label);
+    }
+  }
+
+  async submitBrief() {
+    try {
+      const palette = [...$('crPalette').querySelectorAll('input[type=color]')]
+        .filter((i) => !i.hasAttribute('data-off')).map((i) => i.value);
+      const r = await api.fileSkinRequest({
+        name: $('crBriefName').value,
+        slot: $('crBriefSlot').value,
+        brief: $('crBriefText').value,
+        palette,
+        reference: $('crBriefRef').value || undefined,
+      });
+      sfx.ui('ok');
+      this.crNote(`Filed “${r.request.name}”. Somebody will answer it here.`, 'ok');
+      $('crBriefForm').classList.add('hidden');
+      $('crBriefName').value = '';
+      $('crBriefText').value = '';
+      await this.refreshCreator({ quiet: true });
+    } catch (ex) {
+      sfx.ui('error');
+      this.crNote(ex.message || 'That did not go through.', 'error');
+    }
+  }
+
+  async withdrawBrief(id) {
+    try {
+      await api.withdrawSkinRequest(id);
+      sfx.ui('ok');
+      await this.refreshCreator({ quiet: true });
+    } catch (ex) {
+      sfx.ui('error');
+      this.crNote(ex.message || 'Could not withdraw that.', 'error');
+    }
+  }
+
+  /* ── Developer mode ─────────────────────────────────────────────────────────
+   *
+   * The tab is hidden outright below the level, so this page is only ever read
+   * by somebody who can turn the thing on. It is a switch, a list of panels and
+   * a sentence about what each reads.
+   *
+   * `game` is handed in by main.js after the handshake, because the *access* is
+   * the server's answer and not something this file works out: the menu can
+   * draw the page, and only the game knows whether the account may open it.
+   * ─────────────────────────────────────────────────────────────────────────── */
+
+  _bindDeveloper() {
+    $('dvToggle')?.addEventListener('click', () => {
+      sfx.ui();
+      this.onDevToggle?.();
+      this.renderDeveloper();
+    });
+    $('dvPanels')?.addEventListener('change', (e) => {
+      const box = e.target.closest('input[data-dev-panel]');
+      if (!box) return;
+      const id = box.dataset.devPanel;
+      const on = new Set(settings.devPanels ?? []);
+      if (box.checked) on.add(id); else on.delete(id);
+      setSetting('devPanels', K.DEV_PANEL_IDS.filter((p) => on.has(p)));
+      sfx.ui();
+    });
+  }
+
+  /**
+   * Shows or hides the rail entry and draws the page.
+   * @param {{allowed:boolean, pro:boolean, need:number, level:number, panels:string[]}} access
+   * @param {boolean} open whether the overlay is on right now
+   */
+  setDevAccess(access, open = false) {
+    // Called from three places — the session restore, the creator tab, and the
+    // join handshake — and null from any of them means "not for this account",
+    // which is also what a signed-out player is.
+    this.devAccess = access ?? { allowed: false, pro: false, panels: [] };
+    this.devOpen = !!open;
+    const tab = document.querySelector('.tab[data-tab="developer"]');
+    if (tab) {
+      // Both, and they mean different things: `hidden` is what the rail draws
+      // now, `data-locked` is what the filter must not undo.
+      tab.dataset.locked = this.devAccess.allowed ? '0' : '1';
+      tab.classList.toggle('hidden', !this.devAccess.allowed);
+    }
+    // A player demoted out of the tab while standing on it is sent somewhere
+    // that exists rather than left looking at a page they may no longer read.
+    if (!this.devAccess.allowed
+        && document.querySelector('.tab-panel[data-panel="developer"].active')) {
+      this.openTab('settings');
+    }
+    this.renderDeveloper();
+  }
+
+  renderDeveloper() {
+    const access = this.devAccess;
+    if (!access?.allowed) return;
+    const btn = $('dvToggle');
+    if (btn) {
+      btn.textContent = this.devOpen ? 'TURN OFF' : 'TURN ON';
+      btn.classList.toggle('btn-primary', !this.devOpen);
+      btn.classList.toggle('btn-ghost', this.devOpen);
+    }
+    $('dvNote').textContent = access.pro
+      ? 'Code creator — every panel, including the three the level gate does not open.'
+      : `Unlocked at level ${access.need}. Three more panels come with code creator status.`;
+    // `bindingLabel` takes the action, not a key: it already folds the keyboard
+    // and mouse slots into one readable string and answers "—" for unbound.
+    const bind = keys.bindingLabel('devMode');
+    $('dvBind').textContent = bind === '—'
+      ? 'Unbound — give it a key under CONTROLS to toggle the overlays mid-match.'
+      : `Bound to ${bind} — change it under CONTROLS.`;
+
+    const on = new Set(settings.devPanels ?? []);
+    $('dvPanels').innerHTML = K.DEV_PANELS.map((panel) => {
+      const locked = panel.pro && !access.pro;
+      return `<label class="dv-panel${locked ? ' locked' : ''}">
+        <input type="checkbox" data-dev-panel="${escapeHtml(panel.id)}"
+               ${on.has(panel.id) ? 'checked' : ''}${locked ? ' disabled' : ''}>
+        <span class="dv-panel-id"><b>${escapeHtml(panel.name)}</b>${
+  panel.pro ? '<i>CODE CREATOR</i>' : ''}</span>
+        <span class="dv-panel-note">${escapeHtml(panel.note)}</span>
+      </label>`;
+    }).join('');
+  }
 }
 
 /* ── Formatting helpers ──────────────────────────────────────────────────── */
@@ -3671,6 +4434,51 @@ async function squareAvatar(file) {
   throw new Error('that picture would not compress far enough — try another one');
 }
 
+/**
+ * Float samples to a canonical 16-bit mono WAV.
+ *
+ * The one format the server can read without an audio library — see the block
+ * comment on anthems in shared/constants.js — written here rather than
+ * anywhere clever because it is forty lines and a dependency for it would
+ * weigh more than the whole sound engine.
+ *
+ * Nothing here is a safety measure: the server re-measures every sample and
+ * rewrites the gain whatever this produced. What this file owes the server is a
+ * file it can *parse*, and nothing more than that.
+ *
+ * @param {Float32Array} samples in [-1, 1]
+ * @param {number} rate
+ * @returns {ArrayBuffer}
+ */
+function encodeWav(samples, rate) {
+  const n = samples.length;
+  const buf = new ArrayBuffer(44 + n * 2);
+  const view = new DataView(buf);
+  const ascii = (at, text) => { for (let i = 0; i < text.length; i++) view.setUint8(at + i, text.charCodeAt(i)); };
+
+  ascii(0, 'RIFF');
+  view.setUint32(4, 36 + n * 2, true);
+  ascii(8, 'WAVE');
+  ascii(12, 'fmt ');
+  view.setUint32(16, 16, true);            // PCM fmt chunk size
+  view.setUint16(20, 1, true);             // WAVE_FORMAT_PCM
+  view.setUint16(22, 1, true);             // mono
+  view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true);      // byte rate
+  view.setUint16(32, 2, true);             // block align
+  view.setUint16(34, 16, true);            // bits
+  ascii(36, 'data');
+  view.setUint32(40, n * 2, true);
+
+  for (let i = 0; i < n; i++) {
+    // Clamped before scaling: a decoder is allowed to hand back samples past
+    // full scale, and a wrapped Int16 is the loudest sound a computer can make.
+    const v = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(44 + i * 2, Math.round(v * 32767), true);
+  }
+  return buf;
+}
+
 /** Deterministic accent per name, so avatars are stable. */
 function avatarColor(name) {
   let h = 0;
@@ -3877,6 +4685,8 @@ function playerCardHtml(data, accent) {
     </div>`).join('');
 
   const pills = [
+    user.creator ? `<span class="pill creator ${escapeHtml(user.creator.kind)}">${
+      escapeHtml(String(user.creator.kindName).toUpperCase())} CREATOR</span>` : '',
     `<span class="pill">${escapeHtml(String(user.role ?? 'player').toUpperCase())}</span>`,
     hid.has('showJoined') || !user.createdAt ? '' : `<span class="pill">JOINED ${fmtDate(user.createdAt)}</span>`,
     user.clan ? `<span class="pill${user.clanVerified ? ' gold' : ''}">CLAN ${escapeHtml(user.clan)}${
@@ -3911,6 +4721,7 @@ function playerCardHtml(data, accent) {
         <div class="pc-headline">${featured}</div>
       </div>
       ${card.bio ? `<p class="pc-bio">${escapeHtml(card.bio)}</p>` : ''}
+      ${creatorStrip(user.creator)}
       <div class="pc-actions">${cardActions(data)}</div>
     </div>
 
@@ -3930,6 +4741,49 @@ function playerCardHtml(data, accent) {
       : '<p class="empty small">No matches on record yet.</p>'}
       </section>
     </div>
+  </div>`;
+}
+
+/**
+ * A creator's links, and their anthem, on their card.
+ *
+ * ── Why every one of these is a plain anchor with a confirm in front of it ──
+ *
+ * These are the only outbound links in the game, and they are put there by one
+ * player and clicked by another. Three rules follow from that and none of them
+ * is optional:
+ *
+ *  · The URL is *built by the server* out of a platform id and a handle, never
+ *    sent as a URL. `link.url` here is already the output of `creatorLinkUrl`
+ *    in shared/constants.js, and a link whose pair did not make a valid URL
+ *    never arrived. Nothing a player typed reaches this function as a scheme.
+ *  · What is *shown* is the handle, not the address — so a display string can
+ *    never disagree with a destination, which is the whole of how a link is
+ *    normally made to lie.
+ *  · `noopener noreferrer` on every one, because a tab opened from here must
+ *    not be able to reach back into the game's, and where somebody came from
+ *    is nobody's business but theirs.
+ *
+ * The interstitial is bound in `_bindPlayerCard`: clicking says where you are
+ * going before it takes you.
+ */
+function creatorStrip(creator) {
+  if (!creator || creator.status !== 'approved') return '';
+  const links = (creator.links ?? []).filter((l) => l.url);
+  if (!links.length && !creator.anthem) return '';
+
+  const anthem = creator.anthem
+    ? `<span class="pc-anthem">${icon('note')}<b>${escapeHtml(creator.anthemTitle || 'Untitled')}</b>
+       <small>PLAYS ON THEIR KILLS</small></span>`
+    : '';
+  const list = links.map((l) => `<a class="pc-link" href="${escapeHtml(l.url)}"
+      target="_blank" rel="noopener noreferrer nofollow"
+      data-external="${escapeHtml(l.url)}">${icon('link')}<span>${escapeHtml(l.label)}</span></a>`).join('');
+
+  return `<div class="pc-creator ${escapeHtml(creator.kind)}">
+    <span class="pc-creator-kind">${escapeHtml(String(creator.kindName).toUpperCase())} CREATOR</span>
+    ${anthem}
+    ${list ? `<div class="pc-links">${list}</div>` : ''}
   </div>`;
 }
 

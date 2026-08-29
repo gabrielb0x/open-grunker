@@ -86,6 +86,19 @@ export const ACTIONS = [
   { id: 'classMenu', group: 'Interface', label: 'Change class', keys: ['KeyB', '', 'Pad15'] },
   { id: 'toggleMinimap', group: 'Interface', label: 'Toggle minimap', keys: ['KeyM', '', ''] },
   { id: 'toggleFps', group: 'Interface', label: 'Toggle FPS counter', keys: ['KeyF', '', ''] },
+  // Skipping the kill cam has deliberately *no* action of its own: it is the
+  // jump binding, which has worked while dead since long before the cam
+  // existed, and which already means "put me back in". A second entry here
+  // would be a second key to learn for the same gesture — and, because two
+  // actions may not share a default, it would have had to be a different key
+  // from the one every player's hand is already on.
+  //
+  // Nothing by default: developer mode is a level-10 unlock most accounts will
+  // never open, and a key it does not use is a key it should not be holding.
+  { id: 'devMode', group: 'Interface', label: 'Developer overlays', keys: ['', '', ''] },
+  // Same reasoning: a video creator's clean-screen key, unbound until somebody
+  // who has it decides where they want it.
+  { id: 'cleanScreen', group: 'Interface', label: 'Clean screen (video creators)', keys: ['', '', ''] },
 ];
 
 export const ACTION_IDS = ACTIONS.map((a) => a.id);

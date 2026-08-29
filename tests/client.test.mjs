@@ -34,6 +34,7 @@ const wearing = (key) => ({
   [COS.SLOT.KNIFE]: COS.itemId(COS.SLOT.KNIFE, key),
 });
 const { getMap, ALL_MAP_IDS } = await import('/shared/maps.js');
+const { World } = await import('/shared/physics.js');
 
 const { Hud } = await import('/js/hud.js');
 const { Effects } = await import('/js/effects.js');
@@ -41,8 +42,10 @@ const { ViewModel } = await import('/js/viewmodel.js');
 const gunskin = await import('/js/gunskin.js');
 const { EntityManager } = await import('/js/entities.js');
 const { Objectives } = await import('/js/objectives.js');
+const { KillCam } = await import('/js/killcam.js');
+const { DevMode } = await import('/js/devmode.js');
 const {
-  settings, SCHEMA, DEFAULTS,
+  settings, SCHEMA, DEFAULTS, PANEL_OWNED_KEYS,
   exportText: exportSettings, importText: importSettings,
 } = await import('/js/settings.js');
 const { surfaceTexture, SURFACE_TILE, SURFACE_SHADING } = await import('/js/textures.js');
@@ -87,10 +90,29 @@ export default async function run() {
     SCHEMA.every((g) => g.items.every((i) => i.key in DEFAULTS)),
     `${SCHEMA.reduce((n, g) => n + g.items.length, 0)} options`);
 
+  /*
+   * A setting that is stored and adjustable nowhere is a bug that only ever
+   * surfaces as "why is this on", so nothing may be orphaned. SETTINGS is the
+   * usual home; `PANEL_OWNED_KEYS` is the written-down list of the few that
+   * belong to a panel of their own instead.
+   *
+   * Both halves are checked, and the second is the one that matters: a key can
+   * only escape the settings panel by being *named*, and a name that turns out
+   * to be in the schema after all fails too — so the exemption list cannot rot
+   * into a place where real orphans go to hide.
+   */
   const missingFromSchema = Object.keys(DEFAULTS)
-    .filter((k) => !SCHEMA.some((g) => g.items.some((i) => i.key === k)));
+    .filter((k) => !SCHEMA.some((g) => g.items.some((i) => i.key === k)))
+    .filter((k) => !PANEL_OWNED_KEYS.includes(k));
+  const bogusExemptions = PANEL_OWNED_KEYS
+    .filter((k) => SCHEMA.some((g) => g.items.some((i) => i.key === k)) || !(k in DEFAULTS));
   check('every default is reachable from the settings UI',
-    missingFromSchema.length === 0, missingFromSchema.join(', ') || 'none orphaned');
+    missingFromSchema.length === 0 && bogusExemptions.length === 0,
+    [
+      missingFromSchema.length ? `orphaned: ${missingFromSchema.join(', ')}` : 'none orphaned',
+      bogusExemptions.length ? `stale exemptions: ${bogusExemptions.join(', ')}`
+        : `${PANEL_OWNED_KEYS.length} owned by their own panel`,
+    ].join(' · '));
 
   check('settings survive a trip through a file, bindings included', (() => {
     settings.sensitivity = 1.37;
@@ -186,6 +208,76 @@ export default async function run() {
       && !hud.el.deathHintHeld.classList.contains('hidden');
     hud.hideDeath();
     return auto && held;
+  })());
+
+  /* ── The kill cam ─────────────────────────────────────────────────────── */
+
+  check('the kill cam draws the killer, and only the facts that are true', (() => {
+    // A melee has no distance worth printing and a survivor on full health is
+    // not the interesting number; drawing every field always would make the
+    // one that matters — "they had 8 HP" — impossible to spot.
+    hud.showKillCam({
+      name: 'Nemesis', clan: 'GRUN', clanVerified: true, verified: true, level: 34,
+      creator: 'music', weapon: 'ar', head: true, distance: 41, health: 8,
+      anthemTitle: 'Overdrive', director: false,
+    });
+    const open = !hud.el.killCam.classList.contains('hidden');
+    const named = hud.el.kcName.textContent === 'Nemesis';
+    const badges = hud.el.kcTags.innerHTML.includes('clan-tag')
+      && hud.el.kcTags.innerHTML.includes('creator-tag')
+      && hud.el.kcTags.innerHTML.includes('LEVEL 34');
+    const facts = hud.el.kcFacts.innerHTML;
+    const credited = !hud.el.kcAnthem.classList.contains('hidden')
+      && hud.el.kcTrack.textContent === 'Overdrive';
+
+    hud.showKillCam({
+      name: 'Knifey', weapon: 'knife', head: false, distance: 1, health: 0,
+      anthemTitle: null, level: 0,
+    });
+    const quiet = hud.el.kcAnthem.classList.contains('hidden');
+    const bare = hud.el.kcFacts.innerHTML;
+    hud.hideKillCam();
+    info(`with music: HEADSHOT ${facts.includes('HEADSHOT')} · 41 m ${facts.includes('41 m')} `
+      + `· 8 HP ${facts.includes('8 HP')} — knife: ${bare.includes('m<') ? 'has a range' : 'no range'}`);
+    return open && named && badges && credited && quiet
+      && facts.includes('HEADSHOT') && facts.includes('41 m') && facts.includes('8 HP')
+      && !bare.includes('HEADSHOT') && !bare.includes('HP')
+      && hud.el.killCam.classList.contains('hidden');
+  })());
+
+  check('the skip fills for three seconds and then becomes a button', (() => {
+    // The fill *is* the explanation: a disabled button with a countdown in it
+    // needs no tooltip, and a skip that lit up instantly would be one nobody
+    // ever saw a cam behind.
+    hud.showKillCam({ name: 'Nemesis', weapon: 'ar', level: 3 });
+    hud.updateKillCam({
+      remaining: 8.4, canSkip: false, skipIn: 1.6, skipProgress: 0.47, name: 'Nemesis',
+    }, 8.4);
+    const waiting = hud.el.kcSkip.disabled
+      && hud.el.kcSkipLabel.textContent === 'SKIP IN 2'
+      && hud.el.kcSkipFill.style.width === '47%';
+    hud.updateKillCam({
+      remaining: 6, canSkip: true, skipIn: 0, skipProgress: 1, name: 'Nemesis',
+    }, 6);
+    const ready = !hud.el.kcSkip.disabled && hud.el.kcSkipLabel.textContent === 'SKIP'
+      && hud.el.kcSkip.classList.contains('ready');
+    hud.hideKillCam();
+    return waiting && ready;
+  })());
+
+  check('a track that lands late is credited when it starts, not when it was asked for', (() => {
+    // The anthem is fetched on the death that needs it, so it can arrive a
+    // second in. Promising music that never comes would be worse than silence.
+    hud.showKillCam({ name: 'Nemesis', weapon: 'ar', anthemTitle: null, level: 3 });
+    const silent = hud.el.kcAnthem.classList.contains('hidden');
+    hud.updateKillCam({
+      remaining: 8, canSkip: false, skipIn: 2, skipProgress: 0.3,
+      name: 'Nemesis', anthemTitle: 'Late Arrival',
+    }, 8);
+    const credited = !hud.el.kcAnthem.classList.contains('hidden')
+      && hud.el.kcTrack.textContent === 'Late Arrival';
+    hud.hideKillCam();
+    return silent && credited;
   })());
 
   check('a full HUD frame runs without throwing', (() => {
@@ -858,10 +950,16 @@ export default async function run() {
     const level = document.getElementById('progLevel').textContent;
     const xp = document.getElementById('progXpText').textContent;
     info(`${steps.length} rungs · ${done} unlocked at level 3 · ${next.length} waiting at the next one · ${xp}`);
-    // Level 3 has the chat (2) and both level-1 rungs behind it. Level 5 is the
-    // next rung and two things land on it at once — the report button and
-    // joining a clan — so both are marked, not just the first.
-    return steps.length >= 6 && done === 3 && next.length === 2
+    /*
+     * Level 3 has the chat (2) and both level-1 rungs behind it. The next rung
+     * is level 5, and *everything* landing on it is marked rather than only the
+     * first — which is the actual invariant, so the count comes from the ladder
+     * instead of being pinned. Pinning it meant that adding a rung at level 5
+     * failed this check for being new rather than for being wrong.
+     */
+    const nextLevel = Math.min(...menu.meta.progression.map((r) => r.level).filter((l) => l > 3));
+    const wantNext = menu.meta.progression.filter((r) => r.level === nextLevel).length;
+    return steps.length >= 6 && done === 3 && next.length === wantNext && wantNext >= 2
       && level === '3' && xp === '100 / 500 XP'
       && document.getElementById('progXpLeft').textContent === '400 to level 4'
       && list.innerHTML.includes('REPORT A PLAYER');
@@ -2093,6 +2191,181 @@ export default async function run() {
 
   /* ── The card editor and the privacy switches ────────────────────────── */
 
+  /* ── The creator tab ─────────────────────────────────────────────────────
+   *
+   * One page with four states, and the whole risk is that a perk is drawn for
+   * a discipline that was not granted it — which is the same failure the server
+   * gates against, one layer up. Every block below is checked *present* for the
+   * discipline that earns it and *absent* for one that does not.
+   * ────────────────────────────────────────────────────────────────────────── */
+
+  suite('Client — the creator tab');
+
+  /** The exact shape /creator answers with. */
+  const creatorRules = () => ({
+    enabled: true, minLevel: K.CREATOR_MIN_LEVEL, needEmail: false, reapplyDays: 14,
+    pitchMin: K.CREATOR_PITCH_MIN, pitchMax: K.CREATOR_PITCH_MAX, linksMax: K.CREATOR_LINKS_MAX,
+    kinds: K.CREATOR_KINDS,
+    platforms: K.CREATOR_PLATFORMS.map((p) => ({
+      id: p.id, name: p.name, prefix: p.prefix ?? null, suffix: p.suffix ?? null,
+      placeholder: p.placeholder,
+    })),
+    anthem: {
+      maxSeconds: K.ANTHEM_MAX_SECONDS, minSeconds: K.ANTHEM_MIN_SECONDS,
+      sampleRate: K.ANTHEM_SAMPLE_RATE, maxBytes: K.ANTHEM_MAX_BYTES,
+      titleMax: K.ANTHEM_TITLE_MAX, targetDb: K.ANTHEM_TARGET_RMS_DB,
+    },
+    skinRequest: {
+      nameMax: K.SKIN_REQUEST_NAME_MAX, briefMin: K.SKIN_REQUEST_BRIEF_MIN,
+      briefMax: K.SKIN_REQUEST_BRIEF_MAX, paletteMax: K.SKIN_REQUEST_PALETTE_MAX,
+      openMax: K.SKIN_REQUEST_OPEN_MAX, slots: [{ id: 'primary', name: 'Primary' }],
+    },
+  });
+  const asCreator = (over) => {
+    menu.creatorState = {
+      rules: creatorRules(),
+      apply: { can: true, why: null, retryAt: 0 },
+      dev: { allowed: true, pro: false, need: 10, level: 12, panels: ['perf', 'net'] },
+      skinRequests: [],
+      creator: null,
+      ...over,
+    };
+    menu.renderCreator();
+    return (id) => document.getElementById(id);
+  };
+  const shown = (el, id) => !el(id).classList.contains('hidden');
+
+  check('never applied: the form is up and no perk is', (() => {
+    const el = asCreator({});
+    return el('crStanding').innerHTML.includes('NOT A CREATOR')
+      && shown(el, 'crApplyForm')
+      && (el('crKinds').innerHTML.match(/cr-kind/g) ?? []).length >= K.CREATOR_KINDS.length
+      && !shown(el, 'crAnthemPerk') && !shown(el, 'crSkinPerk') && !shown(el, 'crLinksPerk');
+  })());
+
+  check('waiting on a decision: no form, and still nothing granted', (() => {
+    const el = asCreator({
+      creator: { kind: 'music', kindName: 'Music', status: 'pending', links: [], grants: [] },
+    });
+    return el('crStanding').innerHTML.includes('IN THE QUEUE')
+      && !shown(el, 'crApplyForm') && !shown(el, 'crAnthemPerk') && !shown(el, 'crLinksPerk');
+  })());
+
+  check('turned down: the reason is what the page says, and applying reopens', (() => {
+    const el = asCreator({
+      creator: {
+        kind: 'art', kindName: 'Art', status: 'rejected', links: [], grants: [],
+        verdict: 'Nothing here is yours yet — send us work you made.',
+      },
+      apply: { can: false, why: 'you can apply again in 9 days', retryAt: 0 },
+    });
+    return el('crStanding').innerHTML.includes('send us work you made')
+      && shown(el, 'crApplyForm')
+      // The button is greyed with the sentence the route would have refused with.
+      && el('crSubmit').disabled === true
+      && el('crSubmit').textContent.includes('9 DAYS');
+  })());
+
+  check('a music creator gets the anthem and nothing an artist gets', (() => {
+    const el = asCreator({
+      creator: {
+        kind: 'music', kindName: 'Music', status: 'approved', since: 1780000000,
+        anthem: '/avatars/anthems/x.wav', anthemTitle: 'Overdrive', grants: ['anthem'],
+        links: [{
+          platform: 'bandcamp', handle: 'melodie',
+          label: 'melodie.bandcamp.com', url: 'https://melodie.bandcamp.com',
+        }],
+      },
+    });
+    info(`anthem ${shown(el, 'crAnthemPerk')} · briefs ${shown(el, 'crSkinPerk')} `
+      + `· links ${shown(el, 'crLinksPerk')} · resign ${shown(el, 'crResignPerk')}`);
+    return shown(el, 'crAnthemPerk') && !shown(el, 'crSkinPerk')
+      && shown(el, 'crLinksPerk') && shown(el, 'crResignPerk')
+      && el('crAnthemState').innerHTML.includes('Overdrive')
+      && el('crCardLinks').querySelectorAll('.cr-link').length === 1;
+  })());
+
+  check('and an art creator gets the briefs and nothing a musician gets', (() => {
+    const el = asCreator({
+      creator: {
+        kind: 'art', kindName: 'Art', status: 'approved', since: 1780000000,
+        links: [], grants: ['skinRequest', 'frame'],
+      },
+      skinRequests: [{
+        id: 'r1', name: 'Neon Drift', slot: 'primary', brief: 'x'.repeat(60),
+        palette: ['#ff00aa'], status: 'open', createdAt: 1780000000,
+      }],
+    });
+    return shown(el, 'crSkinPerk') && !shown(el, 'crAnthemPerk')
+      && el('crBriefs').innerHTML.includes('Neon Drift');
+  })());
+
+  check('the link editor never offers a URL field, only a platform and a handle', (() => {
+    // The whole safety property of these links, drawn: there is nowhere on this
+    // page to type a destination. See CREATOR_PLATFORMS in shared/constants.js.
+    const el = asCreator({
+      creator: {
+        kind: 'music', kindName: 'Music', status: 'approved', links: [], grants: ['anthem'],
+      },
+    });
+    menu.addCreatorLinkRow('crCardLinks');
+    const row = el('crCardLinks').querySelectorAll('.cr-link')[0];
+    const inputs = row.querySelectorAll('input');
+    const options = row.querySelectorAll('.cr-link-platform option');
+    info(`${options.length} platforms · ${inputs.length} text field (the handle)`);
+    return options.length === K.CREATOR_PLATFORMS.length && inputs.length === 1
+      && inputs[0].classList.contains('cr-link-handle')
+      && inputs[0].type !== 'url';
+  })());
+
+  check('reading the editor back drops blank rows and folds pasted URLs', (() => {
+    const el = asCreator({
+      creator: { kind: 'music', kindName: 'Music', status: 'approved', links: [], grants: ['anthem'] },
+    });
+    el('crCardLinks').innerHTML = '';
+    menu.addCreatorLinkRow('crCardLinks', { platform: 'twitch', handle: 'https://twitch.tv/CoolPerson/' });
+    menu.addCreatorLinkRow('crCardLinks', { platform: 'youtube', handle: '' });
+    const read = menu.readCreatorLinks('crCardLinks');
+    const clean = K.normaliseCreatorLinks(read);
+    info(`${read.length} row(s) with a handle → ${JSON.stringify(clean)}`);
+    return read.length === 1 && clean.length === 1 && clean[0].handle === 'coolperson';
+  })());
+
+  check('signing out takes the developer page away with the session', (() => {
+    // The tab used to appear only after a match, because the *join handshake*
+    // was the one thing that carried the answer. It rides on the session
+    // restore now, so `refreshAccount` is what puts it up and takes it down —
+    // and a signed-out browser must not be left holding a page for an account
+    // it no longer has.
+    const tab = () => document.querySelector('.tab[data-tab="developer"]');
+    menu.setDevAccess({ allowed: true, pro: false, need: 10, level: 12, panels: ['perf'] });
+    const up = !tab().classList.contains('hidden');
+    menu.setDevAccess(null);                    // what a signed-out `api.devAccess` is
+    return up && tab().classList.contains('hidden') && tab().dataset.locked === '1';
+  })());
+
+  check('the developer rail entry follows the server\'s answer, both ways', (() => {
+    const tab = () => document.querySelector('.tab[data-tab="developer"]');
+    menu.setDevAccess({ allowed: true, pro: true, need: 10, level: 12, panels: [...K.DEV_PANEL_IDS] });
+    const open = !tab().classList.contains('hidden')
+      && tab().dataset.locked === '0'
+      && document.getElementById('dvPanels').innerHTML.includes('CODE CREATOR');
+    const listed = document.getElementById('dvPanels').querySelectorAll('.dv-panel').length;
+    // …and a demotion mid-session takes the page away rather than waiting for
+    // a reload, without the search box being able to hand it back.
+    menu.setDevAccess({ allowed: false, pro: false, panels: [] });
+    const shut = tab().classList.contains('hidden') && tab().dataset.locked === '1';
+    const box = document.getElementById('tabSearch');
+    box.value = 'developer';
+    box.fire('input');
+    const stillShut = tab().classList.contains('hidden');
+    box.value = '';
+    box.fire('input');
+    info(`${listed} panels listed for a code creator · hidden after demotion: ${shut}`);
+    return open && listed === K.DEV_PANELS.length && shut && stillShut
+      && tab().classList.contains('hidden');
+  })());
+
   suite('Client — customising the card');
 
   check('the editor is built from the shared catalogue, not a hard-coded list', (() => {
@@ -2175,6 +2448,282 @@ export default async function run() {
   })());
 
   /* ── The sound engine ────────────────────────────────────────────────── */
+
+  /* ── The kill cam, as a camera ───────────────────────────────────────────
+   *
+   * The overlay is tested above; this is the part that decides where you are
+   * looking and for how long. What matters is that it never becomes a rule the
+   * *match* has to honour: it holds the respawn by declining to ask for one,
+   * exactly like the pause menu, and a client that skipped every frame of it
+   * would be no better off than one that watched.
+   * ────────────────────────────────────────────────────────────────────────── */
+
+  suite('Client — the kill cam');
+
+  /** One DEATH message, shaped exactly the way room.js sends it. */
+  const deathMsg = (over = {}) => ({
+    by: 'Nemesis', byId: 7, byClan: 'GRUN', byClanVerified: true, byLevel: 34,
+    byVerified: false, byCreator: 'music', anthem: null, anthemTitle: null,
+    weapon: 'ar', head: true, respawnIn: K.RESPAWN_TIME, killerHealth: 8, distance: 41,
+    cam: { seconds: K.KILLCAM_SECONDS, skipAfter: K.KILLCAM_SKIP_AFTER, director: 0 },
+    ...over,
+  });
+  /** Just enough of an EntityManager for the cam to find a body to orbit. */
+  const bodies = (id, pos) => ({ get: (n) => (n === id ? { pos } : undefined) });
+
+  check('the world killing you gets the plain death screen, not a cam', (() => {
+    // A fall, the void, your own rocket. There is nobody to look at, so there
+    // is nothing to look at — and `begin` answering null is what makes the
+    // fallback one branch in main.js rather than a list of conditions.
+    const cam = new KillCam();
+    settings.killCam = true;
+    const none = cam.begin(deathMsg({ byId: 0, cam: { seconds: 0, skipAfter: 3 } }));
+    const off = (() => {
+      settings.killCam = false;
+      const r = cam.begin(deathMsg());
+      settings.killCam = true;
+      return r;
+    })();
+    return none === null && off === null && !cam.active;
+  })());
+
+  check('it holds the respawn for three seconds and then lets go', (() => {
+    const cam = new KillCam();
+    cam.begin(deathMsg());
+    const ents = bodies(7, { x: 10, y: 0, z: 4 });
+    const early = cam.canSkip;                       // t = 0
+    cam.update(1.0, ents, { x: 0, y: 0, z: 0 });
+    const stillHeld = !cam.canSkip && cam.holding;
+    cam.update(2.2, ents, { x: 0, y: 0, z: 0 });     // t = 3.2
+    const nowFree = cam.canSkip;
+    const skipped = cam.skip();
+    info(`skip at 0s: ${early} · at 1s: ${!stillHeld ? 'yes' : 'no'} · at 3.2s: ${nowFree}`);
+    return !early && stillHeld && nowFree && skipped && !cam.active && !cam.holding;
+  })());
+
+  check('and a skip before it lights up changes nothing at all', (() => {
+    const cam = new KillCam();
+    cam.begin(deathMsg());
+    cam.update(1.0, bodies(7, { x: 1, y: 0, z: 1 }), { x: 0, y: 0, z: 0 });
+    const refused = cam.skip() === false;
+    return refused && cam.active && cam.holding;
+  })());
+
+  check('it ends itself at ten seconds whether or not anybody pressed anything', (() => {
+    const cam = new KillCam();
+    cam.begin(deathMsg());
+    const ents = bodies(7, { x: 10, y: 0, z: 4 });
+    let frames = 0;
+    while (cam.active && frames < 2000) { cam.update(1 / 60, ents, { x: 0, y: 0, z: 0 }); frames++; }
+    const seconds = frames / 60;
+    info(`ran ${seconds.toFixed(2)}s of a ${K.KILLCAM_SECONDS}s cam`);
+    return !cam.active && Math.abs(seconds - K.KILLCAM_SECONDS) < 0.2;
+  })());
+
+  check('turning the hold off ends it the moment the skip would have lit up', (() => {
+    const cam = new KillCam();
+    settings.killCamHold = false;
+    cam.begin(deathMsg());
+    let frames = 0;
+    while (cam.active && frames < 2000) {
+      cam.update(1 / 60, bodies(7, { x: 5, y: 0, z: 0 }), { x: 0, y: 0, z: 0 });
+      frames++;
+    }
+    settings.killCamHold = true;
+    info(`ran ${(frames / 60).toFixed(2)}s with the hold off`);
+    return !cam.active && Math.abs(frames / 60 - K.KILLCAM_SKIP_AFTER) < 0.2;
+  })());
+
+  check('the camera eases out of the body and orbits the killer', (() => {
+    const cam = new KillCam();
+    cam.begin(deathMsg());
+    const killer = { x: 20, y: 0, z: 0 };
+    const fell = { x: 0, y: 0, z: 0 };
+    const ents = bodies(7, killer);
+
+    const first = cam.update(1 / 60, ents, fell);
+    // One frame in, the shot is still essentially where the body fell — which
+    // is what makes it read as one continuous camera rather than a teleport.
+    const startsHome = Math.hypot(first.from.x - fell.x, first.from.z - fell.z) < 2;
+    const looksAtKiller = Math.abs(first.at.x - killer.x) < 0.01;
+
+    let settled = first;
+    for (let i = 0; i < 120; i++) settled = cam.update(1 / 60, ents, fell);
+    // Two seconds later it is in orbit: a fixed distance out, above the head.
+    const radius = Math.hypot(settled.from.x - killer.x, settled.from.z - killer.z);
+    const above = settled.from.y > killer.y + 1;
+    info(`t=0 ${Math.hypot(first.from.x - fell.x, first.from.z - fell.z).toFixed(2)}u from the body `
+      + `→ t=2 ${radius.toFixed(2)}u from the killer`);
+    return startsHome && looksAtKiller && above && radius > 3 && radius < 7;
+  })());
+
+  check('a killer who leaves mid-cam does not take the camera with them', (() => {
+    // The last place they were seen, not the origin: a cam that has lost its
+    // subject should get out of the way, and one that snaps to (0,0,0) is a
+    // camera under a map.
+    const cam = new KillCam();
+    cam.begin(deathMsg());
+    const seen = cam.update(0.5, bodies(7, { x: 30, y: 2, z: 12 }), { x: 0, y: 0, z: 0 });
+    const gone = cam.update(0.5, bodies(99, { x: 0, y: 0, z: 0 }), { x: 0, y: 0, z: 0 });
+    return seen && gone && Math.abs(gone.at.x - 30) < 0.01 && Math.abs(gone.at.z - 12) < 0.01;
+  })());
+
+  check('the camera never ends up inside the map', (() => {
+    /*
+     * The one failure every orbiting death camera has: a killer with their back
+     * to a wall, and a quarter of the orbit spent looking at the inside of it.
+     *
+     * Swept over every orbit position on every map in the game, so this is a
+     * measurement rather than a spot check — and it is stated as a *rate*
+     * because a corner under a low ceiling has genuinely nowhere to put a
+     * camera, and pretending otherwise would mean a threshold nobody could
+     * ever meet. What it holds down is that the answer is rare and that the
+     * fallback never puts the shot inside the body it is filming.
+     */
+    const cam = new KillCam();
+    let sampled = 0, clipped = 0, tooClose = 0, unfixed = 0;
+    for (const id of ALL_MAP_IDS) {
+      const map = getMap(id);
+      const world = new World(map);
+      const solid = (p) => world.query(p.x - 0.05, p.y - 0.05, p.z - 0.05,
+        p.x + 0.05, p.y + 0.05, p.z + 0.05).length > 0;
+      const half = (map.ground?.size ?? map.size ?? 128) / 2;
+      for (let x = -half + 6; x < half - 6; x += 11) {
+        for (let z = -half + 6; z < half - 6; z += 11) {
+          const killer = { x, y: 0, z };
+          if (solid({ x, y: 1.2, z })) continue;          // killer in a wall: not a case
+          cam.begin(deathMsg());
+          const ents = bodies(7, killer);
+          // Two full turns of the orbit, at the rate it really drifts.
+          for (let i = 0; i < 90; i++) {
+            const shot = cam.update(0.14, ents, { x: x + 3, y: 0, z }, world);
+            if (!shot) break;
+            sampled++;
+            if (solid(shot.from)) clipped++;
+            const d = Math.hypot(shot.from.x - shot.at.x, shot.from.y - shot.at.y,
+              shot.from.z - shot.at.z);
+            if (d < 1) tooClose++;
+            // What it would have been with no world at all, for the contrast.
+            const naive = cam.update(0, ents, null, null);
+            if (naive && solid(naive.from)) unfixed++;
+          }
+          cam.end();
+        }
+      }
+    }
+    const pct = (n) => `${((n / sampled) * 100).toFixed(2)}%`;
+    info(`${sampled} shots over ${ALL_MAP_IDS.length} maps · inside geometry ${pct(clipped)} `
+      + `(${pct(unfixed)} without the raycast) · closer than 1u ${pct(tooClose)}`);
+    return sampled > 5000 && clipped / sampled < 0.01 && tooClose / sampled < 0.005
+      && clipped < unfixed;
+  })());
+
+  check('a video creator is offered a longer shot, never a longer wait', (() => {
+    // The director's cut holds the frame for longer if they keep it. The skip
+    // still lights up at the same three seconds as everybody else's — a perk
+    // that made a death screen harder to leave would be a punishment.
+    const cam = new KillCam();
+    const msg = deathMsg({ cam: { seconds: K.KILLCAM_SECONDS, skipAfter: K.KILLCAM_SKIP_AFTER,
+      director: K.KILLCAM_DIRECTOR_SECONDS } });
+    const shot = cam.begin(msg);
+    return shot.seconds === K.KILLCAM_DIRECTOR_SECONDS
+      && shot.skipAfter === K.KILLCAM_SKIP_AFTER
+      && cam.view().director === true;
+  })());
+
+  check('every fact on the cam comes off the message, not out of the client', (() => {
+    const cam = new KillCam();
+    cam.begin(deathMsg());
+    const v = cam.view();
+    return v.name === 'Nemesis' && v.clan === 'GRUN' && v.clanVerified === true
+      && v.level === 34 && v.creator === 'music' && v.distance === 41 && v.health === 8
+      && v.head === true;
+  })());
+
+  /* ── Developer mode ─────────────────────────────────────────────────────── */
+
+  suite('Client — developer mode');
+
+  check('the client never decides for itself what it may open', (() => {
+    // The level and the creator status both live on the server; a client that
+    // worked the answer out locally would be one that could be told to work it
+    // out differently.
+    const dev = new DevMode();
+    const shutByDefault = !dev.access.allowed && !dev.toggle(true);
+    dev.setAccess({ allowed: true, pro: false, need: 10, level: 12, panels: ['perf', 'net'] });
+    const opens = dev.toggle(true);
+    // …and a demotion mid-session closes it rather than waiting for a reload.
+    dev.setAccess({ allowed: false, panels: [] });
+    return shutByDefault && opens && !dev.open;
+  })());
+
+  check('a panel the server did not grant cannot be switched on locally', (() => {
+    const dev = new DevMode();
+    dev.setAccess({ allowed: true, pro: false, need: 10, level: 12, panels: ['perf', 'net'] });
+    settings.devPanels = [...K.DEV_PANEL_IDS];         // ask for all seven
+    const got = dev.panels;
+    settings.devPanels = ['perf', 'net'];
+    info(`asked for ${K.DEV_PANEL_IDS.length}, got ${got.length}: ${got.join(', ')}`);
+    return got.length === 2 && K.DEV_PRO_PANEL_IDS.every((id) => !got.includes(id));
+  })());
+
+  check('and an access answer naming a panel that does not exist is ignored', (() => {
+    const dev = new DevMode();
+    dev.setAccess({ allowed: true, panels: ['perf', 'wallhack', 'net'] });
+    return !dev.access.panels.includes('wallhack') && dev.access.panels.length === 2;
+  })());
+
+  check('the samplers cost nothing while the mode is shut', (() => {
+    // They sit in the render loop and on the reconciliation path, so "returns
+    // on its first line" is the only acceptable behaviour when it is off.
+    const dev = new DevMode();
+    for (let i = 0; i < 500; i++) {
+      dev.sampleFrame(16.7);
+      dev.sampleRecon(0.01, 3);
+      dev.samplePacket('in', 'sn', 800);
+    }
+    return dev.frames.length === 0 && dev.recon.length === 0 && dev.wire.size === 0;
+  })());
+
+  check('and hold a bounded window once it is open', (() => {
+    const dev = new DevMode();
+    dev.setAccess({ allowed: true, pro: true, panels: [...K.DEV_PANEL_IDS] });
+    for (let i = 0; i < 5000; i++) {
+      dev.sampleFrame(10 + (i % 30));
+      dev.sampleRecon(0.02, 2);
+      dev.samplePacket(i % 2 ? 'in' : 'out', 'sn', 400);
+    }
+    info(`${dev.frames.length} frames · ${dev.recon.length} corrections · ${dev.wire.size} opcodes`);
+    return dev.frames.length <= 600 && dev.recon.length <= 160 && dev.wire.size === 2;
+  })());
+
+  check('every panel renders from real samples without throwing', (() => {
+    const dev = new DevMode();
+    dev.setAccess({ allowed: true, pro: true, panels: [...K.DEV_PANEL_IDS] });
+    dev.open = true;
+    dev.el = document.getElementById('devOverlay');
+    settings.devPanels = [...K.DEV_PANEL_IDS];
+    for (let i = 0; i < 200; i++) {
+      dev.sampleFrame(8 + Math.random() * 30);
+      dev.sampleRecon(Math.random() * 0.4, i % 7);
+      dev.samplePacket(i % 2 ? 'in' : 'out', i % 3 ? 'sn' : 'in', 200 + i);
+    }
+    try {
+      dev.drawAt = 0;
+      dev.update({
+        gfx: { renderer: { info: { render: { calls: 41, triangles: 90210 }, memory: {}, programs: [] } } },
+        net: { rtt: 0.042, rttSamples: [0.04, 0.045, 0.041], clockOffset: -3.2 },
+        entities: { buffer: [{ t: 1000 }, { t: 1100 }] },
+        pending: [1, 2, 3],
+        local: { x: 1, y: 2, z: 3, vx: 4, vy: 0, vz: 5, onGround: true, height: 1.8 },
+        input: { yaw: 1.2, pitch: -0.1 },
+        health: 100, tick: 4200,
+      });
+    } catch (err) { info(String(err)); return false; }
+    const drawn = dev.el.innerHTML;
+    settings.devPanels = ['perf', 'net'];
+    return K.DEV_PANELS.every((p) => drawn.includes(p.name)) && drawn.includes('dev-toggle');
+  })());
 
   suite('Client — audio');
 

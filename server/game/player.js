@@ -47,6 +47,25 @@ export class Player {
     /** Per-class primary finishes, as item ids. Swapped into `cos` on a class change. */
     this.primaries = o.primaries ?? {};
     this.verified = !!o.verified;
+    /**
+     * Creator status, as `{ kind, status }` or null — the two fields
+     * `creatorCan()` asks about and nothing else.
+     *
+     * It rides on the player rather than being looked up per kill for the same
+     * reason the clan tag does: the room needs it at the exact moment somebody
+     * dies, and a database read on the death path is a database read sixty
+     * times a minute in a busy match.
+     */
+    this.creator = o.creator ?? null;
+    /**
+     * The anthem this player's kills play, as a URL, and what it is called.
+     *
+     * Resolved once at the handshake — the server is what turns a stored
+     * filename into a public URL, so a client can never name the file it wants
+     * played into somebody else's ears.
+     */
+    this.anthem = o.anthem ?? null;
+    this.anthemTitle = o.anthemTitle ?? null;
     this.clan = o.clan ?? null;
     /** Is the clan behind that tag one the developers have verified? Gold, not grey. */
     this.clanVerified = !!o.clanVerified;
@@ -288,6 +307,11 @@ export class Player {
     return {
       level: this.level, verified: !!this.verified,
       clan: this.clan ?? null, clanVerified: !!this.clanVerified, role: this.role,
+      // The discipline, or null — one short string that every scoreboard,
+      // killfeed and card turns into the same badge. `status` never travels:
+      // a pending application is not a badge, so `setCreator` below is what
+      // decides, once, whether there is anything here to draw at all.
+      creator: this.creatorKind,
       // Is there a profile behind this name? Guests and bots have none, so the
       // client knows not to offer a link that could only ever 404.
       account: !!this.userId,
@@ -301,6 +325,31 @@ export class Player {
    * The room re-broadcasts the scoreboard afterwards, so nobody has to
    * reconnect to stop wearing a tag they no longer hold.
    */
+  /** The discipline to draw beside this name, or null. Approved only. */
+  get creatorKind() {
+    return this.creator?.status === 'approved' ? this.creator.kind : null;
+  }
+
+  /**
+   * Re-badges a live connection whose creator status changed underneath it.
+   *
+   * The mirror of `setClan`, and it exists for the same reason: an approval, a
+   * rejection or a revocation lands while somebody is mid-match, and making
+   * them reconnect to stop wearing a badge they no longer hold — or to start
+   * wearing one they just earned — would be the wrong answer to both.
+   */
+  setCreator(creator) {
+    const before = this.creatorKind;
+    this.creator = creator ?? null;
+    return before !== this.creatorKind;
+  }
+
+  /** Swaps the anthem a moderator just took down, without a reconnect. */
+  setAnthem(url, title = null) {
+    this.anthem = url ?? null;
+    this.anthemTitle = title ?? null;
+  }
+
   setClan(clan, verified = false) {
     const changed = (this.clan ?? null) !== (clan ?? null) || !!this.clanVerified !== !!verified;
     this.clan = clan ?? null;

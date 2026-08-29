@@ -107,6 +107,26 @@ export class El {
   }
 
   get firstChild() { return this.children[0] ?? null; }
+  /**
+   * A `<select>`'s own view of its children.
+   *
+   * Standard DOM, and code that fills a dropdown once reads it to know whether
+   * it has already done so — `if (!select.options.length)`. Without it that is
+   * a TypeError here and works everywhere else, which is exactly the shape of
+   * gap this file exists to close. Recursive, because an `<option>` inside an
+   * `<optgroup>` is still one of a select's options.
+   */
+  get options() {
+    const out = [];
+    const walk = (el) => {
+      for (const child of el.children) {
+        if (child.tagName === 'OPTION') out.push(child);
+        else if (child.tagName === 'OPTGROUP') walk(child);
+      }
+    };
+    walk(this);
+    return out;
+  }
   get offsetWidth() { return 100; }
   get offsetHeight() { return 100; }
   /** A card wide enough that a chart lays out rather than collapsing. */

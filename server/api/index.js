@@ -24,7 +24,9 @@ import * as ipintel from '../util/ipintel.js';
 import { looksLikeEmail } from '../util/mailer.js';
 import { sendVerification } from '../util/verify.js';
 import { validateAvatar } from '../util/image.js';
+import { validateAnthem, level } from '../util/audio.js';
 import * as avatars from '../util/avatar.js';
+import * as anthems from '../util/anthem.js';
 import { registerClanRoutes, clanRules } from './clans.js';
 import { reportStanding } from '../util/reports.js';
 import config from '../config.js';
@@ -45,7 +47,55 @@ const ALL_WEAPON_IDS = [...new Set(CLASS_IDS.flatMap((id) => loadoutFor(id).map(
  * nobody else's business, and this same shape answers `/players/:name` for any
  * visitor.
  */
-const publicUser = (u, s = null, l = null, { self = false } = {}) => ({
+/**
+ * One creator, as JSON.
+ *
+ * Two shapes, and the difference between them is the whole privacy rule here.
+ * `self` sees the application: what they wrote, what they asked for, what they
+ * were told and by whom. Everybody else sees only what an *approved* creator
+ * chose to put on their card — the discipline, the links, the anthem — and an
+ * application that is pending, rejected or revoked reads as no creator at all.
+ *
+ * The link URLs are built here rather than sent as URLs, so nothing a player
+ * typed ever reaches another player's screen as a destination: see the block
+ * comment on CREATOR_PLATFORMS in shared/constants.js.
+ */
+const publicCreator = (c, { self = false } = {}) => {
+  if (!c) return null;
+  const approved = c.status === 'approved';
+  if (!approved && !self) return null;
+  const kind = K.getCreatorKind(c.kind);
+  const links = c.links
+    .map((l) => ({
+      platform: l.platform,
+      handle: l.handle,
+      label: K.creatorLinkLabel(l),
+      url: K.creatorLinkUrl(l),
+    }))
+    .filter((l) => l.url);
+  return {
+    kind: c.kind,
+    kindName: kind?.name ?? c.kind,
+    status: c.status,
+    since: c.decidedAt ?? null,
+    links,
+    // Only an approved music creator's anthem is ever named. The file is on
+    // disk either way — a revoked creator's is swept by the route that revoked
+    // them — and this is the second lock on the same door.
+    anthem: approved && K.creatorCan(c, 'anthem') ? anthems.urlFor(c.anthem) : null,
+    anthemTitle: approved && K.creatorCan(c, 'anthem') ? c.anthemTitle : null,
+    ...(self ? {
+      asked: c.asked,
+      pitch: c.pitch,
+      verdict: c.verdict,
+      decidedBy: c.decidedBy,
+      appliedAt: c.appliedAt,
+      grants: kind?.grants ?? [],
+    } : {}),
+  };
+};
+
+const publicUser = (u, s = null, l = null, { self = false, creator = null } = {}) => ({
   id: u.id,
   username: u.username,
   level: u.level,
@@ -61,6 +111,17 @@ const publicUser = (u, s = null, l = null, { self = false } = {}) => ({
   // on the way out as well as on the way in, so a row written before this
   // existed answers with a whole default card rather than a null.
   card: K.normaliseCard(safeJson(u.card, null)),
+  /*
+   * Creator status, or null. Public for exactly the reason the card is: the
+   * badge and the links are most of what the status is *for*, and one only its
+   * owner could see would be a status nobody bothers to apply for. Everything
+   * private about an application — the pitch, the verdict, who read it — is
+   * behind `self` inside publicCreator, not here.
+   *
+   * Passed in by the caller rather than looked up, so a route that lists a
+   * hundred rows does not do a hundred queries it did not ask for.
+   */
+  creator: publicCreator(creator, { self }),
   ...(self ? {
     // Own account only: which of your answers is set to what is itself an
     // answer, and a stranger reading "this one shows nobody anything" learns
@@ -144,7 +205,8 @@ function visibleProfile(db, owner, viewer, { stats = null, recent = [] } = {}) {
     return okToSee;
   };
 
-  const user = publicUser(owner, allow('showStats') ? stats : null);
+  const user = publicUser(owner, allow('showStats') ? stats : null, null,
+    { creator: db.creators.get(owner.id) });
   if (!allow('showClan')) { user.clan = null; user.clanId = null; user.clanVerified = false; }
   if (!allow('showStreak')) user.streak = null;
   if (!allow('showJoined')) user.createdAt = null;
@@ -378,6 +440,21 @@ export function createApi({ db, hub }) {
   };
   r.resolveSession = resolveSession;
 
+  /**
+   * The whole of one account, to its owner.
+   *
+   * Eight routes answered with the same four-argument expression and now answer
+   * with this: register, sign-in, /auth/me, the address change, the rename, the
+   * password change and both avatar routes all mean "here is your account as it
+   * now stands". Written once so that adding something to that shape — the
+   * creator status was the thing that made this worth doing — is one edit and
+   * not eight.
+   */
+  const selfUser = (u) => publicUser(
+    u, db.stats.get(u.id), db.loadouts.get(u.id),
+    { self: true, creator: db.creators.get(u.id) },
+  );
+
   const requireAuth = (ctx) => {
     if (!ctx.auth) throw new ApiError(401, 'unauthorized', 'sign in first');
     return ctx.auth.user;
@@ -547,8 +624,22 @@ export function createApi({ db, hub }) {
       clanCreateCost: config.clans.createCost,
       clansEnabled: config.clans.enabled,
       reportsEnabled: config.reports.enabled,
+      devLevel: config.devMode.level,
+      devEnabled: config.devMode.enabled,
+      creatorLevel: config.creators.minLevel,
+      creatorsEnabled: config.creators.enabled,
     }),
     clans: clanRules(),
+    creators: creatorRules(),
+    // The overlays are drawn entirely by the client out of things it already
+    // has, so all the server has to say about them is whether they are allowed
+    // and from what level. The panel list itself is a shared constant.
+    devMode: {
+      enabled: config.devMode.enabled,
+      level: config.devMode.level,
+      panels: K.DEV_PANELS,
+      proPanels: K.DEV_PRO_PANEL_IDS,
+    },
     // Guests play under an assigned name; only an account picks its own.
     namedGuests: false,
     vpnBlocked: config.vpn.block && config.vpn.provider !== 'none',
@@ -608,7 +699,7 @@ export function createApi({ db, hub }) {
     json(ctx.res, 201, {
       ok: true,
       token,
-      user: publicUser(db.users.byId(user.id), db.stats.get(user.id), db.loadouts.get(user.id), { self: true }),
+      user: selfUser(db.users.byId(user.id)),
       // What the account was just handed, so the client can show it rather than
       // leaving the player to notice a balance they never saw arrive.
       reward: K.SIGNUP_REWARD,
@@ -676,7 +767,7 @@ export function createApi({ db, hub }) {
     json(ctx.res, 200, {
       ok: true,
       token,
-      user: publicUser(user, db.stats.get(user.id), db.loadouts.get(user.id), { self: true }),
+      user: selfUser(user),
       verification: verificationState(user),
     }, { 'set-cookie': cookieHeader(COOKIE, token) });
   });
@@ -690,7 +781,7 @@ export function createApi({ db, hub }) {
   r.get('/auth/me', (ctx) => {
     const user = requireAuth(ctx);
     ok(ctx.res, {
-      user: publicUser(user, db.stats.get(user.id), db.loadouts.get(user.id), { self: true }),
+      user: selfUser(user),
       verification: verificationState(user),
       mastery: masteryPayload(db, user.id),
       challenges: challengePayload(db, user.id),
@@ -698,6 +789,17 @@ export function createApi({ db, hub }) {
       // second round trip: the loadout screen is one click from the menu and
       // the renderer needs it before the first frame either way.
       wardrobe: wardrobeOf(user),
+      /*
+       * Developer access, for the same reason and at the same cost: it decides
+       * whether the DEVELOPER rail entry exists at all, and this is the request
+       * that restores a session. Reading it off the join handshake instead
+       * meant the tab only appeared once somebody had played a match — which is
+       * a strange thing to have to do to reach a settings page.
+       */
+      dev: K.devModeAccess(
+        { level: user.level, creator: db.creators.standing(user.id) },
+        { devLevel: config.devMode.level, enabled: config.devMode.enabled },
+      ),
     });
   });
 
@@ -829,7 +931,7 @@ export function createApi({ db, hub }) {
     // new one, and telling the player that is kinder than a silent mismatch.
     logger.info(`${user.username} renamed to ${wanted}${restyle ? ' (restyle, free)' : ` for ${cost} GR`}`);
     ok(ctx.res, {
-      user: publicUser(fresh, db.stats.get(fresh.id), db.loadouts.get(fresh.id), { self: true }),
+      user: selfUser(fresh),
       spent: restyle ? 0 : cost,
       gr: fresh.gr,
     });
@@ -950,7 +1052,7 @@ export function createApi({ db, hub }) {
       // Shown once and never again — there is nowhere to look them up, which is
       // the entire point of storing only their hashes.
       recovery: codes,
-      user: publicUser(db.users.byId(user.id), db.stats.get(user.id), db.loadouts.get(user.id), { self: true }),
+      user: selfUser(db.users.byId(user.id)),
     });
   });
 
@@ -971,7 +1073,7 @@ export function createApi({ db, hub }) {
     event('totp.disable', { userId: user.id, name: user.username });
     ok(ctx.res, {
       enabled: false,
-      user: publicUser(db.users.byId(user.id), db.stats.get(user.id), db.loadouts.get(user.id), { self: true }),
+      user: selfUser(db.users.byId(user.id)),
     });
   });
 
@@ -1054,7 +1156,7 @@ export function createApi({ db, hub }) {
     ok(ctx.res, {
       avatar: avatars.urlFor(file),
       width: verdict.width, height: verdict.height, bytes: buf.length,
-      user: publicUser(fresh, db.stats.get(user.id), db.loadouts.get(user.id), { self: true }),
+      user: selfUser(fresh),
     });
   });
 
@@ -1065,8 +1167,371 @@ export function createApi({ db, hub }) {
     const fresh = db.users.setAvatar(user.id, null);
     ok(ctx.res, {
       removed,
-      user: publicUser(fresh, db.stats.get(user.id), db.loadouts.get(user.id), { self: true }),
+      user: selfUser(fresh),
     });
+  });
+
+  /* ── Creators ──────────────────────────────────────────────────────────────
+   *
+   * An application, a decision somebody else makes, and the perks that follow
+   * it. Nothing in here grants anything: `creatorCan()` in shared/constants.js
+   * is the single gate, it is asked on every route below, and it answers no for
+   * anything that is not an *approved* row of the right kind — so a pending
+   * application cannot upload an anthem however the request is shaped.
+   * ────────────────────────────────────────────────────────────────────────── */
+
+  /** The rules this server runs, as the panel needs to draw them. */
+  const creatorRules = () => ({
+    enabled: config.creators.enabled,
+    minLevel: config.creators.minLevel,
+    // Only ever true where an address is really confirmed: a gate on a server
+    // that never sends a verification mail is a gate with nothing behind it.
+    needEmail: config.creators.needEmail && config.emailVerification.enabled,
+    reapplyDays: K.CREATOR_REAPPLY_DAYS,
+    pitchMin: K.CREATOR_PITCH_MIN,
+    pitchMax: K.CREATOR_PITCH_MAX,
+    linksMax: K.CREATOR_LINKS_MAX,
+    kinds: K.CREATOR_KINDS,
+    platforms: K.CREATOR_PLATFORMS.map((p) => ({
+      id: p.id, name: p.name, prefix: p.prefix ?? null, suffix: p.suffix ?? null,
+      placeholder: p.placeholder,
+    })),
+    anthem: {
+      maxSeconds: K.ANTHEM_MAX_SECONDS,
+      minSeconds: K.ANTHEM_MIN_SECONDS,
+      sampleRate: K.ANTHEM_SAMPLE_RATE,
+      maxBytes: config.creators.anthemMaxBytes,
+      titleMax: K.ANTHEM_TITLE_MAX,
+      targetDb: K.ANTHEM_TARGET_RMS_DB,
+    },
+    skinRequest: {
+      nameMax: K.SKIN_REQUEST_NAME_MAX,
+      briefMin: K.SKIN_REQUEST_BRIEF_MIN,
+      briefMax: K.SKIN_REQUEST_BRIEF_MAX,
+      paletteMax: K.SKIN_REQUEST_PALETTE_MAX,
+      openMax: K.SKIN_REQUEST_OPEN_MAX,
+      slots: Object.values(COS.SLOT_META).map((s) => ({ id: s.id, name: s.name })),
+    },
+  });
+  r.creatorRules = creatorRules;
+
+  /**
+   * Refuses everything when the operator has closed the programme.
+   *
+   * Always called *after* `requireAuth`, so an anonymous caller gets the same
+   * 401 here as everywhere else in this file rather than being told something
+   * about how this server is configured. Which of the two answers is more
+   * useful is not really the point: one shape of answer for one shape of
+   * caller is.
+   */
+  const requireCreatorsOn = () => {
+    if (!config.creators.enabled) {
+      throw new ApiError(403, 'creators_disabled', 'creator status is switched off on this server');
+    }
+  };
+
+  /**
+   * The approved row behind a request, or a 403 naming what is missing.
+   *
+   * `grant` is the one thing the caller wants to do, checked here rather than
+   * by the caller, so no route can accidentally be reachable by the wrong
+   * discipline — a musician cannot file a skin brief and an artist cannot
+   * upload an anthem, and neither needs its route to remember that.
+   */
+  const requireCreator = (user, grant) => {
+    requireCreatorsOn();
+    const creator = db.creators.get(user.id);
+    if (!creator || creator.status !== 'approved') {
+      throw new ApiError(403, 'not_a_creator', 'that is a creator feature — apply under CREATOR');
+    }
+    if (!K.creatorCan(creator, grant)) {
+      const kind = K.getCreatorKind(creator.kind);
+      throw new ApiError(403, 'wrong_creator_kind',
+        `that is not part of ${kind?.name ?? creator.kind} creator status`);
+    }
+    return creator;
+  };
+
+  /**
+   * Everything this account's CREATOR tab draws, in one request.
+   *
+   * The catalogue travels with it rather than being imported by the browser,
+   * because the *rules* half of it is this server's and not the constants'
+   * defaults — an operator who moved the level in .env has moved it for the
+   * panel that promises it too.
+   */
+  r.get('/creator', (ctx) => {
+    const user = requireAuth(ctx);
+    const creator = db.creators.get(user.id);
+    const rules = creatorRules();
+    ok(ctx.res, {
+      rules,
+      creator: creator ? publicCreator(creator, { self: true }) : null,
+      apply: K.creatorApplyState(
+        { level: user.level, emailVerified: !!user.email_verified },
+        creator,
+        { minLevel: rules.minLevel, needEmail: rules.needEmail },
+      ),
+      dev: K.devModeAccess(
+        { level: user.level, creator: db.creators.standing(user.id) },
+        { devLevel: config.devMode.level, enabled: config.devMode.enabled },
+      ),
+      skinRequests: K.creatorCan(creator, 'skinRequest')
+        ? db.creators.skinRequests.forUser(user.id, 20)
+        : [],
+    });
+  });
+
+  /**
+   * Files an application, or replaces the one this account already sent.
+   *
+   * Rate-limited hard. This is a queue a human reads, and the failure mode is
+   * not a security one — it is thirty applications from one person that the
+   * person reading them has to work through before finding a real one.
+   */
+  r.post('/creator/apply', async (ctx) => {
+    const user = requireAuth(ctx);
+    requireCreatorsOn();
+    /*
+     * Twelve a window rather than a handful, because a *refused* attempt costs
+     * one too: somebody rewriting a pitch that came back "say a little more",
+     * fixing a dead link and sending it again is three, and a person doing the
+     * ordinary thing must not run into a ceiling built for somebody doing the
+     * bad one. What this is really protecting is the queue a human reads, and
+     * twelve is still far below the rate at which that becomes a nuisance.
+     */
+    limit(ctx, 'creator', 12);
+    const body = await readJson(ctx.req);
+    const rules = creatorRules();
+
+    const state = K.creatorApplyState(
+      { level: user.level, emailVerified: !!user.email_verified },
+      db.creators.get(user.id),
+      { minLevel: rules.minLevel, needEmail: rules.needEmail },
+    );
+    if (!state.can) throw new ApiError(403, 'cannot_apply', state.why);
+
+    const kind = String(body.kind ?? '');
+    if (!K.CREATOR_KIND_IDS.includes(kind)) {
+      throw new ApiError(400, 'unknown_kind', 'pick one of the four disciplines');
+    }
+    // `cleanCardText` rather than a raw slice: this string is read by a
+    // moderator inside the admin panel, and the invisible direction marks are
+    // exactly what turns a pitch into something that reads as another one.
+    const pitch = K.cleanCardText(body.pitch, K.CREATOR_PITCH_MAX);
+    if (pitch.length < K.CREATOR_PITCH_MIN) {
+      throw new ApiError(400, 'pitch_too_short',
+        `say a little more — at least ${K.CREATOR_PITCH_MIN} characters about what you make`);
+    }
+    const linkError = K.creatorLinksError(body.links ?? []);
+    if (linkError) throw new ApiError(400, 'bad_links', linkError);
+    // A pitch with nowhere to look is not one anybody can act on.
+    const links = K.normaliseCreatorLinks(body.links ?? []);
+    if (!links.length) {
+      throw new ApiError(400, 'no_links', 'add at least one link to something you have made');
+    }
+
+    const creator = db.creators.apply({
+      userId: user.id, username: user.username, kind, pitch, links,
+    });
+    db.events.add({ kind: 'creator.apply', userId: user.id, name: user.username, detail: kind });
+    logger.info(`${user.username} applied as a ${kind} creator`);
+    ok(ctx.res, { creator: publicCreator(creator, { self: true }) });
+  });
+
+  /**
+   * Withdraws a pending application, or resigns an approved status.
+   *
+   * The two are one route because they are one gesture — "take me off this
+   * list" — but they are not one write. A pending row is deleted, because
+   * nobody read it and there is nothing to record. An approved one is *revoked*
+   * through the same path a moderator's decision takes, so the history says
+   * what happened and the re-apply wait applies to it like any other ending.
+   */
+  r.delete('/creator', async (ctx) => {
+    const user = requireAuth(ctx);
+    requireCreatorsOn();
+    const creator = db.creators.get(user.id);
+    if (!creator) throw new ApiError(404, 'no_application', 'you have not applied');
+
+    if (creator.status === 'approved') {
+      // The file goes with the status: an anthem is a perk, and a perk that
+      // outlives the status it came from is a perk nobody took away.
+      await anthems.remove(user.id);
+      db.creators.setAnthem(user.id, null, null);
+      db.creators.decide({
+        userId: user.id, status: 'revoked', actor: user.username,
+        verdict: 'Resigned by the creator.',
+      });
+      logger.info(`${user.username} resigned their ${creator.kind} creator status`);
+      ok(ctx.res, { creator: publicCreator(db.creators.get(user.id), { self: true }) });
+      return;
+    }
+
+    const removed = db.creators.withdraw(user.id);
+    if (removed?.anthem) await anthems.remove(user.id);
+    ok(ctx.res, { creator: null, withdrawn: !!removed });
+  });
+
+  /** Replaces the link set on an approved creator's card. */
+  r.put('/creator/links', async (ctx) => {
+    const user = requireAuth(ctx);
+    requireCreatorsOn();
+    const creator = db.creators.get(user.id);
+    if (!creator) throw new ApiError(404, 'no_application', 'you have not applied');
+    // Deliberately not `requireCreator`: links belong to the *application* as
+    // much as to the status, and somebody fixing a dead link on a pitch that is
+    // still in the queue is doing the person who has to read it a favour.
+    if (creator.status !== 'approved' && creator.status !== 'pending') {
+      throw new ApiError(403, 'not_a_creator', 'that is a creator feature');
+    }
+    limit(ctx, 'creatorLinks', 20);
+    const body = await readJson(ctx.req);
+    const error = K.creatorLinksError(body.links ?? []);
+    if (error) throw new ApiError(400, 'bad_links', error);
+    const fresh = db.creators.setLinks(user.id, body.links ?? []);
+    ok(ctx.res, { creator: publicCreator(fresh, { self: true }) });
+  });
+
+  /* ── The music creator's anthem ─────────────────────────────────────────── */
+
+  /**
+   * Stores ten seconds of somebody's music, levelled.
+   *
+   * The body is raw PCM in a WAVE wrapper — see the block comment on anthems in
+   * shared/constants.js for why it is that and not an MP3 — and it is never
+   * stored as it arrives. `level()` measures it, rewrites every sample to the
+   * house loudness and re-emits a canonical file, and *that* is what is written
+   * to disk. There is no threshold here to sit underneath: a track is not
+   * checked for being too loud, it is made to be the right loudness.
+   */
+  r.post('/creator/anthem', async (ctx) => {
+    const user = requireAuth(ctx);
+    requireCreator(user, 'anthem');
+    limit(ctx, 'anthem', 10);
+
+    // Read past the ceiling on purpose. A file one second too long is over the
+    // byte limit too, and refusing it at the socket would answer "too large"
+    // to somebody whose actual problem is that it is eleven seconds — see the
+    // ordering note in util/audio.js.
+    let buf;
+    try {
+      buf = await readBody(ctx.req, config.creators.anthemMaxBytes + 256 * 1024);
+    } catch (err) {
+      if (err.status === 413) {
+        throw new ApiError(413, 'anthem_too_large',
+          `keep it under ${K.ANTHEM_MAX_SECONDS} seconds`);
+      }
+      throw err;
+    }
+
+    const verdict = validateAnthem(buf);
+    if (!verdict.ok) throw new ApiError(400, verdict.code, verdict.message);
+
+    const levelled = level(buf, verdict.info);
+    if (!levelled.ok) throw new ApiError(400, levelled.code, levelled.message);
+
+    const title = K.cleanCardText(ctx.query.get('title') ?? '', K.ANTHEM_TITLE_MAX);
+    const file = await anthems.save(user.id, levelled.buffer, 'wav');
+    const fresh = db.creators.setAnthem(user.id, file, title || null);
+    logger.info(`${user.username} set an anthem (${levelled.report.seconds}s, `
+      + `${levelled.report.gainDb > 0 ? '+' : ''}${levelled.report.gainDb} dB to `
+      + `${levelled.report.after.loudDb} LUFS-ish, ${Math.ceil(levelled.buffer.length / 1024)} KB)`);
+    ok(ctx.res, {
+      creator: publicCreator(fresh, { self: true }),
+      // The whole measurement, because the uploader draws it: "we turned your
+      // track down 19 dB" is the one piece of feedback that stops the next
+      // upload from being the same track, louder.
+      levelling: levelled.report,
+    });
+  });
+
+  /** Drops the anthem. The kill cam simply plays nothing after this. */
+  r.delete('/creator/anthem', async (ctx) => {
+    const user = requireAuth(ctx);
+    requireCreator(user, 'anthem');
+    const removed = await anthems.remove(user.id);
+    const fresh = db.creators.setAnthem(user.id, null, null);
+    ok(ctx.res, { removed, creator: publicCreator(fresh, { self: true }) });
+  });
+
+  /** Renames the track without re-uploading it. */
+  r.put('/creator/anthem', async (ctx) => {
+    const user = requireAuth(ctx);
+    const creator = requireCreator(user, 'anthem');
+    if (!creator.anthem) throw new ApiError(404, 'no_anthem', 'upload a track first');
+    const body = await readJson(ctx.req);
+    const fresh = db.creators.setAnthemTitle(user.id, K.cleanCardText(body.title, K.ANTHEM_TITLE_MAX));
+    ok(ctx.res, { creator: publicCreator(fresh, { self: true }) });
+  });
+
+  /* ── The art creator's commissions ─────────────────────────────────────── */
+
+  r.get('/creator/skin-requests', (ctx) => {
+    const user = requireAuth(ctx);
+    requireCreator(user, 'skinRequest');
+    ok(ctx.res, {
+      requests: db.creators.skinRequests.forUser(user.id, 30),
+      open: db.creators.skinRequests.countOpenFor(user.id),
+      max: K.SKIN_REQUEST_OPEN_MAX,
+    });
+  });
+
+  /**
+   * Files a brief for a finish.
+   *
+   * Nothing here mints a cosmetic and nothing here is automatic — the row is a
+   * conversation with whoever reads the queue, and shared/cosmetics.js stays
+   * the only thing that decides what exists in the game. The open-request
+   * ceiling is what keeps it a queue rather than a wishlist.
+   */
+  r.post('/creator/skin-requests', async (ctx) => {
+    const user = requireAuth(ctx);
+    requireCreator(user, 'skinRequest');
+    // Its own bucket. Filing a brief and applying for the status are different
+    // acts by different people at different rates, and one counter for both
+    // meant a burst of one locked the other out — which is not a ceiling, it is
+    // a side effect.
+    limit(ctx, 'skinRequest', 12);
+
+    if (db.creators.skinRequests.countOpenFor(user.id) >= K.SKIN_REQUEST_OPEN_MAX) {
+      throw new ApiError(409, 'too_many_open',
+        `you already have ${K.SKIN_REQUEST_OPEN_MAX} briefs in the queue — wait for one to be answered`);
+    }
+
+    const body = await readJson(ctx.req);
+    const name = K.cleanCardText(body.name, K.SKIN_REQUEST_NAME_MAX);
+    if (name.length < 3) throw new ApiError(400, 'bad_name', 'give the finish a name');
+    const slot = String(body.slot ?? '');
+    if (!COS.SLOT_META[slot]) throw new ApiError(400, 'bad_slot', 'pick a slot for it');
+    const brief = K.cleanCardText(body.brief, K.SKIN_REQUEST_BRIEF_MAX);
+    if (brief.length < K.SKIN_REQUEST_BRIEF_MIN) {
+      throw new ApiError(400, 'brief_too_short',
+        `describe it properly — at least ${K.SKIN_REQUEST_BRIEF_MIN} characters`);
+    }
+    // The reference is one of this creator's own links, chosen by platform id,
+    // not a URL they typed. Same rule as everywhere else: nothing a player
+    // types ever becomes a host.
+    const creator = db.creators.get(user.id);
+    const reference = creator.links.some((l) => l.platform === body.reference)
+      ? String(body.reference) : null;
+
+    const request = db.creators.skinRequests.add({
+      userId: user.id, username: user.username, name, slot, brief,
+      palette: body.palette ?? [], reference,
+    });
+    db.events.add({ kind: 'creator.skin', userId: user.id, name: user.username, detail: name });
+    logger.info(`${user.username} filed a skin brief: ${name} (${slot})`);
+    ok(ctx.res, { request });
+  });
+
+  /** Takes back a brief nobody has answered yet. */
+  r.delete('/creator/skin-requests/:id', (ctx) => {
+    const user = requireAuth(ctx);
+    requireCreator(user, 'skinRequest');
+    const gone = db.creators.skinRequests.withdraw(ctx.params.id, user.id);
+    if (!gone) throw new ApiError(404, 'not_found', 'no open brief of yours by that id');
+    ok(ctx.res, { withdrawn: true });
   });
 
   /* ── Reports ───────────────────────────────────────────────────────────── */

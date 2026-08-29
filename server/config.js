@@ -28,6 +28,9 @@ import {
   FRIEND_REQUESTS_INBOX_MAX as K_FRIEND_REQUESTS_INBOX_MAX,
   FRIEND_REQUEST_COOLDOWN_SEC as K_FRIEND_REQUEST_COOLDOWN_SEC,
   FRIEND_MIN_LEVEL as K_FRIEND_MIN_LEVEL,
+  CREATOR_MIN_LEVEL as K_CREATOR_MIN_LEVEL,
+  DEV_MODE_LEVEL as K_DEV_MODE_LEVEL,
+  ANTHEM_MAX_BYTES as K_ANTHEM_MAX_BYTES,
 } from '../shared/constants.js';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -87,6 +90,9 @@ export const config = {
   avatarDir: resolve(ROOT, str('AVATAR_DIR', 'data/avatars')),
   // Clan pictures. Same shape, same limits, its own directory and URL prefix.
   clanAvatarDir: resolve(ROOT, str('CLAN_AVATAR_DIR', 'data/clans')),
+  // Player anthems. One levelled WAV per music creator, served from
+  // /anthems/<file>. Same machinery as the two above — see util/filestore.js.
+  anthemDir: resolve(ROOT, str('ANTHEM_DIR', 'data/anthems')),
   avatars: {
     enabled: bool('AVATARS_ENABLED', true),
     // Ceilings the upload route enforces. The client downscales to
@@ -174,6 +180,43 @@ export const config = {
     maxInbox: num('FRIEND_REQUESTS_INBOX_MAX', K_FRIEND_REQUESTS_INBOX_MAX),
     cooldownSec: num('FRIEND_REQUEST_COOLDOWN_SEC', K_FRIEND_REQUEST_COOLDOWN_SEC),
     minLevel: num('FRIEND_MIN_LEVEL', K_FRIEND_MIN_LEVEL),
+  },
+
+  /**
+   * Creators.
+   *
+   * `enabled` closes the whole thing — the tab, the routes and the queue —
+   * for an operator who does not want to be in the business of approving
+   * people. Everything already approved keeps working; nothing new is taken.
+   *
+   * `needEmail` is on by default only where addresses are actually confirmed:
+   * asking for one on a server that never sends a verification mail is a gate
+   * with nothing behind it.
+   */
+  creators: {
+    enabled: bool('CREATORS_ENABLED', true),
+    minLevel: num('CREATORS_MIN_LEVEL', K_CREATOR_MIN_LEVEL),
+    needEmail: bool('CREATORS_NEED_EMAIL', true),
+    // Ceiling the anthem upload route enforces, in bytes. The client encodes
+    // to mono 32 kHz PCM before it uploads, which puts ten seconds at 640 KB;
+    // the server measures the header anyway, because a client is not a promise.
+    anthemMaxBytes: num('ANTHEM_MAX_BYTES', K_ANTHEM_MAX_BYTES),
+    // How long a browser may cache one anthem. The filename carries a content
+    // hash, so a new track is a new URL and this can be as long as you like.
+    anthemCacheSeconds: num('ANTHEM_CACHE_SEC', 31_536_000),
+  },
+
+  /**
+   * Developer mode.
+   *
+   * A level, not a role: the overlays read nothing the client did not already
+   * have, so the gate is about not burying a new player rather than about
+   * withholding anything. An operator who wants them open from level 1 sets
+   * this to 1, and one who wants them shut sets `enabled` false.
+   */
+  devMode: {
+    enabled: bool('DEV_MODE_ENABLED', true),
+    level: num('DEV_MODE_LEVEL', K_DEV_MODE_LEVEL),
   },
 
   // Clans

@@ -664,6 +664,109 @@ export class GameWorld {
   get info() {
     return this.renderer.info.render;
   }
+
+  /* ── Developer render toggles ─────────────────────────────────────────────
+   *
+   * Four local drawing choices, driven by the overlay in devmode.js. Every one
+   * of them changes only how this client draws a frame — none touches the
+   * simulation, none is sent anywhere, and none shows a player anything about
+   * anybody else. The collision overlay in particular draws the *map's* own
+   * volumes, which is static data this client downloaded before the match
+   * started; it has never known where a person is and cannot be made to.
+   * ─────────────────────────────────────────────────────────────────────── */
+
+  /**
+   * Wireframe over the whole scene.
+   *
+   * The flag is remembered as well as applied, because the scene is not a
+   * fixed set of materials — a map change rebuilds it and a player joining adds
+   * to it — so `_applyWireframe` runs again over whatever is there now on the
+   * next toggle rather than leaving half a scene solid.
+   */
+  setWireframe(on) {
+    this._wireframe = !!on;
+    this.scene.traverse((obj) => {
+      const mats = Array.isArray(obj.material) ? obj.material : obj.material ? [obj.material] : [];
+      for (const m of mats) if ('wireframe' in m) m.wireframe = this._wireframe;
+    });
+    this.invalidateShadows();
+  }
+
+  /**
+   * Bypasses the post chain, so what reaches the screen is what the renderer
+   * actually drew. Bloom, grain and chromatic aberration hide a surprising
+   * amount, and "is that artefact mine or the post's" is the question this
+   * exists to answer in one keypress.
+   */
+  setPostEnabled(on) {
+    this.post.enabled = !!on && settings.postProcessing;
+  }
+
+  /**
+   * Draws the map's collision volumes — the boxes the *server* is stepping
+   * against, which is the whole reason this is worth looking at. A prop you
+   * can walk through and a wall you cannot see are the same bug from two
+   * sides, and both of them are one glance at this.
+   *
+   * One `LineSegments` over one merged buffer, not a mesh per box. A map is a
+   * few hundred volumes and three hundred extra draw calls would show up in
+   * the performance panel sitting directly above this one — a debug overlay
+   * that moves the numbers on the other debug overlay is worse than useless.
+   *
+   * Built once and kept: collision does not move. Toggling off hides the
+   * object rather than throwing it away, and a different World is what
+   * rebuilds it.
+   */
+  setCollisionDebug(on, world) {
+    if (!on) { if (this._collision) this._collision.visible = false; return; }
+    if (!world) return;
+
+    if (!this._collision || this._collisionFor !== world) {
+      if (this._collision) {
+        this.scene.remove(this._collision);
+        this._collision.geometry.dispose();
+      }
+      // Twelve edges a box, two vertices an edge.
+      const verts = new Float32Array(world.count * 24 * 3);
+      let v = 0;
+      const put = (x, y, z) => { verts[v++] = x; verts[v++] = y; verts[v++] = z; };
+      const edge = (ax, ay, az, bx, by, bz) => { put(ax, ay, az); put(bx, by, bz); };
+      for (let i = 0; i < world.count; i++) {
+        const x0 = world.min[i * 3], y0 = world.min[i * 3 + 1], z0 = world.min[i * 3 + 2];
+        const x1 = world.max[i * 3], y1 = world.max[i * 3 + 1], z1 = world.max[i * 3 + 2];
+        // Bottom ring, top ring, then the four uprights joining them.
+        edge(x0, y0, z0, x1, y0, z0); edge(x1, y0, z0, x1, y0, z1);
+        edge(x1, y0, z1, x0, y0, z1); edge(x0, y0, z1, x0, y0, z0);
+        edge(x0, y1, z0, x1, y1, z0); edge(x1, y1, z0, x1, y1, z1);
+        edge(x1, y1, z1, x0, y1, z1); edge(x0, y1, z1, x0, y1, z0);
+        edge(x0, y0, z0, x0, y1, z0); edge(x1, y0, z0, x1, y1, z0);
+        edge(x1, y0, z1, x1, y1, z1); edge(x0, y0, z1, x0, y1, z1);
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+      const lines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
+        color: 0x4ddb7a, transparent: true, opacity: 0.7, depthTest: true,
+      }));
+      lines.name = 'dev:collision';
+      lines.frustumCulled = false;
+      this._collision = lines;
+      this._collisionFor = world;
+      this.scene.add(lines);
+    }
+    this._collision.visible = true;
+  }
+
+  /**
+   * Stops the camera's frustum from being recomputed, so culling freezes where
+   * it stands and you can fly out and look at what was really being drawn.
+   *
+   * three culls against `camera.matrixWorld`, so freezing means taking the
+   * matrix out of the automatic update and putting it back untouched.
+   */
+  setFrustumFrozen(on) {
+    this.camera.matrixAutoUpdate = !on;
+    if (!on) this.camera.updateMatrixWorld(true);
+  }
 }
 
 function markDirty(material) {

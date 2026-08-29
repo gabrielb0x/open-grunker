@@ -16,6 +16,9 @@ import log from '../util/log.js';
 import {
   levelFromXp, xpForLevel, REPORT_STATUSES, CLAN_ROLES, streakReward, FIRST_WIN_BONUS,
   SIGNUP_REWARD, levelUpReward, normaliseCard, normalisePrivacy,
+  CREATOR_STATUSES, CREATOR_KIND_IDS, CREATOR_PITCH_MAX, CREATOR_VERDICT_MAX,
+  normaliseCreatorLinks, normalisePalette, ANTHEM_TITLE_MAX,
+  SKIN_REQUEST_NAME_MAX, SKIN_REQUEST_BRIEF_MAX, SKIN_REQUEST_STATUSES,
 } from '../../shared/constants.js';
 import {
   ITEMS, ITEM_IDS, SLOT, RARITY, CASES, DEFAULT_EQUIP, FREE_ITEMS,
@@ -151,6 +154,45 @@ function migrate() {
     milestone_id TEXT    NOT NULL,
     claimed_at   INTEGER NOT NULL,
     PRIMARY KEY (user_id, milestone_id))`);
+
+  // Creators. Both tables are created here as well as in schema.sql, for the
+  // same reason totp_recovery and milestones are: schema.sql runs on every
+  // boot, but a database that predates a table has to be given it somewhere
+  // that also runs on every boot, and this is the function that does.
+  db.exec(`CREATE TABLE IF NOT EXISTS creators (
+    user_id      TEXT    PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    kind         TEXT    NOT NULL,
+    asked        TEXT,
+    status       TEXT    NOT NULL DEFAULT 'pending',
+    pitch        TEXT,
+    links        TEXT    NOT NULL DEFAULT '[]',
+    applied_at   INTEGER NOT NULL,
+    decided_at   INTEGER,
+    decided_by   TEXT,
+    verdict      TEXT,
+    anthem       TEXT,
+    anthem_title TEXT,
+    anthem_at    INTEGER,
+    username     TEXT)`);
+  db.exec(`CREATE TABLE IF NOT EXISTS skin_requests (
+    id         TEXT    PRIMARY KEY,
+    user_id    TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    username   TEXT,
+    name       TEXT    NOT NULL,
+    slot       TEXT    NOT NULL,
+    brief      TEXT    NOT NULL,
+    palette    TEXT    NOT NULL DEFAULT '[]',
+    reference  TEXT,
+    status     TEXT    NOT NULL DEFAULT 'open',
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER,
+    decided_by TEXT,
+    verdict    TEXT,
+    item_id    TEXT)`);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_creators_status ON creators(status, applied_at)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_creators_kind ON creators(kind) WHERE status = 'approved'");
+  db.exec('CREATE INDEX IF NOT EXISTS idx_skinreq_status ON skin_requests(status, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_skinreq_user ON skin_requests(user_id, created_at DESC)');
 
   regradeLevels();
   grantSignupSkins();
@@ -345,6 +387,13 @@ const UUID_TABLES = {
   clan_invites: { refs: { clan_id: 'clan', user_id: 'user' } },
   friends: { refs: { user_a: 'user', user_b: 'user' } },
   friend_requests: { refs: { from_id: 'user', to_id: 'user' } },
+  // Both postdate the UUID change, so on any database this migration actually
+  // runs against they are empty. They are listed anyway, because being absent
+  // from this map is what would silently drop them if that ever stopped being
+  // true — and unlike a picture, an anthem's file has nothing to rename: a
+  // database old enough to need this has never stored one.
+  creators: { refs: { user_id: 'user' } },
+  skin_requests: { self: 'skinRequest', refs: { user_id: 'user' } },
 };
 
 /**
@@ -409,7 +458,10 @@ function migrateToUuids() {
 
   // One UUID per old id, per kind of thing. `key()` is what every foreign key
   // is then looked up through, so a reference can never drift from its row.
-  const maps = { user: new Map(), clan: new Map(), match: new Map(), report: new Map(), matchPlayer: new Map() };
+  const maps = {
+    user: new Map(), clan: new Map(), match: new Map(), report: new Map(),
+    matchPlayer: new Map(), skinRequest: new Map(),
+  };
   const key = (kind, old) => {
     if (old === null || old === undefined) return null;
     const k = String(int(old));
@@ -493,6 +545,57 @@ const S = {
   setPassword: db.prepare('UPDATE users SET password_hash = ? WHERE id = ?'),
   setRole: db.prepare('UPDATE users SET role = ? WHERE id = ?'),
   setCard: db.prepare('UPDATE users SET card = ? WHERE id = ?'),
+
+  /* ── Creators ────────────────────────────────────────────────────────── */
+  creatorById: db.prepare('SELECT * FROM creators WHERE user_id = ?'),
+  // Two columns, because `creatorCan()` needs exactly two and this runs on the
+  // join handshake and on every card render.
+  creatorStanding: db.prepare('SELECT kind, status FROM creators WHERE user_id = ?'),
+  /*
+   * One application per account, ever. A second attempt overwrites the first
+   * and resets it to pending — which is why every decision column is cleared
+   * here rather than left behind for the panel to have to ignore.
+   */
+  upsertCreator: db.prepare(
+    `INSERT INTO creators (user_id, username, kind, asked, pitch, links, applied_at, status)
+     VALUES (?,?,?,?,?,?,?,'pending')
+     ON CONFLICT(user_id) DO UPDATE SET
+       username = excluded.username, kind = excluded.kind, asked = excluded.asked,
+       pitch = excluded.pitch, links = excluded.links, applied_at = excluded.applied_at,
+       status = 'pending', decided_at = NULL, decided_by = NULL, verdict = NULL`),
+  deleteCreatorPending: db.prepare("DELETE FROM creators WHERE user_id = ? AND status = 'pending'"),
+  // COALESCE on the kind: a decision that does not name one keeps whatever the
+  // application asked for, which is what makes rejecting and revoking one call.
+  decideCreator: db.prepare(
+    `UPDATE creators SET status = ?, kind = COALESCE(?, kind), verdict = ?,
+                         decided_by = ?, decided_at = ? WHERE user_id = ?`),
+  setCreatorLinks: db.prepare('UPDATE creators SET links = ? WHERE user_id = ?'),
+  setCreatorAnthem: db.prepare(
+    'UPDATE creators SET anthem = ?, anthem_title = ?, anthem_at = ? WHERE user_id = ?'),
+  setCreatorAnthemTitle: db.prepare('UPDATE creators SET anthem_title = ? WHERE user_id = ?'),
+  syncCreatorName: db.prepare('UPDATE creators SET username = ? WHERE user_id = ?'),
+  countCreatorsPending: db.prepare("SELECT COUNT(*) AS n FROM creators WHERE status = 'pending'"),
+  countCreatorsApproved: db.prepare("SELECT COUNT(*) AS n FROM creators WHERE status = 'approved'"),
+  countCreatorsByKind: db.prepare(
+    "SELECT kind, COUNT(*) AS n FROM creators WHERE status = 'approved' GROUP BY kind"),
+
+  skinRequestById: db.prepare('SELECT * FROM skin_requests WHERE id = ?'),
+  skinRequestsForUser: db.prepare(
+    'SELECT * FROM skin_requests WHERE user_id = ? ORDER BY created_at DESC LIMIT ?'),
+  countOpenSkinRequests: db.prepare(
+    "SELECT COUNT(*) AS n FROM skin_requests WHERE user_id = ? AND status = 'open'"),
+  countOpenSkinRequestsAll: db.prepare(
+    "SELECT COUNT(*) AS n FROM skin_requests WHERE status = 'open'"),
+  insertSkinRequest: db.prepare(
+    `INSERT INTO skin_requests (id, user_id, username, name, slot, brief, palette, reference, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?)`),
+  // The user id in the WHERE is the whole authorisation check: a request that
+  // is not yours, or is no longer open, is not one you can take back.
+  deleteOpenSkinRequest: db.prepare(
+    "DELETE FROM skin_requests WHERE id = ? AND user_id = ? AND status = 'open'"),
+  decideSkinRequest: db.prepare(
+    `UPDATE skin_requests SET status = ?, verdict = ?, decided_by = ?,
+                              item_id = COALESCE(?, item_id), decided_at = ? WHERE id = ?`),
   setPrivacy: db.prepare('UPDATE users SET privacy = ?, listed = ? WHERE id = ?'),
   setBan: db.prepare('UPDATE users SET banned_until = ?, ban_reason = ? WHERE id = ?'),
   addProgress: db.prepare('UPDATE users SET xp = xp + ?, gr = gr + ? WHERE id = ?'),
@@ -818,6 +921,11 @@ export const users = {
    */
   rename(id, username) {
     S.rename.run(username, String(username).toLowerCase(), now(), id);
+    // Every table that caches a nickname has to be told. `creators.username` is
+    // one: the admin queue lists an application without a join, and a queue
+    // that shows the name somebody used to have is a queue that cannot be
+    // searched for the name they have now.
+    S.syncCreatorName.run(String(username).slice(0, 32), id);
     return S.userById.get(id);
   },
 
@@ -2977,13 +3085,286 @@ export const cosmeticsAdmin = {
   },
 };
 
+/* ── Creators ────────────────────────────────────────────────────────────── */
+
+/**
+ * One creator row, as everything above the database reads it.
+ *
+ * `links` and `palette` go through the shared sanitisers on the way *out* as
+ * well as on the way in, which is the same rule `card` and `privacy` follow and
+ * for the same reason: a row written by an older build, or by somebody with a
+ * database file and an editor, has to read as something safe to draw rather
+ * than as whatever is in the column.
+ */
+const creatorRow = (c) => (c ? {
+  userId: c.user_id,
+  username: c.username ?? null,
+  kind: c.kind,
+  asked: c.asked ?? c.kind,
+  status: c.status,
+  pitch: c.pitch ?? null,
+  links: normaliseCreatorLinks(parseJson(c.links) ?? []),
+  appliedAt: int(c.applied_at),
+  decidedAt: c.decided_at ? int(c.decided_at) : null,
+  decidedBy: c.decided_by ?? null,
+  verdict: c.verdict ?? null,
+  // The filename, never a URL: util/anthem.js is the only thing allowed to turn
+  // one into the other, so a name that no longer matches its pattern renders as
+  // "no anthem" rather than as a link to nothing.
+  anthem: c.anthem ?? null,
+  anthemTitle: c.anthem_title ?? null,
+  anthemAt: c.anthem_at ? int(c.anthem_at) : null,
+} : null);
+
+const skinRequestRow = (r) => (r ? {
+  id: r.id,
+  userId: r.user_id,
+  username: r.username ?? null,
+  name: r.name,
+  slot: r.slot,
+  brief: r.brief,
+  palette: normalisePalette(parseJson(r.palette) ?? []),
+  reference: r.reference ?? null,
+  status: r.status,
+  createdAt: int(r.created_at),
+  decidedAt: r.decided_at ? int(r.decided_at) : null,
+  decidedBy: r.decided_by ?? null,
+  verdict: r.verdict ?? null,
+  itemId: r.item_id ?? null,
+} : null);
+
+export const creators = {
+  /** This account's standing relationship with the programme, or null. */
+  get: (userId) => (userId ? creatorRow(S.creatorById.get(userId)) : null),
+
+  /**
+   * Only the part every gate actually asks about.
+   *
+   * `creatorCan()` needs a kind and a status and nothing else, and this is
+   * called on the join handshake and on every card render — so it answers from
+   * two columns rather than building and sanitising a whole row to throw most
+   * of it away.
+   */
+  standing(userId) {
+    if (!userId) return null;
+    const row = S.creatorStanding.get(userId);
+    return row ? { kind: row.kind, status: row.status } : null;
+  },
+
+  /**
+   * Files an application, replacing whatever this account sent before.
+   *
+   * `kind` is stored twice on purpose. `asked` is what the applicant said they
+   * were; `kind` is what they have been granted, and until somebody decides
+   * they are the same thing. Keeping both is what lets a decision that changes
+   * the discipline — a pitch as a musician approved as an artist — still read
+   * back honestly a year later.
+   */
+  apply({ userId, username = null, kind, pitch = null, links = [] }) {
+    const ts = now();
+    S.upsertCreator.run(
+      userId,
+      String(username ?? '').slice(0, 32) || null,
+      kind,
+      kind,
+      pitch ? String(pitch).slice(0, CREATOR_PITCH_MAX) : null,
+      JSON.stringify(normaliseCreatorLinks(links)),
+      ts,
+    );
+    return creators.get(userId);
+  },
+
+  /**
+   * Withdraws a pending application.
+   *
+   * Only a pending one — an approved creator resigning is a decision, and it
+   * goes through `decide` so the row survives to say so. The deleted row is
+   * handed back rather than a boolean because it may name an anthem file, and
+   * the caller is the only thing that can take that off the disk.
+   *
+   * @returns {object|null} the row that was removed, or null if there was none
+   */
+  withdraw(userId) {
+    const row = creators.get(userId);
+    if (!row || row.status !== 'pending') return null;
+    return int(S.deleteCreatorPending.run(userId).changes) ? row : null;
+  },
+
+  /**
+   * A decision. `status` is one of CREATOR_STATUSES.
+   *
+   * The kind is written from the decision rather than from the application, so
+   * approving somebody into a different discipline is one call and not a second
+   * write that could be forgotten. Rejecting or revoking leaves `kind` alone —
+   * it is what they were, and `creatorCan` already refuses on the status.
+   */
+  decide({ userId, status, kind = null, verdict = null, actor = null }) {
+    if (!CREATOR_STATUSES.includes(status)) return null;
+    S.decideCreator.run(
+      status,
+      kind && CREATOR_KIND_IDS.includes(kind) ? kind : null,
+      verdict ? String(verdict).slice(0, CREATOR_VERDICT_MAX) : null,
+      actor ? String(actor).slice(0, 32) : null,
+      now(),
+      userId,
+    );
+    return creators.get(userId);
+  },
+
+  /** Replaces the link set. Sanitised here so no caller can skip it. */
+  setLinks(userId, links) {
+    S.setCreatorLinks.run(JSON.stringify(normaliseCreatorLinks(links)), userId);
+    return creators.get(userId);
+  },
+
+  /**
+   * Records a levelled anthem, or clears it when `file` is null.
+   *
+   * The bytes are already on disk by the time this runs — see the route — so
+   * the order is deliberate: a write that fails here leaves an orphan file the
+   * next replacement sweeps away, where the other order would leave a row
+   * pointing at a file that was never written.
+   */
+  setAnthem(userId, file, title = null) {
+    S.setCreatorAnthem.run(
+      file ?? null,
+      title ? String(title).slice(0, ANTHEM_TITLE_MAX) : null,
+      file ? now() : null,
+      userId,
+    );
+    return creators.get(userId);
+  },
+
+  /** Renames the track without touching the file. */
+  setAnthemTitle(userId, title) {
+    S.setCreatorAnthemTitle.run(title ? String(title).slice(0, ANTHEM_TITLE_MAX) : null, userId);
+    return creators.get(userId);
+  },
+
+  /** Keeps the denormalised name honest after a rename. */
+  syncName(userId, username) {
+    S.syncCreatorName.run(String(username ?? '').slice(0, 32) || null, userId);
+  },
+
+  /**
+   * Paged listing for the admin panel.
+   *
+   * Read in opposite directions by queue, exactly like reports: `pending` is a
+   * to-do list, so the oldest unanswered application is the one somebody has
+   * been waiting on longest and comes first. Everything else is a history, so
+   * the last decision is the interesting one and comes first.
+   */
+  list({ status = '', kind = '', q = '', limit = 50, offset = 0 } = {}) {
+    const where = [];
+    const args = [];
+    if (CREATOR_STATUSES.includes(status)) { where.push('status = ?'); args.push(status); }
+    if (CREATOR_KIND_IDS.includes(kind)) { where.push('kind = ?'); args.push(kind); }
+    if (q) {
+      const like = `%${String(q).toLowerCase()}%`;
+      where.push("(LOWER(IFNULL(username, '')) LIKE ? OR LOWER(IFNULL(pitch, '')) LIKE ?)");
+      args.push(like, like);
+    }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const order = status === 'pending'
+      ? 'applied_at ASC'
+      : "CASE status WHEN 'pending' THEN 0 ELSE 1 END, IFNULL(decided_at, applied_at) DESC";
+    const rows = db.prepare(`SELECT * FROM creators ${clause} ORDER BY ${order} LIMIT ? OFFSET ?`)
+      .all(...args, Math.min(limit, 200), Math.max(0, offset));
+    return {
+      rows: rows.map(creatorRow),
+      total: int(db.prepare(`SELECT COUNT(*) AS n FROM creators ${clause}`).get(...args).n),
+      pending: creators.countPending(),
+      approved: int(S.countCreatorsApproved.get().n),
+    };
+  },
+
+  countPending: () => int(S.countCreatorsPending.get().n),
+
+  /** How many approved creators there are, by discipline. For the overview. */
+  byKind() {
+    const out = Object.fromEntries(CREATOR_KIND_IDS.map((id) => [id, 0]));
+    for (const row of S.countCreatorsByKind.all()) {
+      if (row.kind in out) out[row.kind] = int(row.n);
+    }
+    return out;
+  },
+
+  /* ── Skin commissions ──────────────────────────────────────────────────── */
+
+  skinRequests: {
+    get: (id) => skinRequestRow(S.skinRequestById.get(id)),
+
+    forUser: (userId, limit = 20) =>
+      S.skinRequestsForUser.all(userId, Math.min(limit, 100)).map(skinRequestRow),
+
+    /** How many this account has open — the ceiling that keeps it a queue. */
+    countOpenFor: (userId) => int(S.countOpenSkinRequests.get(userId).n),
+
+    add({ userId, username = null, name, slot, brief, palette = [], reference = null }) {
+      const id = newId();
+      S.insertSkinRequest.run(
+        id,
+        userId,
+        String(username ?? '').slice(0, 32) || null,
+        String(name).slice(0, SKIN_REQUEST_NAME_MAX),
+        String(slot).slice(0, 24),
+        String(brief).slice(0, SKIN_REQUEST_BRIEF_MAX),
+        JSON.stringify(normalisePalette(palette)),
+        reference ? String(reference).slice(0, 40) : null,
+        now(),
+      );
+      return creators.skinRequests.get(id);
+    },
+
+    /** Withdraws one of this account's own open requests. */
+    withdraw(id, userId) {
+      return int(S.deleteOpenSkinRequest.run(id, userId).changes) > 0;
+    },
+
+    decide({ id, status, verdict = null, actor = null, itemId = null }) {
+      if (!SKIN_REQUEST_STATUSES.includes(status)) return null;
+      S.decideSkinRequest.run(
+        status,
+        verdict ? String(verdict).slice(0, CREATOR_VERDICT_MAX) : null,
+        actor ? String(actor).slice(0, 32) : null,
+        itemId ? String(itemId).slice(0, 64) : null,
+        now(),
+        id,
+      );
+      return creators.skinRequests.get(id);
+    },
+
+    list({ status = '', q = '', limit = 50, offset = 0 } = {}) {
+      const where = [];
+      const args = [];
+      if (SKIN_REQUEST_STATUSES.includes(status)) { where.push('status = ?'); args.push(status); }
+      if (q) {
+        const like = `%${String(q).toLowerCase()}%`;
+        where.push("(LOWER(IFNULL(username, '')) LIKE ? OR LOWER(name) LIKE ? OR LOWER(brief) LIKE ?)");
+        args.push(like, like, like);
+      }
+      const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+      const order = status === 'open'
+        ? 'created_at ASC'
+        : "CASE status WHEN 'open' THEN 0 ELSE 1 END, IFNULL(decided_at, created_at) DESC";
+      const rows = db.prepare(`SELECT * FROM skin_requests ${clause} ORDER BY ${order} LIMIT ? OFFSET ?`)
+        .all(...args, Math.min(limit, 200), Math.max(0, offset));
+      return {
+        rows: rows.map(skinRequestRow),
+        total: int(db.prepare(`SELECT COUNT(*) AS n FROM skin_requests ${clause}`).get(...args).n),
+        open: int(S.countOpenSkinRequestsAll.get().n),
+      };
+    },
+  },
+};
+
 export function close() {
   try { db.close(); } catch { /* already closed */ }
 }
 
 export default {
   db, users, stats, loadouts, sessions, matches, mastery, challenges, ipBans, chatBans, audit,
-  reportBans, emailTokens, totp, milestones, ipIntel, reports, friends, clans, normaliseIp,
+  reportBans, emailTokens, totp, milestones, ipIntel, reports, friends, clans, creators, normaliseIp,
   summary, maintain, close, metrics, events, analytics,
   inventory, cases, market, trades, cosmeticsAdmin, EconomyError,
 };

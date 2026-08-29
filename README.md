@@ -266,6 +266,34 @@ jump key still works as the short way there. Anything that wants the mouse — t
 class picker, the scoreboard, the chat, the end card — holds the respawn open
 the same way, so nobody is ever thrown back into a firefight mid-sentence.
 
+#### The kill cam
+
+**Being killed by another player shows you who did it.** The camera lifts out of
+your body, settles into a slow orbit around them and holds it for ten seconds,
+letterboxed, with their name, level and clan, the weapon, how far the shot was,
+whether it was a headshot, and how much health they had left when it landed —
+which is very often the most interesting number on the screen.
+
+**You can skip it from three seconds in.** The bar under the button fills until
+then, so the wait explains itself. Three is not a compromise between the ten and
+impatience: it is long enough that the cam has said what it came to say, and past
+`RESPAWN_TIME`, so pressing skip really does put you straight back in rather than
+into a wait the cam was hiding. The jump key does it as well as the button.
+
+**None of it is a rule the match enforces.** The room's respawn timer is
+untouched; the cam holds your respawn by *not asking for one*, exactly the way an
+open scoreboard already does. A client that skipped every frame of it would
+respawn at the same 2.6 seconds as one that watched.
+
+The plain death screen is still there and is still what you get when the world
+killed you, when whoever did has already left the room, or when you have turned
+the cam off under **SETTINGS ▸ KILL CAM** — where you can also stop it holding
+for the full ten seconds and have it end the moment the skip lights up.
+
+**If the person who killed you is a music creator, their track plays over it.**
+See [player anthems](#player-anthems). If they are not one there is no sound at
+all, which is the ordinary case.
+
 ### Settings
 
 **Settings live in your browser, not in an account.** Every change is written to
@@ -639,6 +667,135 @@ Membership changes reach a match already in progress: joining, leaving, being
 removed or having the clan verified re-badges every live connection on the spot
 rather than waiting for a reconnect.
 
+### Creator status
+
+**The one thing in this game a human decides.** Everything else here is a number
+that goes up on its own: levels, GR, mastery, a day streak. Creator status is not
+earned by playing at all — you say what you make, link to it, and somebody reads
+it. That is what makes it worth having.
+
+Apply under **CREATOR** from level 5 (`CREATORS_MIN_LEVEL`, and a confirmed email
+address where the server sends them). Four disciplines, and each one's perk is
+built out of what that discipline actually produces rather than being a badge in
+a different colour:
+
+| Discipline | What it earns |
+| --- | --- |
+| **Music** | A [player anthem](#player-anthems): up to ten seconds of your own music, played over the kill cam of everyone you kill, credited by name |
+| **Art** | Commission your own weapon finish — brief it, pick the palette, link the reference, and it goes into a queue a person reads and answers. Plus the engraved card frame, which is not for sale |
+| **Video** | The director's cut kill cam: thirty seconds instead of ten, letterboxed, interface-free, orbiting. Plus a clean-screen key that strips the HUD for a shot without touching settings |
+| **Code** | [Developer mode](#developer-mode) with no level gate, and the three instruments the gate does not open — the wire inspector, the reconciliation trace and the frame-time histogram |
+
+All four wear a badge beside their name wherever one is drawn, and all four get
+links on their profile card.
+
+**A pending application grants nothing.** The status is checked inside the single
+gate every route asks — `creatorCan()` in `shared/constants.js` — rather than by
+each route in turn, so "approved" is a thing that cannot be forgotten in one
+place. Nor can a discipline reach past its own grants: a musician cannot file a
+skin brief and an artist cannot upload an anthem, whatever the request looks
+like.
+
+Applications are read in the admin panel under **CREATORS**, which shows the
+pitch, the links, the account behind it — including any reports filed against
+them — and plays the anthem back before anybody decides to keep it. Approving,
+rejecting and revoking all write to the audit log, and a revocation deletes the
+anthem file with it: a perk that outlives the status it came from is a perk
+nobody took away.
+
+Stepping down is one button under **CREATOR**, and it goes through the same path
+a moderator's decision does, so the history says what happened.
+
+#### Links on a card
+
+Creators can put up to five links on their profile — YouTube, Twitch, Kick, X,
+Bluesky, Instagram, TikTok, SoundCloud, Bandcamp, Spotify, GitHub, ArtStation,
+itch.io, Ko-fi, or their own site.
+
+**You give a handle, not an address.** The URL is built by the server out of a
+platform id and a handle that had to match that platform's own character rules to
+be stored at all, so nothing anybody types ever becomes a scheme, a host, a port,
+a query or a fragment on somebody else's screen. The card shows the *handle*
+rather than the address, so a label can never disagree with where it goes, and
+clicking one names the host it is about to open before it opens it.
+
+The one free field is a personal site, and it is a bare hostname: https only, no
+path, no port, no userinfo, no punycode (which is how a domain reads as somebody
+else's), and a real alphabetic TLD — which incidentally refuses a bare IP.
+
+#### Player anthems
+
+Ten seconds of a music creator's own work, played to whoever they just killed.
+
+**Loudness is not something the uploader decides.** That is the whole design.
+Somebody will upload a scream, so the rule is not "refuse loud files" — it is
+that there is no such thing as a loud file. The server measures every upload over
+its loudest 400 ms and rewrites the samples to a fixed level before a byte is
+stored, so a brickwalled wall of distortion comes out about 19 dB quieter than it
+went in and a quiet piano comes out louder. The old trick of nine seconds of
+silence with an air horn on the end does not work either: measured over a short
+window, it is an air horn.
+
+Three more things sit under that, in order:
+
+* The file is **re-emitted**, not patched — a canonical 44-byte header and
+  samples, so any other chunk the container was carrying is gone rather than
+  stored and later served.
+* Both ends are ramped, because a ten-second cut out of the middle of a track
+  starts on whatever sample it landed on, and a discontinuity into somebody's
+  speakers is a click at full scale.
+* The client plays every anthem through **its own limited channel** at the
+  listener's own volume (**SETTINGS ▸ AUDIO ▸ Player anthems**), so a file that
+  somehow got past the first rule still cannot get past the second. Turn it to
+  nothing and the cam simply runs silent.
+
+Stored files are served from `/avatars/anthems/<file>` — under the *pictures*
+prefix rather than one of their own, because the nginx vhost proxies all of
+`/avatars/` and stops before its regex locations, so a new kind of user content
+under there needs no change to the web server. A prefix of its own would 404 on
+every deployment whose nginx config had not been reinstalled. The path reads
+oddly for a sound file; a silent 404 on somebody else's server reads worse.
+
+The format is deliberately the dullest there is: mono 16-bit PCM at 32 kHz, in a
+plain RIFF wrapper. Not because that is a nice format — it is enormous — but
+because it is the only one a server with no audio library can *measure*, and a
+loudness rule that cannot be checked is not a rule. The browser has a full
+decoder built into it, so the uploader takes whatever you have, lets you pick
+which ten seconds to use, and encodes what the server can read. See
+`server/util/audio.js`.
+
+### Developer mode
+
+**Instruments, not powers.** Unlocked at level 10 (`DEV_MODE_LEVEL`), or at any
+level with code creator status. A stack of read-only overlays down the side of
+the screen while you play, each switched on separately under **DEVELOPER**:
+
+| Panel | What it reads |
+| --- | --- |
+| **Performance** | Frame time at p50 and p99, draw calls, triangles, geometries, textures, programs, JS heap |
+| **Network** | Round trip, jitter, up and down byte rates, packet counts, how deep the snapshot buffer is, the interpolation delay, the clock offset, inputs still queued |
+| **Player state** | Your position, velocity, speed, whether you are on the ground, the surface under you, crouching, sliding, yaw and pitch |
+| **Render toggles** | Wireframe, post-processing off, the map's collision volumes, a frozen frustum |
+| **Wire inspector** *(code creator)* | Every opcode the socket carries, counted and sized, newest first |
+| **Reconciliation** *(code creator)* | Your own prediction against the server's correction, as a trace — median, p99 and the shape |
+| **Frame histogram** *(code creator)* | Where the long frames are, as a distribution rather than an average |
+
+**Nothing here shows you one fact about another player that your screen was not
+already about to show you.** That is the entire design constraint, and it is why
+there is no enemy hitbox overlay: "draw a box around every player" is a debugging
+tool right up until the boxes are visible through a wall, at which point it is a
+wallhack that shipped with the game. So the reconciliation trace is of *your own*
+body and the collision overlay is of the *map* — static data every client
+downloaded before the match started. The wire inspector counts opcodes and bytes
+and never draws what is inside one.
+
+The overlays redraw eight times a second rather than per frame, and every number
+in them is a counter something else was already keeping. With the mode off, the
+samplers return on their first line.
+
+Bind a key to it under **CONTROLS ▸ Developer overlays** — there is no default,
+because a key an unlocked feature does not use is a key it should not be holding.
+
 ### Clicking a name
 
 **Every nickname in the game is a link to that player's profile** — on the
@@ -831,7 +988,8 @@ game that are about other people.
 | ---: | --- |
 | 1 | Every class, every map, every mode. Skins, bought with GR |
 | 2 | Writing in the match chat |
-| 5 | The **REPORT** button, and joining a clan |
+| 5 | The **REPORT** button, joining a clan, and applying for [creator status](#creator-status) |
+| 10 | [Developer mode](#developer-mode) — the read-only overlays |
 | 15 | The Veteran weapon finish, and founding a clan |
 
 **ACCOUNT ▸ PROGRESSION** draws exactly that ladder with your own level on it,
@@ -1483,6 +1641,15 @@ A snapshot carries one entry per player on the roster plus the recipient's own
 body, health and clock. Spectators get one field more — `sa`, the magazine of
 the body their camera is on — because it is the only number on a spectator's HUD
 that is not already in somebody's roster entry.
+
+`de` — the one message a dying client gets — grew rather than gaining a sibling,
+because everything the [kill cam](#the-kill-cam) draws is one fact about one
+death and splitting it across two frames would only invite them to disagree. It
+now carries the killer's badges, level and creator discipline, how far the shot
+was, and how long the cam runs. The anthem travels as **a URL the server
+resolved**, never a filename a client asked for: what plays into a dead player's
+ears is chosen by the server, from a file it levelled itself, and there is no
+field in the protocol a client could fill in to have something else played.
 
 ---
 

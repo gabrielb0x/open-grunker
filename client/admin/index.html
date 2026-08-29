@@ -32,6 +32,8 @@
       <button class="tab" data-tab="reports">REPORTS
         <span class="tab-badge hidden" id="reportBadge">0</span></button>
       <button class="tab" data-tab="clans">CLANS</button>
+      <button class="tab" data-tab="creators">CREATORS
+        <span class="tab-badge hidden" id="creatorBadge">0</span></button>
       <button class="tab" data-tab="cosmetics">COSMETICS</button>
       <button class="tab" data-tab="logs">LOGS</button>
     </nav>
@@ -350,6 +352,73 @@
         <aside class="detail" id="reportDetail">
           <div class="detail-empty" id="reportDetailEmpty">Select a report to review it.</div>
           <div class="detail-body hidden" id="reportDetailBody"></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- Creators ────────────────────────────────────────────────────────
+         Two queues on one page, because they are two halves of the same job:
+         applications for the status, and briefs from the people who already
+         have it. Both are read oldest-first while they are open — the oldest
+         unanswered thing is the one somebody has been waiting on longest —
+         and newest-first once they are settled.
+
+         An anthem is *played* here rather than described. A track nobody
+         listened to is a track nobody moderated, and the whole point of this
+         panel is that a human decided.
+         ──────────────────────────────────────────────────────────────────── -->
+    <section class="panel" data-panel="creators">
+      <div class="page-head">
+        <h2>CREATORS</h2>
+        <p>Applications for creator status, and the finish briefs that art creators
+           file once they have it. Nothing here is automatic: approving somebody is
+           the whole feature.</p>
+      </div>
+
+      <div class="queue-tabs" id="creatorQueues">
+        <button class="queue-tab active" data-queue="pending" type="button">
+          WAITING <span class="queue-count" id="creatorPendingCount">0</span>
+        </button>
+        <button class="queue-tab" data-queue="approved" type="button">
+          CREATORS <span class="queue-count" id="creatorApprovedCount">0</span>
+        </button>
+        <button class="queue-tab" data-queue="" type="button">ALL</button>
+        <button class="queue-tab" data-queue="briefs" type="button">
+          BRIEFS <span class="queue-count" id="creatorBriefCount">0</span>
+        </button>
+      </div>
+
+      <div class="toolbar">
+        <input id="creatorSearch" type="search" placeholder="Search a name or a pitch…" autocomplete="off">
+        <select id="creatorKind">
+          <option value="">Any discipline</option>
+          <option value="music">Music</option>
+          <option value="art">Art</option>
+          <option value="video">Video</option>
+          <option value="code">Code</option>
+        </select>
+        <span class="count" id="creatorCount">—</span>
+        <button class="btn" id="btnCreatorReload">REFRESH</button>
+      </div>
+
+      <div class="split">
+        <div class="list-wrap">
+          <table class="list">
+            <thead><tr>
+              <th>PLAYER</th><th>DISCIPLINE</th><th>APPLIED</th><th>STATUS</th>
+            </tr></thead>
+            <tbody id="creatorRows"></tbody>
+          </table>
+          <div class="pager">
+            <button class="btn" id="btnCreatorPrev">‹ PREV</button>
+            <span id="creatorPageInfo">—</span>
+            <button class="btn" id="btnCreatorNext">NEXT ›</button>
+          </div>
+        </div>
+
+        <aside class="detail" id="creatorDetail">
+          <div class="detail-empty" id="creatorDetailEmpty">Select an application to read it.</div>
+          <div class="detail-body hidden" id="creatorDetailBody"></div>
         </aside>
       </div>
     </section>

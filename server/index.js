@@ -25,6 +25,7 @@ import { createAdminApi, isLocalRequest } from './api/admin.js';
 import { guestName } from './util/auth.js';
 import { serveStatic, staleBuild } from './util/static.js';
 import * as avatars from './util/avatar.js';
+import * as anthems from './util/anthem.js';
 import { clientIp, cors, fail, parseCookies } from './util/http.js';
 import { take } from './util/ratelimit.js';
 import * as ipintel from './util/ipintel.js';
@@ -121,12 +122,28 @@ const server = createServer(async (req, res) => {
   // Clans first: their files live under the same public prefix on purpose, so
   // that nginx — which proxies `^~ /avatars/` wholesale — needs to know nothing
   // about them. See the note on `clanAvatars` in util/avatar.js.
+  // Both sub-paths first: their files live under the same public prefix on
+  // purpose, so that nginx — which proxies `^~ /avatars/` wholesale — needs to
+  // know nothing about either. An anthem is not a picture, but it is the same
+  // kind of thing to a web server, and giving it a prefix of its own would 404
+  // it on every deployment whose nginx config had not been reinstalled.
   if (path.startsWith('/avatars/clans/')) {
-    if (await serveAvatar(avatars.clanAvatars, req, res, path.slice('/avatars/clans/'.length))) return;
+    if (await serveStored(avatars.clanAvatars, req, res, path.slice('/avatars/clans/'.length),
+      config.avatars.cacheSeconds)) return;
+    return fail(res, 404, 'not_found');
+  }
+  // The one difference from a picture is who fetches it: a picture is asked
+  // for by a page, an anthem by whoever this creator has just killed, mid-match,
+  // at the moment the kill cam needs it. Which is why the year-long immutable
+  // cache header matters more here than anywhere else in this file.
+  if (path.startsWith('/avatars/anthems/')) {
+    if (await serveStored(anthems, req, res, path.slice('/avatars/anthems/'.length),
+      config.creators.anthemCacheSeconds)) return;
     return fail(res, 404, 'not_found');
   }
   if (path.startsWith('/avatars/')) {
-    if (await serveAvatar(avatars, req, res, path.slice('/avatars/'.length))) return;
+    if (await serveStored(avatars, req, res, path.slice('/avatars/'.length),
+      config.avatars.cacheSeconds)) return;
     return fail(res, 404, 'not_found');
   }
 
@@ -147,15 +164,16 @@ const server = createServer(async (req, res) => {
 });
 
 /**
- * Serves one stored picture — an account's, or a clan's.
+ * Serves one stored file — an account's picture, a clan's, or an anthem.
  *
  * The name is matched against a strict pattern before it ever reaches the
  * filesystem, and the content type comes from that name rather than from
- * anything the uploader said, so a file can only ever be served as the image
- * format it was accepted as. `store` decides which directory that pattern is
- * resolved against; the two stores never see each other's files.
+ * anything the uploader said, so a file can only ever be served as the format
+ * it was accepted as. `store` decides which directory that pattern is resolved
+ * against, and which extensions the pattern even admits; the three stores never
+ * see each other's files.
  */
-async function serveAvatar(store, req, res, name) {
+async function serveStored(store, req, res, name, cacheSeconds) {
   const file = store.pathFor(decodeURIComponent(name));
   if (!file) return false;
 
@@ -176,7 +194,7 @@ async function serveAvatar(store, req, res, name) {
   res.writeHead(200, {
     'content-type': store.mimeFor(name),
     'content-length': stat.size,
-    'cache-control': `public, max-age=${config.avatars.cacheSeconds}, immutable`,
+    'cache-control': `public, max-age=${cacheSeconds}, immutable`,
     'content-disposition': 'inline',
     'x-content-type-options': 'nosniff',
     etag,
@@ -248,11 +266,21 @@ const adminServer = createServer(async (req, res) => {
     if (await serveStatic(req, res, config.clientDir, path)) return;
   }
   if (path.startsWith('/avatars/clans/')) {
-    if (await serveAvatar(avatars.clanAvatars, req, res, path.slice('/avatars/clans/'.length))) return;
+    if (await serveStored(avatars.clanAvatars, req, res, path.slice('/avatars/clans/'.length),
+      config.avatars.cacheSeconds)) return;
+    return fail(res, 404, 'not_found');
+  }
+  // The panel plays an anthem back before it decides whether to keep it, which
+  // is the only way to moderate one — a track nobody listened to is a track
+  // nobody moderated. Before the generic prefix, like the clan one above it.
+  if (path.startsWith('/avatars/anthems/')) {
+    if (await serveStored(anthems, req, res, path.slice('/avatars/anthems/'.length),
+      config.creators.anthemCacheSeconds)) return;
     return fail(res, 404, 'not_found');
   }
   if (path.startsWith('/avatars/')) {
-    if (await serveAvatar(avatars, req, res, path.slice('/avatars/'.length))) return;
+    if (await serveStored(avatars, req, res, path.slice('/avatars/'.length),
+      config.avatars.cacheSeconds)) return;
     return fail(res, 404, 'not_found');
   }
   return fail(res, 404, 'not_found');
@@ -499,6 +527,7 @@ async function handleHello(ws, session, msg) {
   let name, userId = null, level = 1, skin = 'default', skins = {}, classId = getClass(msg.classId).id;
   let cos = { ...DEFAULT_EQUIP }, primaries = {};
   let verified = false, clan = null, clanVerified = false, role = 'player', mutedUntil = 0;
+  let creator = null, anthem = null, anthemTitle = null;
 
   if (auth) {
     name = auth.user.username;
@@ -514,6 +543,25 @@ async function handleHello(ws, session, msg) {
     // A mute outlives the session that earned it: it is read back here, not
     // remembered by the room the player happened to be in when it landed.
     mutedUntil = db.chatBans.active(userId)?.until ?? 0;
+    /*
+     * Creator status and, if it comes with one, the anthem this player's kills
+     * play. Read once, here, for the same reason the clan tag is: the room
+     * needs both at the exact moment somebody dies, and a database read on the
+     * death path is a read per kill in every match on the server.
+     *
+     * The URL is resolved here too. A stored filename never leaves this line —
+     * what travels into a match is a public URL the server built out of a file
+     * it levelled itself, so nothing downstream is ever in a position to name a
+     * different one.
+     */
+    if (config.creators.enabled) {
+      const row = db.creators.get(userId);
+      creator = row ? { kind: row.kind, status: row.status } : null;
+      if (K.creatorCan(creator, 'anthem') && row.anthem) {
+        anthem = anthems.urlFor(row.anthem);
+        anthemTitle = row.anthemTitle ?? null;
+      }
+    }
     const l = db.loadouts.get(userId);
     try {
       // The whole map, not just this class's finish: skins are chosen per
@@ -545,7 +593,7 @@ async function handleHello(ws, session, msg) {
 
   const joined = hub.join({
     ws, name, userId, level, classId, skin, skins, cos, primaries,
-    verified, clan, clanVerified, role, mutedUntil, ip: session.ip,
+    verified, clan, clanVerified, role, mutedUntil, creator, anthem, anthemTitle, ip: session.ip,
     roomId: typeof msg.room === 'string' ? msg.room.slice(0, 32) : undefined,
     spectate: !!msg.spectate,
   });
@@ -569,6 +617,11 @@ async function handleHello(ws, session, msg) {
         gr: auth.user.gr, verified: !!auth.user.verified, clan: auth.user.clan ?? null,
         clanVerified: !!auth.user.clan_verified,
         role: auth.user.role ?? 'player', emailVerified: !!auth.user.email_verified,
+        // The two things the client gates its own chrome on: which badge to
+        // draw beside this name, and whether the DEVELOPER tab exists at all.
+        creator,
+        dev: K.devModeAccess({ level: auth.user.level, creator },
+          { devLevel: config.devMode.level, enabled: config.devMode.enabled }),
       }
       : null,
   }));

@@ -45,6 +45,8 @@ let bus = null;               // post-compressor, pre-destination
 let sends = null;             // { early, tail } convolution sends
 let buffers = null;           // { white, pink, brown }
 let started = false;
+/** The anthem chain — see `initAnthemBus`. Its own path to the output. */
+let anthem = null;
 
 /**
  * Live voices, so a firefight cannot outrun the CPU.
@@ -145,9 +147,137 @@ export function initAudio() {
     tail: makeSend(impulse({ seconds: 2.1, decay: 3.1, taps: 9, spread: 0.4, damp: 0.86 }), 0.42),
   };
 
+  initAnthemBus();
+
   started = true;
   return ctx;
 }
+
+/* ── The anthem bus ─────────────────────────────────────────────────────────
+ *
+ * The one place in this file that plays something it did not synthesise, and
+ * therefore the one place that has to assume the worst about what it is given.
+ *
+ * A player anthem is a stranger's audio file, chosen by whoever just killed
+ * you, arriving on a screen you did not ask to be looking at. The server
+ * levels every one of them before it stores it — see server/util/audio.js —
+ * but that is a rule enforced somewhere else, on a machine somebody else runs,
+ * and "somebody else already checked" is not a thing to put between a stranger
+ * and a listener's ears. So this chain assumes nothing:
+ *
+ *   source ─► gain (the player's own volume) ─► limiter ─► shelf ─► master
+ *
+ * The limiter is a hard, fast brickwall well below the one on the main bus, so
+ * an anthem cannot be the loudest thing in the mix however it was encoded. The
+ * shelf takes two decibels off the top: a track that has been levelled *up*
+ * has had its hiss levelled up with it, and this is what stops that reading as
+ * a fault in the game.
+ *
+ * It joins the mix at `master`, so a player who turns the master volume down
+ * turns anthems down with it — and it has its own gain besides, so a player
+ * who wants the game and not other people's music can have exactly that.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+function initAnthemBus() {
+  const gain = ctx.createGain();
+  gain.gain.value = 0;
+
+  const limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = -8;
+  limiter.knee.value = 0;
+  limiter.ratio.value = 20;
+  limiter.attack.value = 0.002;
+  limiter.release.value = 0.12;
+
+  const shelf = ctx.createBiquadFilter();
+  shelf.type = 'highshelf';
+  shelf.frequency.value = 9000;
+  shelf.gain.value = -2;
+
+  gain.connect(limiter);
+  limiter.connect(shelf);
+  shelf.connect(master);
+
+  anthem = { gain, source: null, token: 0 };
+}
+
+/**
+ * Decodes an anthem, once, and remembers it.
+ *
+ * Keyed by URL, and the URL carries a content hash — so a track that changes is
+ * a different key and a track that has not cannot be decoded twice. The browser
+ * cache does the same job one layer down for the *bytes*; this is about the
+ * decode, which is the expensive half and would otherwise happen on the frame
+ * somebody died.
+ *
+ * A failure is cached too, as null. An anthem that 404s is going to 404 every
+ * time this player is killed by that player, and re-fetching it each death is
+ * a request per death for a file that is not there.
+ *
+ * @param {string} url
+ * @returns {Promise<AudioBuffer|null>}
+ */
+const anthemCache = new Map();
+
+export function loadAnthem(url) {
+  if (!url || !ctx) return Promise.resolve(null);
+  if (anthemCache.has(url)) return anthemCache.get(url);
+  const job = fetch(url, { credentials: 'omit', cache: 'force-cache' })
+    .then((res) => (res.ok ? res.arrayBuffer() : Promise.reject(new Error(String(res.status)))))
+    .then((bytes) => ctx.decodeAudioData(bytes))
+    .catch(() => null);
+  anthemCache.set(url, job);
+  return job;
+}
+
+/**
+ * Plays one decoded anthem, replacing whatever was playing.
+ *
+ * `token` is what makes a second death during a first one safe: every start
+ * claims a number, and the stop handler only clears the chain if the number it
+ * was given is still the current one. Without it, a fast respawn-and-die would
+ * have the *first* anthem's `onended` tear down the *second* one's source.
+ *
+ * @param {AudioBuffer} buffer
+ * @param {{volume?:number, fadeIn?:number}} opts
+ * @returns {number} how many seconds it will play for
+ */
+export function playAnthem(buffer, { volume = 1, fadeIn = 0.12 } = {}) {
+  if (!ctx || !anthem || !buffer) return 0;
+  stopAnthem(0.04);
+  const token = ++anthem.token;
+
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(anthem.gain);
+  src.onended = () => { if (anthem.token === token) anthem.source = null; };
+  anthem.source = src;
+
+  const t = now();
+  anthem.gain.gain.cancelScheduledValues(t);
+  anthem.gain.gain.setValueAtTime(0, t);
+  anthem.gain.gain.linearRampToValueAtTime(clamp(volume, 0, 1), t + fadeIn);
+  src.start(t);
+  return buffer.duration;
+}
+
+/** Fades the anthem out and lets go of it. Safe to call when none is playing. */
+export function stopAnthem(fade = 0.25) {
+  if (!ctx || !anthem?.source) return;
+  const src = anthem.source;
+  const t = now();
+  anthem.gain.gain.cancelScheduledValues(t);
+  // From wherever it actually is rather than from the target: cancelling
+  // scheduled values leaves the parameter at its current value, and ramping
+  // from a value it was never at is a step, which is a click.
+  anthem.gain.gain.setValueAtTime(anthem.gain.gain.value, t);
+  anthem.gain.gain.linearRampToValueAtTime(0, t + fade);
+  anthem.source = null;
+  try { src.stop(t + fade + 0.02); } catch { /* already stopped */ }
+}
+
+/** Is an anthem playing right now? The kill cam asks, to caption itself. */
+export const anthemPlaying = () => !!anthem?.source;
 
 export function resumeAudio() {
   if (ctx?.state === 'suspended') ctx.resume();
