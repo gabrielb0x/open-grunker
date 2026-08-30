@@ -17,7 +17,7 @@
  * wrote it: what they can now do, or what stopped going wrong.
  */
 
-export const GAME_VERSION = '2.3.1';
+export const GAME_VERSION = '2.4.0';
 
 export const PATCH_KINDS = {
   new: { label: 'NEW', color: '#4ddb7a' },
@@ -26,6 +26,18 @@ export const PATCH_KINDS = {
 };
 
 export const PATCH_NOTES = [
+  {
+    version: '2.4.0',
+    date: '2026-08-30',
+    title: 'Château: a palace you are never allowed into, and the garden in front of it',
+    changes: [
+      { kind: 'new', text: 'Château, and its landmark is the one thing on it you can never touch. Ninety-six metres of limestone, rose brick and slate close the north side of the map — a great central block between two wings, a pavilion with a candle-snuffer turret at each end, and a dome forty-one metres up to the gilded weathervane on its lantern. Three storeys of cross-mullioned windows, eighteen dormers standing in the slate, rusticated corners, a moulded band at every floor, eleven chimneys and a carved coat of arms over the front door. There is no way in and there never will be: the building is a backdrop, and it is a backdrop because from the bottom of a hedge alley or the far end of the canal you can look up, find the dome, and know instantly which way is north and how far down the garden you have got. No minimap does that as fast.' },
+      { kind: 'new', text: 'You fight in the garden, and it is laid out the way a real one is — on an axis, in tiers, dropping away from the house, which happens to be exactly how you build a level. The terrace is five metres up and the width of the map: the strongest position on it and the most exposed, nine metres deep, in view of everything, and reached by six separate flights of steps so that it is somewhere you pass through rather than somewhere you own. Under it, at garden level, a loggia of eight arches — the one way across that end of the map the terrace cannot see into.' },
+      { kind: 'new', text: 'Below that the parterre, a metre and a half up: two beds of clipped box scrollwork, two fountains and a double row of yew. None of the pattern on the ground is cover — it is ankle-high and you are as exposed crossing it as you look — but the topiary and the statues standing on it are solid, and they are what stops a rifle on the terrace owning the whole level. Five more flights drop from there to the grand basin, twenty-four metres across and the lowest ground on the map, with a knee-high rim you vault and an island in the middle of it.' },
+      { kind: 'new', text: 'Either side, two mirrored bosquets of yew two and a half metres tall, cut into alleys and hedged rooms around a green cabinet with a fountain in it. Nothing sees in and nothing sees out; both are the same twenty seconds from a spawn, and every alley in them clears two metres, because a body is eighty-four centimetres across and an alley much narrower than that is a wall with a pattern drawn on it. And at the far end a canal sunk half a metre into a low terrace — a free step down and a free step back up, so it is a lane you cross that end of the map under the sightlines instead of over them — with a matched pair of orangeries flanking it, both open arcades with roofs you can climb to, and a domed temple closing the vista.' },
+      { kind: 'new', text: 'It plays Free For All, Team Deathmatch and Domination. The teams start at the east and west ends of the middle, the same distance from both bosquets and from all three points, and the three points sit on the axis — the terrace, the island in the basin, and the temple — so at the whistle neither half of the garden belongs to anybody. Not one of the three has anywhere to hide: A is nine metres of open stone in view of the entire garden, B is an island you wade out to, and C is a colonnade you can see straight through.' },
+    ],
+  },
   {
     version: '2.3.1',
     date: '2026-08-30',

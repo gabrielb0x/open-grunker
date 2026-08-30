@@ -334,7 +334,8 @@ export const config = {
   // opened and closed by demand — see `dynamicRooms` below.
   rooms: list('ROOMS', [
     'littletown:tdm', 'littletown:ffa', 'burgtown:ffa', 'crossfire:tdm',
-    'shipyard:gg', 'sandstorm:dom', 'subzero:ffa', 'range:range',
+    'shipyard:gg', 'sandstorm:dom', 'subzero:ffa', 'chateau:ffa', 'chateau:dom',
+    'range:range',
   ]),
 
   /**

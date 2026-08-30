@@ -1315,6 +1315,7 @@ timer matter.
 | **Shipyard** | Painted container maze under a steel gantry, with the sea down one side |
 | **Subzero** | An alpine village around a frozen pond. Short rotations, constant contact |
 | **Nova** | A night station under a pink-and-blue nebula, on four floors — see below |
+| **Château** | A neo-Renaissance palace you can never get into, and the formal garden in front of it — see below |
 
 No map is walled in. The edge of the playable area is an invisible boundary, and
 past it the level carries on in scenery you can see but never reach — which is
@@ -1360,6 +1361,44 @@ and the structure palette were lifted **together**. Raising only one of the thre
 is what turns a night map into a grey one: more ambient alone flattens every box,
 a brighter key alone blows out the lit faces, and a paler palette alone stops the
 neon being the brightest thing in the frame.
+
+**Château** is the other way round from every other map here: its landmark is
+the one thing you are never allowed to touch. Ninety-six metres of limestone,
+rose brick and slate close the north side of the level — a corps de logis
+between two wings, a pavilion with a candle-snuffer turret at each end, and a
+dome forty-one metres up to the gilded weathervane on its lantern. It is
+hollow, sealed, and made almost entirely of decor: every croisée, quoin,
+string course, lucarne and chimney on it is glued to the outside of a solid
+wall, so nothing on the façade eats a bullet or snags a body. You cannot get in
+because there is no in — and that is what makes it work as a landmark. From the
+bottom of a hedge alley or the far end of the canal you look up, find the dome,
+and know at once which way is north and how far down the axis you have got.
+
+The fight is the garden, and it is laid out the way a real one is: on an axis,
+in tiers, dropping away from the house — which happens to be exactly how you
+build a level. The **terrace** is five metres up and the width of the map, the
+strongest position on it and the most exposed: nine metres deep, in view of
+everything, and reachable by six separate flights, so it is somewhere you pass
+through rather than somewhere you own. Under it a **loggia** of eight arches
+runs at garden level — the only lateral route at this end that the terrace
+cannot see into. Below that the **parterre**, whose box scrollwork is
+ankle-high decoration and no cover at all; the topiary and statues standing on
+it are solid, and they are what stops a rifle on the terrace owning the whole
+level. Then the **grand basin**, twenty-four metres across and the lowest
+ground on the map, with a knee-high rim you vault and an island in the middle
+of it. Two mirrored **bosquets** of two-and-a-half-metre yew fill the flanks —
+alleys and hedged rooms around a green cabinet with a fountain in it, and every
+alley clears two metres, because a body is 84 cm across and anything much
+narrower is a wall with a pattern drawn on it. At the far end a **canal** sunk
+half a metre into a low terrace (a free step down, a free step back up: a lane
+you cross that end of the map under the sightlines rather than over them), a
+matched pair of orangeries flanking it with walkable roofs, and a domed temple
+closing the vista.
+
+Teams start at the east and west ends of the middle, the same distance from
+both bosquets and from all three Domination points — and the points sit on the
+axis, terrace to basin to temple, so at the whistle neither half of the garden
+belongs to anybody.
 
 Modes: **Free For All** (30 kills / 4 min), **Team Deathmatch**
 (50 kills / 4 min) and **Perks** (30 kills / 4 min — see below), up to
@@ -2141,6 +2180,26 @@ The rule the set follows is **light marks what you can stand on**. Every
 walkable edge glows and nothing else does, so a player reading a night map at a
 glance is reading a map of its routes — the same job the bright roofs do on the
 town maps, moved to a level where the sun is not available to do it.
+
+…and the château set, written for [Château](#maps-and-modes) and for anything
+else that has to be carved rather than assembled:
+
+| | |
+| --- | --- |
+| `drum(x, y, z, r, h, colour)` | Round, as two crossed boxes: an octagon that reads as a circle from anywhere and costs two instances rather than forty. A column, a turret, a dome course, a fountain bowl and an urn are all this |
+| `roofStack(…)` / `coneRoof(…)` / `domeRoof(…)` | Every pitch in the style, as a stack that shrinks as it climbs. `curve` is the profile — 1 is a straight slope, under 1 leaves the eaves steeply and eases toward the ridge, and the dome follows a circle so it bulges before it turns over |
+| `arcade({…})` | A run of arches: piers, semicircular heads built out of stepped voussoirs, and the wall over them. Real openings, so a building can be fought through without a door cut in it |
+| `balustrade({…})` | Plinth, balusters, coping — built out of the balusters themselves, so the gaps are wider than a bullet and narrower than a body: cover you shoot straight through |
+| `croisee(…)` / `lucarne(…)` / `pediment(…)` | The cross-mullioned window, the dormer standing in the slate, and the stepped triangle over either |
+| `quoins(…)` / `bandCourse(…)` / `chimneyStack(…)` / `column(…)` | Rusticated corners, the moulded band at each floor line, a panelled stack with pots, and base-shaft-capital |
+| `topiary(…)` / `broderie(…)` / `basin(…)` / `jet(…)` / `statue(…)` / `urn(…)` / `railings({…})` | Clipped yew in four shapes, a bed of box scrollwork, a fountain with water in it, its plume, marble, stone and gilded iron |
+
+Its own rule is the opposite of the station set's: **the château collides only
+where a body could touch it.** Walls, terrace, balustrades and everything in
+the garden are solid; cornices, lucarnes, chimneys, crestings, finials and
+every square metre of slate above the first storey are decor. They exist for
+the silhouette, and a rocket clipping a gilded finial thirty metres up would be
+the only time anybody found out they were there.
 
 **The sky.** By default it is painted once into a canvas and wrapped round a
 dome: a gradient, a sun disc, horizon haze and a band of cloud scaled by

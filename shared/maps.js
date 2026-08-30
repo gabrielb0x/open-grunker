@@ -802,6 +802,507 @@ function windows(x, y, z, { w = 10, axis = 'x', floors = 3, pitch = 3.2, c = 0x1
   return out;
 }
 
+/* ── The château set ─────────────────────────────────────────────────────────
+ *
+ * A palace and a formal garden are a different problem from a town. A town is
+ * a pile of separate objects — a house, a car, a fence — and the map is where
+ * you put them. A château is one composition: a handful of carved profiles,
+ * repeated along an axis, at three or four sizes. So this is not a prop
+ * library. It is six mouldings and four solids of revolution, which is very
+ * nearly the entire vocabulary a French Renaissance façade is built from.
+ *
+ * Two ideas carry all of it:
+ *
+ *   **Round is two crossed boxes.** A drum, a column, a corner turret, a dome,
+ *   a fountain bowl and an urn are all `drum()` — one box `2r` across and one
+ *   `1.42r` across, crossed. The silhouette is a regular-ish octagon, which at
+ *   any distance a player ever sees one from is a circle, and it costs two
+ *   instances instead of the forty a real cylinder would.
+ *
+ *   **A slope is a stack.** Every pitched roof, every arch, every pediment and
+ *   every cone below is a run of boxes shrinking as it rises. The steps stay
+ *   visible on purpose — this is a level made of cubes and pretending otherwise
+ *   is what makes voxel architecture look apologetic — but the *profile* is
+ *   taken from the real thing: a hip roof loses its ridge by its own depth, a
+ *   French pavilion roof leaves the eaves steeply and eases as it climbs, and a
+ *   dome follows a circle so it bulges before it turns over.
+ *
+ * The rule the set follows, and the reason a building nobody can enter is
+ * worth this much geometry: **the château collides only where a body could
+ * touch it.** Walls, the terrace, the balustrades and everything in the garden
+ * are solid. Cornices, lucarnes, chimneys, crestings, finials and every square
+ * metre of slate above the first storey are decor — they exist for the
+ * silhouette, and a rocket that clipped a gilded finial thirty metres up would
+ * be the only time anyone found out they were there.
+ * ──────────────────────────────────────────────────────────────────────────*/
+
+/** Round-ish prism: two crossed boxes read as an octagon from anywhere. */
+function drum(x, y, z, r, h, c, o = {}) {
+  const k = r * 1.42;
+  return [B(x, y, z, r * 2, h, k, c, o), B(x, y, z, k, h, r * 2, c, o)];
+}
+
+/**
+ * A stepped roof, and the whole family in one function.
+ *
+ * `curve` is what shape the pitch takes: 1 is a straight slope, below 1 leaves
+ * the eaves steeply and eases toward the ridge (the French pavilion roof), and
+ * above 1 is a shallow start that steepens. `ridgeW`/`ridgeD` are what is left
+ * at the top — a long roof over a wing keeps a ridge to stand chimneys on, a
+ * tower closes to a point.
+ */
+function roofStack(x, y, z, w, d, h, c, {
+  steps = 9, mat = S.ROOF, dec = true, curve = 1, ridgeW = null, ridgeD = 0.9,
+} = {}) {
+  const out = [];
+  const put = dec ? D : B;
+  const rw = ridgeW ?? Math.max(0.9, w - d + 0.9);
+  for (let i = 0; i < steps; i++) {
+    const t0 = i / steps, k = Math.pow((i + 1) / steps, curve);
+    out.push(put(x, y + t0 * h, z, w + (rw - w) * k, h / steps + 0.05, d + (ridgeD - d) * k, c,
+      { mat, roof: i === steps - 1 }));
+  }
+  return out;
+}
+
+/** Candle-snuffer roof over a round turret. */
+function coneRoof(x, y, z, r, h, c, { steps = 9, mat = S.ROOF, dec = true, curve = 1 } = {}) {
+  const out = [];
+  for (let i = 0; i < steps; i++) {
+    const rr = Math.max(0.16, r * (1 - Math.pow((i + 1) / steps, curve)));
+    out.push(...drum(x, y + (i / steps) * h, z, rr, h / steps + 0.06, c, { mat, decor: dec }));
+  }
+  return out;
+}
+
+/** A lead dome. The profile is a circle, so it bulges before it turns over. */
+function domeRoof(x, y, z, r, h, c, { steps = 11, mat = S.ROOF, dec = true, ogee = 0.55 } = {}) {
+  const out = [];
+  for (let i = 0; i < steps; i++) {
+    const t1 = (i + 1) / steps;
+    const rr = Math.max(0.18, r * Math.pow(Math.max(0, 1 - t1 * t1), ogee));
+    out.push(...drum(x, y + (i / steps) * h, z, rr, h / steps + 0.06, c, { mat, decor: dec }));
+  }
+  return out;
+}
+
+/** A stepped triangular pediment. `axis` is the wall it is flat against. */
+function pediment(x, y, z, w, h, t, c, { axis = 'x', steps = 5, mat = S.ROCK, dec = true } = {}) {
+  const out = [];
+  const put = dec ? D : B;
+  for (let i = 0; i < steps; i++) {
+    const ww = w * (1 - (i + 1) / steps) + 0.55;
+    out.push(axis === 'x'
+      ? put(x, y + (i / steps) * h, z, ww, h / steps + 0.04, t, c, { mat, noShadow: dec })
+      : put(x, y + (i / steps) * h, z, t, h / steps + 0.04, ww, c, { mat, noShadow: dec }));
+  }
+  return out;
+}
+
+/**
+ * A moulded band round a building at a floor line.
+ *
+ * Four decor boxes proud of the wall, and the single cheapest thing that stops
+ * a sixteen-metre elevation reading as a cliff: it says where the floors are.
+ */
+function bandCourse(x, y, z, w, d, { c = 0xf3e9d1, h = 0.36, p = 0.2, mat = S.ROCK } = {}) {
+  return [
+    D(x, y, z - d / 2, w + p * 2, h, p * 2, c, { mat, noShadow: true }),
+    D(x, y, z + d / 2, w + p * 2, h, p * 2, c, { mat, noShadow: true }),
+    D(x - w / 2, y, z, p * 2, h, d + p * 2, c, { mat, noShadow: true }),
+    D(x + w / 2, y, z, p * 2, h, d + p * 2, c, { mat, noShadow: true }),
+  ];
+}
+
+/**
+ * Rusticated quoins up a corner: alternating long-and-short blocks, one course
+ * reaching along X, the next along Z, so the two faces interlock. `sx`/`sz`
+ * point *into* the building.
+ */
+function quoins(x, z, y, h, { c = 0xf3e9d1, sx = 1, sz = 1, course = 0.92, big = 1.7,
+  small = 1.05, p = 0.14, mat = S.ROCK } = {}) {
+  const out = [];
+  const n = Math.max(1, Math.floor(h / course));
+  for (let i = 0; i < n; i++) {
+    const long = i % 2 === 0;
+    const a = long ? big : small, b = long ? small : big;
+    out.push(D(x + sx * (a / 2 - p), y + i * course, z + sz * (b / 2 - p), a, course - 0.05, b, c,
+      { mat, noShadow: true }));
+  }
+  return out;
+}
+
+/**
+ * A run of arches: piers, semicircular heads built out of stepped voussoirs,
+ * and the band of wall above them.
+ *
+ * The openings are real openings, which is how you get a building that can be
+ * fought through without cutting a single door in it. The radius is fixed by
+ * the bay, so widening a pier narrows the arch it stands beside — exactly the
+ * trade a mason makes.
+ */
+function arcade({ axis = 'x', at: a = 0, from, to, y = 0, h = 6, t = 1.0, bays = 5,
+  pier = 1.5, c = 0xe6d8b8, dress = 0xf3e9d1, mat = S.ROCK, key = true, impost = true }) {
+  const out = [];
+  const put = (u, yy, lw, hh, col = c, o = {}) => out.push(
+    (o.decor ? D : B)(
+      axis === 'x' ? u : a, yy, axis === 'x' ? a : u,
+      axis === 'x' ? lw : t, hh, axis === 'x' ? t : lw, col, { mat, ...o }));
+
+  const span = (to - from) / bays;
+  const R = (span - pier) / 2;
+  const spring = y + h - R - 0.42;
+  for (let i = 0; i <= bays; i++) put(from + i * span, y, pier, spring - y);
+  for (let i = 0; i < bays; i++) {
+    const cx = from + (i + 0.5) * span;
+    for (let s = 0; s < 5; s++) {
+      const u1 = ((s + 1) / 5) * R;
+      const half = Math.sqrt(Math.max(0, R * R - u1 * u1));
+      const sw = R - half;
+      if (sw < 0.07) continue;
+      put(cx - half - sw / 2, spring + (s / 5) * R, sw, R / 5 + 0.04);
+      put(cx + half + sw / 2, spring + (s / 5) * R, sw, R / 5 + 0.04);
+    }
+    if (key) put(cx, spring + R - 0.5, 0.62, 1.0, dress, { decor: true, noShadow: true });
+  }
+  // Impost blocks where the arch springs, then the entablature over the lot.
+  if (impost) {
+    for (let i = 0; i <= bays; i++) {
+      out.push(D(
+        axis === 'x' ? from + i * span : a, spring - 0.34, axis === 'x' ? a : from + i * span,
+        axis === 'x' ? pier + 0.5 : t + 0.24, 0.34, axis === 'x' ? t + 0.24 : pier + 0.5,
+        dress, { mat, noShadow: true }));
+    }
+  }
+  put((from + to) / 2, spring + R, to - from, Math.max(0.2, y + h - spring - R), c);
+  out.push(axis === 'x'
+    ? D((from + to) / 2, y + h - 0.34, a, to - from, 0.34, t + 0.44, dress, { mat, noShadow: true })
+    : D(a, y + h - 0.34, (from + to) / 2, t + 0.44, 0.34, to - from, dress, { mat, noShadow: true }));
+  return out;
+}
+
+/**
+ * A stone balustrade: plinth, turned balusters, coping.
+ *
+ * Built out of the balusters themselves rather than out of one low wall, and
+ * that is the point of it — the gaps are wider than a bullet and narrower than
+ * a body, so it is cover you can shoot straight through while it still holds
+ * the edge of a terrace. Plinth and coping are solid, the balusters between
+ * them are not.
+ */
+function balustrade({ axis = 'x', at: a = 0, from, to, y = 0, h = 1.15, t = 0.44,
+  c = 0xf0e5cb, mat = S.ROCK, pitch = 1.05, gaps = [], urns: urnAt = [] }) {
+  const out = [];
+  const box = (u, len, yy, hh, wide, dec) => out.push((dec ? D : B)(
+    axis === 'x' ? u : a, yy, axis === 'x' ? a : u,
+    axis === 'x' ? len : wide, hh, axis === 'x' ? wide : len, c,
+    { mat, ...(dec ? { noShadow: true } : {}) }));
+
+  const seg = (s, e) => {
+    if (e - s < 0.5) return;
+    const mid = (s + e) / 2, len = e - s;
+    box(mid, len, y, 0.3, t, false);                             // plinth
+    box(mid, len, y + h - 0.24, 0.24, t + 0.18, false);          // coping
+    for (let p = s + pitch * 0.5; p < e - 0.2; p += pitch) {
+      box(p, 0.26, y + 0.3, h - 0.54, t - 0.14, true);            // the baluster
+      box(p, 0.46, y + 0.42, h * 0.34, t - 0.02, true);           // and its belly
+    }
+  };
+  let cursor = from;
+  for (const [gs, ge] of gaps.slice().sort((p, q) => p[0] - q[0])) { seg(cursor, gs); cursor = ge; }
+  seg(cursor, to);
+  for (const u of urnAt) {
+    out.push(...urn(axis === 'x' ? u : a, axis === 'x' ? a : u, y + h, { c, h: 1.5 }));
+  }
+  return out;
+}
+
+/** A stone urn on a pedestal — the full stop at the end of a balustrade. */
+function urn(x, z, y = 0, { c = 0xf0e5cb, h = 1.6, mat = S.ROCK } = {}) {
+  const s = h / 1.6;
+  return [
+    B(x, y, z, 0.9 * s, 0.34 * s, 0.9 * s, c, { mat }),
+    ...drum(x, y + 0.34 * s, z, 0.24 * s, 0.3 * s, c, { mat, decor: true, noShadow: true }),
+    ...drum(x, y + 0.6 * s, z, 0.5 * s, 0.5 * s, c, { mat, decor: true, noShadow: true }),
+    ...drum(x, y + 1.05 * s, z, 0.4 * s, 0.22 * s, c, { mat, decor: true, noShadow: true }),
+    ...drum(x, y + 1.22 * s, z, 0.2 * s, 0.4 * s, c, { mat, decor: true, noShadow: true }),
+  ];
+}
+
+/** A column: base, shaft, capital. Round, so two crossed boxes apiece. */
+function column(x, z, y, h, r, c, { mat = S.ROCK, dress = null, dec = false } = {}) {
+  const cap = dress ?? c;
+  return [
+    ...drum(x, y, z, r * 1.34, 0.34, cap, { mat, decor: dec }),
+    ...drum(x, y + 0.34, z, r, h - 0.9, c, { mat, decor: dec }),
+    ...drum(x, y + h - 0.56, z, r * 1.16, 0.24, cap, { mat, decor: true, noShadow: true }),
+    B(x, y + h - 0.32, z, r * 2.9, 0.32, r * 2.9, cap, { mat, decor: true, noShadow: true }),
+  ];
+}
+
+/**
+ * A tall cross-mullioned window — the Renaissance *croisée*, and the unit the
+ * whole elevation is measured in.
+ *
+ * Every part is decor glued to the outside of a solid wall, exactly as the
+ * town houses do it: a façade should never be a thing bodies snag on, and the
+ * château is solid behind this whatever the glass suggests.
+ */
+function croisee(x, y, z, { w = 1.9, h = 3.3, face = 'n', c = 0xf3e9d1, glass = 0x33506d,
+  ped = null, sill = true, mat = S.ROCK } = {}) {
+  const out = [];
+  const zAxis = face === 'n' || face === 's';
+  const o = face === 'n' || face === 'w' ? -1 : 1;
+  const dim = (a, b) => (zAxis ? [a, b] : [b, a]);
+  const put = (dx, dy, ww, hh, col, m = mat, prd = 0) => {
+    const [bw, bd] = dim(ww, 0.16 + prd);
+    out.push(D(zAxis ? x + dx : x + o * (0.1 + prd / 2), y + dy, zAxis ? z + o * (0.1 + prd / 2) : z + dx,
+      bw, hh, bd, col, { mat: m, noShadow: true }));
+  };
+  put(0, 0, w + 0.7, h + 0.5, c, mat, 0.2);                       // surround
+  put(0, 0.1, w, h, glass, S.WINDOW, 0.16);                       // the glazing
+  put(0, 0.1, 0.24, h, c, mat, 0.3);                              // mullion
+  put(0, 0.1 + h * 0.56, w, 0.24, c, mat, 0.3);                   // transom
+  if (sill) put(0, -0.26, w + 1.0, 0.26, c, mat, 0.44);
+  if (ped === 'tri') {
+    out.push(...pediment(zAxis ? x : x + o * 0.34, y + h + 0.6, zAxis ? z + o * 0.34 : z,
+      w + 1.1, 0.95, 0.42, c, { axis: zAxis ? 'x' : 'z', steps: 4, mat }));
+    put(0, h + 0.5, w + 1.5, 0.3, c, mat, 0.44);
+  } else if (ped === 'seg') {
+    for (let i = 0; i < 4; i++) {
+      const k = (i + 1) / 4;
+      put(0, h + 0.52 + i * 0.2, (w + 1.2) * Math.sqrt(Math.max(0, 1 - k * k * 0.82)), 0.22, c, mat, 0.4);
+    }
+    put(0, h + 0.5, w + 1.5, 0.3, c, mat, 0.44);
+  }
+  return out;
+}
+
+/**
+ * A lucarne: a dormer standing proud of the slate, with a carved pediment,
+ * flanking volutes and a finial.
+ *
+ * The single most recognisable thing on a French roof. On a building this
+ * steep the roofscape *is* the architecture, and this is what it is made of —
+ * which is why there are eighteen of them up there and why every one is decor.
+ */
+function lucarne(x, y, z, { w = 2.3, h = 3.6, face = 'n', c = 0xf3e9d1, glass = 0x33506d,
+  gold = 0xd9ad42, mat = S.ROCK } = {}) {
+  const out = [];
+  const o = face === 'n' ? -1 : 1;
+  const d = 1.5;
+  out.push(D(x, y, z, w + 1.5, h, d, c, { mat }));                                  // the dormer body
+  out.push(D(x, y + 0.4, z + o * (d / 2 + 0.06), w, h - 1.0, 0.16, glass, { mat: S.WINDOW, noShadow: true }));
+  out.push(D(x, y + 0.4, z + o * (d / 2 + 0.12), 0.22, h - 1.0, 0.16, c, { mat, noShadow: true }));
+  out.push(D(x, y + 0.4 + (h - 1.0) * 0.58, z + o * (d / 2 + 0.12), w, 0.2, 0.16, c, { mat, noShadow: true }));
+  for (const sx of [-1, 1]) {                                                       // flanking pilasters
+    out.push(D(x + sx * (w / 2 + 0.4), y, z + o * (d / 2 + 0.04), 0.5, h - 0.5, 0.2, c, { mat, noShadow: true }));
+    out.push(D(x + sx * (w / 2 + 0.9), y + h - 1.6, z, 0.55, 0.5, d * 0.7, c, { mat, noShadow: true }));  // volute
+    out.push(D(x + sx * (w / 2 + 1.2), y + h - 1.2, z, 0.45, 0.4, d * 0.6, c, { mat, noShadow: true }));
+  }
+  out.push(D(x, y + h - 0.42, z, w + 2.1, 0.34, d + 0.4, c, { mat, noShadow: true }));  // cornice
+  out.push(...pediment(x, y + h - 0.08, z, w + 1.9, 1.25, d + 0.2, c, { steps: 4, mat }));
+  out.push(D(x, y + h + 1.1, z, 0.26, 0.7, 0.26, gold, { mat: S.NEON, noShadow: true }));
+  out.push(D(x, y + h + 1.7, z, 0.42, 0.24, 0.42, gold, { mat: S.NEON, noShadow: true }));
+  return out;
+}
+
+/**
+ * A Renaissance chimney stack: a panelled shaft, a moulded cap and two pots.
+ * They are half the reason the roofline of one of these buildings looks the
+ * way it does, so there are eleven of them and they are all different heights.
+ */
+function chimneyStack(x, y, z, h, { c = 0xe6d8b8, dress = 0xf3e9d1, pot = 0xb05a46,
+  w = 1.7, d = 1.3, mat = S.ROCK } = {}) {
+  const out = [D(x, y, z, w, h, d, c, { mat })];
+  for (const sx of [-1, 1]) {
+    out.push(D(x + sx * (w / 2 - 0.16), y + 0.4, z, 0.32, h - 1.2, d + 0.22, dress, { mat, noShadow: true }));
+  }
+  out.push(D(x, y + 0.3, z, w + 0.3, 0.3, d + 0.3, dress, { mat, noShadow: true }));
+  out.push(D(x, y + h - 0.62, z, w + 0.55, 0.34, d + 0.55, dress, { mat, noShadow: true }));
+  out.push(D(x, y + h - 0.28, z, w + 0.8, 0.28, d + 0.8, dress, { mat, noShadow: true }));
+  for (const sx of [-1, 1]) out.push(...drum(x + sx * w * 0.24, y + h, z, 0.24, 0.66, pot, { mat: S.BRICK, decor: true, noShadow: true }));
+  return out;
+}
+
+/**
+ * Clipped yew or box: cone, ball, obelisk or spiral, optionally in a Versailles
+ * tub. Solid — it is a mass, it is cover, and it is the thing that stops a
+ * parterre being a shooting gallery.
+ */
+function topiary(x, z, { y = 0, kind = 'cone', h = 2.6, r = 1.05, c = 0x2f7a37,
+  tub = null, tubC = 0xb8752f } = {}) {
+  const out = [];
+  let base = y;
+  if (tub) {
+    out.push(B(x, y, z, tub, tub * 0.82, tub, tubC, { mat: S.WOOD }));
+    out.push(D(x, y + tub * 0.82, z, tub + 0.18, 0.16, tub + 0.18, 0x8a5a30, { mat: S.WOOD, noShadow: true }));
+    for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      out.push(D(x + sx * tub * 0.5, y, z + sz * tub * 0.5, 0.22, tub * 0.98, 0.22, 0x8a5a30, { mat: S.WOOD, noShadow: true }));
+    }
+    base = y + tub * 0.82;
+  }
+  if (kind === 'ball') {
+    out.push(B(x, base, z, 0.3, h * 0.34, 0.3, 0x6f4c2e, { mat: S.BARK }));
+    const cy = base + h * 0.34, R = h * 0.33;
+    for (let i = 0; i < 4; i++) {
+      const t = (i + 0.5) / 4;
+      const rr = R * Math.sin(t * Math.PI) * 1.04 + 0.12;
+      out.push(...drum(x, cy + (i / 4) * R * 2, z, rr, (R * 2) / 4 + 0.05, c, { mat: S.HEDGE }));
+    }
+  } else if (kind === 'obelisk') {
+    for (let i = 0; i < 6; i++) {
+      const k = 1 - (i + 1) / 6;
+      out.push(B(x, base + (i / 6) * h, z, r * 2 * (0.35 + k * 0.65), h / 6 + 0.03,
+        r * 2 * (0.35 + k * 0.65), c, { mat: S.HEDGE }));
+    }
+  } else if (kind === 'spiral') {
+    for (let i = 0; i < 7; i++) {
+      const k = 1 - (i + 1) / 7;
+      const rr = r * (0.28 + k * 0.72);
+      const off = (i % 2 ? 1 : -1) * rr * 0.3;
+      out.push(B(x + off, base + (i / 7) * h, z, rr * 2, h / 7 + 0.03, rr * 2, c, { mat: S.HEDGE }));
+    }
+  } else {
+    for (let i = 0; i < 5; i++) {
+      const k = 1 - (i + 1) / 5;
+      const rr = Math.max(0.2, r * k + 0.18) * 2;
+      out.push(B(x, base + (i / 5) * h, z, rr, h / 5 + 0.04, rr, c, { mat: S.HEDGE }));
+    }
+  }
+  return out;
+}
+
+/** A statue on a plinth: three and a half metres of marble, and a broken sightline. */
+function statue(x, z, y = 0, { c = 0xefe6d3, plinth = 0xe0d3b4, h = 2.2, rot = 0, mat = S.ROCK } = {}) {
+  const ph = 1.55;
+  const out = [
+    B(x, y, z, 1.5, 0.28, 1.5, plinth, { mat }),
+    B(x, y + 0.28, z, 1.2, ph - 0.5, 1.2, plinth, { mat }),
+    D(x, y + ph - 0.24, z, 1.5, 0.24, 1.5, plinth, { mat, noShadow: true }),
+  ];
+  const b = y + ph, s = h / 2.2;
+  const wide = rot ? [0.34, 0.62] : [0.62, 0.34];
+  out.push(B(x, b, z, 0.72 * s, 1.0 * s, 0.62 * s, c, { mat }));                       // legs and drapery
+  out.push(B(x, b + 0.95 * s, z, 0.82 * s, 0.78 * s, 0.66 * s, c, { mat }));           // torso
+  out.push(D(x, b + 1.68 * s, z, 0.92 * s, 0.18 * s, 0.74 * s, c, { mat, noShadow: true }));
+  out.push(B(x, b + 1.82 * s, z, 0.38 * s, 0.4 * s, 0.38 * s, c, { mat }));            // head
+  out.push(D(x - 0.42 * s * (rot ? 0 : 1), b + 1.0 * s, z - 0.42 * s * (rot ? 1 : 0),
+    0.26 * s, 0.9 * s, 0.26 * s, c, { mat, noShadow: true }));                          // hanging arm
+  out.push(D(x + 0.5 * s * (rot ? 0 : 1), b + 1.5 * s, z + 0.5 * s * (rot ? 1 : 0),
+    wide[0] * s, 0.26 * s, wide[1] * s, c, { mat, noShadow: true }));                    // raised arm
+  return out;
+}
+
+/**
+ * A parterre de broderie: coloured gravel with clipped box drawn on it in
+ * scrollwork.
+ *
+ * Every piece of it is decor and none of it is taller than forty centimetres.
+ * A garden is not cover, and a player crossing a parterre should be exactly as
+ * exposed as they look — the topiary standing on it is what breaks the ground,
+ * and the topiary is solid. The pattern is mirrored in both axes because that
+ * is how one was actually set out with string and pegs, and because it means a
+ * player can tell which half of the map they are standing on from the ground.
+ */
+function broderie(x, z, w, d, { y = 0, gravel = 0xb85f45, box: bx = 0x2e7a37,
+  edge = 0xd6c095, bloom = 0xe0577a } = {}) {
+  const out = [];
+  const put = (px, pz, pw, pd, col = bx, h = 0.34) =>
+    out.push(D(x + px, y + 0.06, z + pz, pw, h, pd, col, { mat: S.HEDGE, noShadow: true }));
+  out.push(D(x, y, z, w, 0.06, d, edge, { mat: S.SAND, noShadow: true }));
+  out.push(D(x, y + 0.03, z, w - 1.6, 0.05, d - 1.6, gravel, { mat: S.SAND, noShadow: true }));
+
+  const hw = w / 2, hd = d / 2;
+  put(0, -hd + 0.35, w, 0.7); put(0, hd - 0.35, w, 0.7);              // outer border
+  put(-hw + 0.35, 0, 0.7, d); put(hw - 0.35, 0, 0.7, d);
+  const ix = hw - 2.0, iz = hd - 2.0;
+  put(0, -iz, ix * 2, 0.5); put(0, iz, ix * 2, 0.5);                  // inner frame
+  put(-ix, 0, 0.5, iz * 2); put(ix, 0, 0.5, iz * 2);
+
+  // Four corner volutes: an arm, a return and a curl, mirrored into each corner.
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      const ax = sx * (ix - 0.6), az = sz * (iz - 0.6);
+      put(ax - sx * 1.8, az, 3.6, 0.42);
+      put(ax, az - sz * 1.5, 0.42, 3.0);
+      put(ax - sx * 3.2, az - sz * 1.1, 0.42, 2.2);
+      put(ax - sx * 4.1, az - sz * 2.0, 1.8, 0.42);
+      put(ax - sx * 2.2, az - sz * 2.4, 0.9, 0.9, bloom, 0.3);
+    }
+  }
+  // The centre motif: a rosette on a lozenge, with four beds of colour.
+  put(0, 0, 3.4, 0.46); put(0, 0, 0.46, 3.4);
+  put(0, 0, 2.0, 2.0, bx, 0.3);
+  put(0, 0, 1.1, 1.1, bloom, 0.4);
+  for (const [ox, oz] of [[-2.4, -2.4], [2.4, -2.4], [-2.4, 2.4], [2.4, 2.4]]) {
+    put(ox, oz, 1.5, 1.5, bloom, 0.3);
+    put(ox, oz, 2.1, 0.36); put(ox, oz, 0.36, 2.1);
+  }
+  return out;
+}
+
+/** A jet of water: a bright column and the plume that falls back off it. */
+function jet(x, z, y, h, { c = 0xdff4ff, r = 0.12 } = {}) {
+  return [
+    D(x, y, z, r * 2.0, h * 0.56, r * 2.0, c, { mat: S.WATER, noShadow: true, glow: 1.2 }),
+    D(x, y + h * 0.5, z, r * 1.15, h * 0.5, r * 1.15, c, { mat: S.WATER, noShadow: true, glow: 1.34 }),
+    D(x, y + h, z, r * 3.4, r * 1.5, r * 3.4, c, { mat: S.WATER, noShadow: true, glow: 1.12 }),
+  ];
+}
+
+/**
+ * A round fountain basin: stone rim, water, and whatever is standing in the
+ * middle of it. The rim is solid and knee-high, so the basin is a ring of
+ * cover you vault into rather than a hole in the floor.
+ */
+function basin(x, z, r, { y = 0, c = 0xe6d8b8, dress = 0xf0e5cb, water: wc = 0x46a8d6,
+  rim = 1.0, mat = S.ROCK } = {}) {
+  const out = [];
+  const t = 1.1;
+  /*
+   * One course of the wall as an octagon: four straight runs and four corner
+   * blocks. It has to be a ring rather than a `drum`, because a drum is two
+   * crossed boxes and two crossed boxes are a *disc* — which as a coping means
+   * a stone lid laid over the water it is supposed to be holding in.
+   */
+  const ring = (yy, hh, rr, tt, col, dec) => {
+    const put = dec ? D : B;
+    const o = dec ? { mat, noShadow: true } : { mat };
+    const k = rr * 0.7;
+    out.push(put(x, yy, z - rr + tt / 2, k * 2, hh, tt, col, o));
+    out.push(put(x, yy, z + rr - tt / 2, k * 2, hh, tt, col, o));
+    out.push(put(x - rr + tt / 2, yy, z, tt, hh, k * 2, col, o));
+    out.push(put(x + rr - tt / 2, yy, z, tt, hh, k * 2, col, o));
+    for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      out.push(put(x + sx * (rr - tt * 0.9), yy, z + sz * (rr - tt * 0.9), tt * 1.9, hh, tt * 1.9, col, o));
+    }
+  };
+  ring(y, rim, r, t, c, false);
+  ring(y + rim - 0.22, 0.26, r + 0.14, t + 0.26, dress, true);
+  out.push(D(x, y + 0.06, z, (r - t) * 2, 0.14, (r - t) * 1.42, wc, { mat: S.WATER, noShadow: true }));
+  out.push(D(x, y + 0.06, z, (r - t) * 1.42, 0.14, (r - t) * 2, wc, { mat: S.WATER, noShadow: true }));
+  return out;
+}
+
+/** Wrought iron: a run of railing with gilded spearheads. Solid, see-through. */
+function railings({ axis = 'x', at: a = 0, from, to, y = 0, h = 2.4, c = 0x2c3a32,
+  gold = 0xd9ad42, pitch = 0.62 }) {
+  const out = [];
+  const put = (u, len, yy, hh, wide, dec, col = c, m = S.METAL) => out.push((dec ? D : B)(
+    axis === 'x' ? u : a, yy, axis === 'x' ? a : u,
+    axis === 'x' ? len : wide, hh, axis === 'x' ? wide : len, col, { mat: m, ...(dec ? { noShadow: true } : {}) }));
+  const mid = (from + to) / 2, len = to - from;
+  put(mid, len, y, 0.18, 0.34, false);
+  put(mid, len, y + h * 0.42, 0.16, 0.3, false);
+  put(mid, len, y + h - 0.22, 0.22, 0.36, false);
+  for (let p = from + pitch / 2; p < to; p += pitch) {
+    put(p, 0.12, y, h, 0.12, true);
+    put(p, 0.2, y + h, 0.34, 0.2, true, gold, S.NEON);
+  }
+  return out;
+}
+
 /* ── Maps ────────────────────────────────────────────────────────────────── */
 
 /**
@@ -2220,6 +2721,744 @@ function nova() {
 }
 
 /**
+ * CHÂTEAU — a neo-Renaissance palace, and a garden you are allowed to fight in.
+ *
+ * The building is the point of the map and you can never set foot in it. That
+ * is deliberate, and it is the oldest trick there is: the thing you cannot
+ * reach is the thing that tells you where you are. Ninety-six metres of
+ * limestone and slate close the north side of the level, forty-one of them to
+ * the gilded weathervane on the dome, and from anywhere in the garden — the
+ * bottom of a hedge alley, the far end of the canal, standing in the fountain
+ * — you can look up, find it, and know instantly which way is north and how
+ * far down the axis you have got. No minimap does that as fast.
+ *
+ * Everything a player actually uses is the garden in front of it, and it is
+ * laid out the way a real one is: on an axis, in tiers, dropping away from the
+ * house. Which happens to be exactly how you build a level.
+ *
+ *   THE TERRACE, five metres up, the width of the map. The strongest position
+ *   here and the most exposed one: nine metres deep, balustraded, in view of
+ *   every square metre of the garden, and reachable by six separate flights of
+ *   steps — so it is somewhere you pass through rather than somewhere you own.
+ *   Under it, at garden level, a loggia of eight arches: a covered lateral run
+ *   for anybody who would rather not cross the parterre in the open.
+ *
+ *   THE PARTERRE, a metre and a half up and twenty-one deep. Two beds of box
+ *   scrollwork, two fountains, a double row of clipped yew. The broderie is
+ *   ankle-high decoration and not one strand of it is cover; the topiary and
+ *   the statues standing on it are solid, and they are what stops a terrace
+ *   with a rifle on it owning the entire level. Five flights drop to the
+ *   garden below.
+ *
+ *   THE GRAND BASIN, dead centre and the lowest ground on the map, twenty-four
+ *   metres across, with a knee-high rim you vault and an island in the middle.
+ *   Every approach to it is downhill and in the open, which is exactly why the
+ *   middle objective is standing on that island.
+ *
+ *   THE BOSQUETS, one either side, mirrored. Yew two and a half metres tall
+ *   cut into rooms and alleys around a green cabinet with a fountain in it.
+ *   Nothing sees in, nothing sees out, and both are the same twenty seconds
+ *   from a spawn: this is where the map's close-quarters fighting lives.
+ *
+ *   THE WATER GARDEN at the far end. A canal sunk half a metre into a low
+ *   terrace — a free step down and a free step up, so it is a lane you cross
+ *   this end of the map *under* the sightlines instead of over them — with a
+ *   matched pair of orangeries flanking it, both open arcades with walkable
+ *   roofs, and a domed temple on the axis closing the vista.
+ *
+ * The two teams start at the east and west ends of the middle, the same
+ * distance from all three points and from both bosquets, and all three points
+ * sit on the axis — terrace, basin, temple — so at the whistle neither half of
+ * the garden belongs to anybody.
+ */
+function chateau() {
+  /*
+   * Warm limestone, rose brick, blue-grey slate, and gold. It is worth writing
+   * the palette down because it is the whole reason ninety-six metres of
+   * building reads as one object rather than as a pile of boxes: there is not
+   * a single colour on the château that is not on this list.
+   */
+  const STONE = 0xe7d9ba,    // the ashlar every wall is faced in
+        DRESS = 0xf6edd8,    // dressed stone: quoins, surrounds, mouldings, balustrades
+        PLINTH = 0xcfbd97,   // plinth courses and retaining walls, a shade in shadow
+        BRICK = 0xb05a46,    // rose brick panelling between the stone chaining
+        SLATE = 0x5d6779,    // slate
+        SLATE_D = 0x474f61,  // the steepest slopes, which read a shade darker
+        GOLD = 0xd9ad42,
+        IRON = 0x2c3a32,
+        GLASSC = 0x33506d,
+        MARBLE = 0xefe6d3,
+        BOXC = 0x2f7a37,     // clipped box, on the parterre
+        YEW = 0x24602f,      // the bosquet hedges: taller, and much darker
+        GRAVEL = 0xd8c69c,
+        TERRE = 0xb85f45,    // the red gravel inside a bed of broderie
+        WATERC = 0x46a8d6,
+        LAWNC = 0x6ab84a,
+        TRUNK = 0x6f4c2e,
+        LEAF = 0x3f9440;
+
+  const boxes = [];
+  const add = (...xs) => { for (const x of xs) boxes.push(...(Array.isArray(x) ? x : [x])); };
+  /** Mirror a run of boxes about the central axis. A garden is symmetrical. */
+  const mx = (bs) => bs.map((b) => ({ ...b, x: -b.x }));
+
+  /*
+   * The levels everything is measured from. Move one and whatever stands on it
+   * moves with it, instead of leaving a step nobody meant to author.
+   */
+  const T3 = 5.0;        // the château terrace
+  const T2 = 1.6;        // the upper parterre — and the loggia floor beneath the terrace
+  const T0 = 0.55;       // the low terrace the water garden sits on
+  const FACE = -44;      // the façade line of the corps de logis and its two wings
+  const EDGE = -33;      // the south face of the terrace
+
+  /* ── The château ───────────────────────────────────────────────────────────
+   * Four walls per block and nothing inside them. Nobody can reach the
+   * building, so its interior is not built; everything glued to the outside is
+   * decor, exactly as the town houses do it, so no part of a façade is ever
+   * something a body snags on or something a bullet stops against short of the
+   * wall behind it.
+   * ────────────────────────────────────────────────────────────────────────*/
+
+  /** Four walls, hollow. */
+  const shell = ({ x, z, w, d, h, y = 0, c = STONE, t = 1.4 }) => [
+    B(x, y, z - d / 2 + t / 2, w, h, t, c, { mat: S.ROCK }),
+    B(x, y, z + d / 2 - t / 2, w, h, t, c, { mat: S.ROCK }),
+    B(x - w / 2 + t / 2, y, z, t, h, d - t * 2, c, { mat: S.ROCK }),
+    B(x + w / 2 - t / 2, y, z, t, h, d - t * 2, c, { mat: S.ROCK }),
+  ];
+
+  /** Plinth, string courses, cornice, quoins: the storeys, written on the wall. */
+  const dressed = ({ x, z, w, d, h, y = 0, courses = [], quoin = true, cornice = true }) => {
+    const out = [];
+    out.push(...bandCourse(x, y + 0.9, z, w, d, { c: PLINTH, h: 0.5, p: 0.42 }));
+    for (const cy of courses) out.push(...bandCourse(x, y + cy, z, w, d, { c: DRESS, h: 0.4, p: 0.24 }));
+    if (cornice) {
+      out.push(...bandCourse(x, y + h - 1.15, z, w, d, { c: DRESS, h: 0.42, p: 0.34 }));
+      out.push(...bandCourse(x, y + h - 0.72, z, w, d, { c: DRESS, h: 0.46, p: 0.62 }));
+      out.push(...bandCourse(x, y + h - 0.26, z, w, d, { c: DRESS, h: 0.28, p: 0.82 }));
+    }
+    if (quoin) {
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          out.push(...quoins(x + sx * w / 2, z + sz * d / 2, y + 1.4, h - 2.6,
+            { c: DRESS, sx: -sx, sz: -sz }));
+        }
+      }
+    }
+    return out;
+  };
+
+  // Corps de logis, two wings, two end pavilions, avant-corps. Built from the
+  // middle outwards and mirrored as it goes, because that is how it was drawn.
+  add(shell({ x: 0, z: -55, w: 28, d: 22, h: 17.0 }));
+  add(dressed({ x: 0, z: -55, w: 28, d: 22, h: 17.0, courses: [4.9, 9.6, 13.9] }));
+  for (const s of [-1, 1]) {
+    add(shell({ x: s * 25, z: -53, w: 22, d: 18, h: 13.4 }));
+    add(dressed({ x: s * 25, z: -53, w: 22, d: 18, h: 13.4, courses: [4.9, 9.6] }));
+    add(shell({ x: s * 42, z: -50, w: 12, d: 16, h: 16.0 }));
+    add(dressed({ x: s * 42, z: -50, w: 12, d: 16, h: 16.0, courses: [4.9, 9.6, 13.4] }));
+  }
+  add(shell({ x: 0, z: -48, w: 18, d: 14, h: 19.2 }));
+
+  /*
+   * Brick between the stone. The wings are chained in ashlar at every bay
+   * division and panelled in rose brick between them — brique et pierre, the
+   * thing that stops a hundred metres of elevation being a hundred metres of
+   * one colour, and the reason the middle of the building reads as more
+   * important than its ends without being any wider.
+   */
+  for (const s of [-1, 1]) {
+    for (const bx of [33, 27.5, 22, 16.5]) {
+      add(D(s * bx, 4.6, FACE + 0.1, 4.2, 4.6, 0.22, BRICK, { mat: S.BRICK, noShadow: true }));
+      add(D(s * bx, 10.0, FACE + 0.1, 4.2, 3.6, 0.22, BRICK, { mat: S.BRICK, noShadow: true }));
+    }
+    for (const bx of [36, 30.2, 24.8, 19.2, 14]) {
+      add(D(s * bx, 3.2, FACE + 0.16, 1.5, 10.6, 0.32, DRESS, { mat: S.ROCK, noShadow: true }));
+    }
+  }
+
+  /* The elevation. Three storeys of croisées on the corps, two on the wings and
+   * three on the pavilions, with pediments only over the piano nobile — the
+   * floor that mattered got the carving, which is the whole grammar of it. */
+  const bay = (x, z, face, { ground = true, noble = true, attic = null, ped = 'tri' } = {}) => {
+    const out = [];
+    if (ground) out.push(...croisee(x, 5.7, z, { face, w: 2.0, h: 3.3, c: DRESS, glass: GLASSC }));
+    if (noble) out.push(...croisee(x, 10.4, z, { face, w: 2.0, h: 3.0, c: DRESS, glass: GLASSC, ped }));
+    if (attic) out.push(...croisee(x, attic, z, { face, w: 1.8, h: 2.1, c: DRESS, glass: GLASSC }));
+    return out;
+  };
+  for (const s of [-1, 1]) {
+    for (const bx of [33, 27.5, 22, 16.5]) add(bay(s * bx, FACE, 's'));
+    for (const bx of [45, 39]) add(bay(s * bx, -42, 's', { attic: 14.0, ped: 'seg' }));
+    for (const bz of [-45.5, -50, -54.5]) add(bay(s * 48, bz, s < 0 ? 'w' : 'e', { attic: 14.0 }));
+    add(bay(s * 11.5, FACE, 's', { attic: 14.6 }));
+  }
+
+  /* The avant-corps: a triple blind arcade at the bottom, three tall windows on
+   * a balcony over it, a pediment with the arms carved into it, and then forty
+   * metres of drum, dome, lantern and gilded weathervane. */
+  for (const bx of [-5.7, 0, 5.7]) {
+    add(D(bx, 5.2, -40.8, 4.6, 6.5, 0.42, DRESS, { mat: S.ROCK, noShadow: true }));
+    add(D(bx, 5.4, -40.65, 3.4, 4.4, 0.34, 0x9c8d72, { mat: S.ROCK, noShadow: true }));
+    for (let i = 0; i < 5; i++) {
+      const u1 = ((i + 1) / 5) * 1.7;
+      const half = Math.sqrt(Math.max(0, 2.89 - u1 * u1));
+      const sw = 1.7 - half;
+      if (sw < 0.08) continue;
+      for (const sx of [-1, 1]) {
+        add(D(bx + sx * (half + sw / 2), 9.8 + (i / 5) * 1.7, -40.65, sw, 1.7 / 5 + 0.05, 0.36,
+          DRESS, { mat: S.ROCK, noShadow: true }));
+      }
+    }
+    add(croisee(bx, 12.6, -41, { face: 's', w: 2.1, h: 3.6, c: DRESS, glass: GLASSC, ped: 'tri' }));
+  }
+  for (const bx of [-8.4, -2.9, 2.9, 8.4]) {                        // the giant order
+    add(D(bx, 11.9, -40.7, 1.3, 6.4, 0.6, DRESS, { mat: S.ROCK, noShadow: true }));
+    add(D(bx, 18.3, -40.65, 1.7, 0.55, 0.7, DRESS, { mat: S.ROCK, noShadow: true }));
+  }
+  add(D(0, 11.5, -40.4, 15.5, 0.42, 1.3, DRESS, { mat: S.ROCK, noShadow: true }));   // the balcony
+  add(balustrade({ axis: 'x', at: -39.95, from: -7.6, to: 7.6, y: 11.92, h: 1.05, t: 0.4, c: DRESS, pitch: 0.86 }));
+  add(D(0, 18.85, -40.7, 18.6, 0.55, 0.9, DRESS, { mat: S.ROCK, noShadow: true }));
+  add(pediment(0, 19.4, -40.7, 18.0, 2.9, 0.9, DRESS, { steps: 6 }));
+  add(D(0, 19.9, -40.5, 3.2, 1.9, 0.36, GOLD, { mat: S.NEON, noShadow: true }));      // the arms
+  add(D(0, 19.6, -40.45, 4.6, 0.34, 0.3, GOLD, { mat: S.NEON, noShadow: true }));
+  add(D(0, 21.5, -40.45, 1.6, 0.9, 0.3, GOLD, { mat: S.NEON, noShadow: true }));
+
+  /* Drum, dome, lantern: the one thing on the map that is visible from all of it. */
+  add(D(0, 19.2, -48, 19.4, 1.9, 15.4, STONE, { mat: S.ROCK }));
+  add(balustrade({ axis: 'x', at: -55.4, from: -9.2, to: 9.2, y: 21.1, h: 1.15, t: 0.44, c: DRESS, pitch: 1.0 }));
+  for (const s of [-1, 1]) {
+    add(balustrade({ axis: 'z', at: s * 9.2, from: -55.4, to: -41.6, y: 21.1, h: 1.15, t: 0.44, c: DRESS, pitch: 1.0 }));
+    for (const cz of [-42.6, -55.4]) add(urn(s * 9.2, cz, 22.25, { c: DRESS, h: 1.5 }));
+  }
+  add(drum(0, 21.1, -48, 6.6, 4.6, STONE, { mat: S.ROCK, decor: true }));
+  for (let i = 0; i < 8; i++) {                                     // pilasters and lights on the drum
+    const a = (i / 8) * Math.PI * 2;
+    add(D(Math.cos(a) * 6.5, 21.1, -48 + Math.sin(a) * 6.5, 1.0, 4.6, 1.0, DRESS, { mat: S.ROCK, noShadow: true }));
+    const b = a + Math.PI / 8;
+    add(D(Math.cos(b) * 6.7, 22.4, -48 + Math.sin(b) * 6.7, 1.5, 2.4, 1.5, GLASSC, { mat: S.WINDOW, noShadow: true }));
+  }
+  add(drum(0, 25.7, -48, 7.3, 0.55, DRESS, { mat: S.ROCK, decor: true, noShadow: true }));
+  add(drum(0, 26.25, -48, 6.9, 0.4, DRESS, { mat: S.ROCK, decor: true, noShadow: true }));
+  add(domeRoof(0, 26.65, -48, 6.7, 7.2, SLATE_D, { steps: 12, ogee: 0.52 }));
+  for (let i = 0; i < 8; i++) {                                     // gilded ribs down the dome
+    const a = (i / 8) * Math.PI * 2 + Math.PI / 16;
+    for (let k = 0; k < 6; k++) {
+      const t = (k + 0.5) / 6;
+      const rr = 6.7 * Math.pow(Math.max(0, 1 - t * t), 0.52);
+      add(D(Math.cos(a) * rr, 26.65 + t * 7.2, -48 + Math.sin(a) * rr, 0.34, 7.2 / 6 + 0.12, 0.34,
+        GOLD, { mat: S.NEON, noShadow: true }));
+    }
+  }
+  add(drum(0, 33.6, -48, 2.5, 0.4, DRESS, { mat: S.ROCK, decor: true, noShadow: true }));
+  add(drum(0, 34.0, -48, 2.0, 3.0, DRESS, { mat: S.ROCK, decor: true, noShadow: true }));
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    add(D(Math.cos(a) * 2.0, 34.0, -48 + Math.sin(a) * 2.0, 0.42, 3.0, 0.42, DRESS, { mat: S.ROCK, noShadow: true }));
+  }
+  add(drum(0, 34.4, -48, 1.5, 2.2, GOLD, { mat: S.NEON, decor: true, noShadow: true, glow: 1.12 }));
+  add(drum(0, 37.0, -48, 2.4, 0.5, DRESS, { mat: S.ROCK, decor: true, noShadow: true }));
+  add(domeRoof(0, 37.5, -48, 2.1, 2.0, SLATE, { steps: 6 }));
+  add(drum(0, 39.5, -48, 0.55, 0.75, GOLD, { mat: S.NEON, decor: true, noShadow: true, glow: 1.3 }));
+  add(D(0, 40.2, -48, 0.2, 1.7, 0.2, GOLD, { mat: S.NEON, noShadow: true, glow: 1.3 }));
+  add(D(0, 41.0, -48, 1.9, 0.5, 0.12, GOLD, { mat: S.NEON, noShadow: true, glow: 1.3 }));
+
+  /* The roofs, and the eighteen lucarnes standing in them. */
+  add(roofStack(0, 17.0, -55, 29.6, 23.6, 9.6, SLATE, { steps: 9, curve: 0.86, ridgeW: 7.5, ridgeD: 1.3 }));
+  add(D(0, 26.4, -55, 8.0, 0.5, 1.0, SLATE_D, { mat: S.ROOF, noShadow: true }));
+  for (let i = 0; i < 9; i++) add(D(-3.6 + i * 0.9, 26.9, -55, 0.22, 0.85, 0.22, GOLD, { mat: S.NEON, noShadow: true }));
+  add(D(0, 26.9, -55, 7.6, 0.34, 0.18, GOLD, { mat: S.NEON, noShadow: true }));
+  for (const s of [-1, 1]) {
+    // The wings: a mansard, steep to the break and shallow above it.
+    add(roofStack(s * 25, 13.4, -53, 23.6, 19.6, 4.6, SLATE, { steps: 5, curve: 1, ridgeW: 15.5, ridgeD: 11.5 }));
+    add(D(s * 25, 17.9, -53, 16.2, 0.42, 12.2, DRESS, { mat: S.ROCK, noShadow: true }));
+    add(roofStack(s * 25, 18.3, -53, 15.5, 11.5, 2.9, SLATE_D, { steps: 4, ridgeW: 7.0, ridgeD: 1.2 }));
+    add(D(s * 25, 21.2, -53, 7.4, 0.34, 0.8, GOLD, { mat: S.NEON, noShadow: true }));
+    // The pavilions: steep at the eaves, easing as they climb, closing to a point.
+    add(roofStack(s * 42, 16.0, -50, 13.8, 17.8, 10.6, SLATE, { steps: 10, curve: 0.66, ridgeW: 1.5, ridgeD: 1.5 }));
+    add(drum(s * 42, 26.6, -50, 1.5, 0.42, DRESS, { mat: S.ROCK, decor: true, noShadow: true }));
+    add(drum(s * 42, 27.0, -50, 1.15, 1.9, DRESS, { mat: S.ROCK, decor: true, noShadow: true }));
+    add(drum(s * 42, 27.2, -50, 0.85, 1.5, GLASSC, { mat: S.WINDOW, decor: true, noShadow: true }));
+    add(coneRoof(s * 42, 28.9, -50, 1.5, 2.0, SLATE_D, { steps: 5 }));
+    add(D(s * 42, 30.9, -50, 0.18, 1.5, 0.18, GOLD, { mat: S.NEON, noShadow: true, glow: 1.2 }));
+    add(D(s * 42, 31.4, -50, 1.3, 0.34, 0.1, GOLD, { mat: S.NEON, noShadow: true, glow: 1.2 }));
+    // The four corner turrets. Solid to the eaves — the front pair stand on the
+    // terrace, where a player walks straight into one.
+    for (const tz of [-42, -58]) {
+      add(drum(s * 48, 0, tz, 2.5, 16.0, STONE, { mat: S.ROCK }));
+      for (const cy of [4.7, 9.4]) add(drum(s * 48, cy, tz, 2.75, 0.42, DRESS, { mat: S.ROCK, decor: true, noShadow: true }));
+      add(drum(s * 48, 14.9, tz, 2.95, 0.5, DRESS, { mat: S.ROCK, decor: true, noShadow: true }));
+      add(drum(s * 48, 15.4, tz, 3.25, 0.5, DRESS, { mat: S.ROCK, decor: true, noShadow: true }));
+      for (const wy of [6.2, 10.9]) {
+        add(D(s * 50.6, wy, tz, 0.24, 2.1, 1.1, GLASSC, { mat: S.WINDOW, noShadow: true }));
+        add(D(s * 48, wy, tz + 2.6, 1.1, 2.1, 0.24, GLASSC, { mat: S.WINDOW, noShadow: true }));
+      }
+      add(coneRoof(s * 48, 15.9, tz, 3.2, 7.6, SLATE_D, { steps: 10, curve: 0.9 }));
+      add(D(s * 48, 23.5, tz, 0.2, 1.5, 0.2, GOLD, { mat: S.NEON, noShadow: true, glow: 1.2 }));
+      add(D(s * 48, 24.6, tz, 0.55, 0.55, 0.55, GOLD, { mat: S.NEON, noShadow: true, glow: 1.2 }));
+    }
+    // Lucarnes, standing in the slate directly over the bays below them.
+    for (const bx of [33, 27.5, 22, 16.5]) {
+      add(lucarne(s * bx, 13.6, -43.4, { w: 2.0, h: 3.4, face: 's', c: DRESS, glass: GLASSC, gold: GOLD }));
+    }
+    add(lucarne(s * 11.5, 17.2, -43.5, { w: 2.1, h: 3.6, face: 's', c: DRESS, glass: GLASSC, gold: GOLD }));
+    for (const bx of [45, 39]) add(lucarne(s * bx, 16.2, -41.4, { w: 1.9, h: 3.2, face: 's', c: DRESS, glass: GLASSC, gold: GOLD }));
+    for (const bx of [30, 20]) add(lucarne(s * bx, 13.6, -62.6, { w: 1.9, h: 3.2, face: 'n', c: DRESS, glass: GLASSC, gold: GOLD }));
+    // Chimneys.
+    add(chimneyStack(s * 6.5, 24.2, -58.5, 5.4, { c: STONE, dress: DRESS, pot: BRICK }));
+    add(chimneyStack(s * 6.5, 24.2, -51.5, 4.6, { c: STONE, dress: DRESS, pot: BRICK }));
+    add(chimneyStack(s * 19.5, 19.0, -53, 4.4, { c: STONE, dress: DRESS, pot: BRICK }));
+    add(chimneyStack(s * 30.5, 19.0, -53, 4.9, { c: STONE, dress: DRESS, pot: BRICK }));
+    add(chimneyStack(s * 42, 22.0, -55.6, 4.2, { c: STONE, dress: DRESS, pot: BRICK, w: 1.4, d: 1.2 }));
+  }
+
+  /* ── The terrace ───────────────────────────────────────────────────────────
+   * The width of the map, five metres up, and hollow through the middle: the
+   * loggia under it is the only way across this end of the level that the
+   * terrace itself cannot see into.
+   * ────────────────────────────────────────────────────────────────────────*/
+  add(B(0, 0, -38.5, 48, T2, 11, PLINTH, { mat: S.TILE }));                       // the loggia floor
+  add(D(0, T2, -38.5, 47, 0.06, 10.6, 0xbfb49b, { mat: S.TILE, noShadow: true }));
+  add(B(0, 4.45, -38.5, 48.4, 0.55, 11.4, PLINTH, { roof: true, mat: S.ROCK }));  // its ceiling: the terrace
+  for (const s of [-1, 1]) {
+    add(B(s * 37.5, 0, -38.5, 27, T3, 11, PLINTH, { roof: true, mat: S.ROCK }));  // the solid ends
+    add(arcade({ axis: 'x', at: EDGE - 0.55, from: s < 0 ? -24 : 8, to: s < 0 ? -8 : 24,
+      y: T2, h: 2.85, t: 1.1, bays: 4, pier: 1.7, c: PLINTH, dress: DRESS }));
+    // Rustication across the blind ends, and a statue in a niche in each.
+    for (let i = 0; i < 5; i++) {
+      add(D(s * 37.5, 0.55 + i * 0.92, EDGE + 0.1, 27, 0.66, 0.34, i % 2 ? PLINTH : DRESS,
+        { mat: S.ROCK, noShadow: true }));
+    }
+    for (const nx of [32, 43]) {
+      add(D(s * nx, 1.9, EDGE + 0.2, 2.6, 3.0, 0.44, 0x9c8d72, { mat: S.ROCK, noShadow: true }));
+      add(D(s * nx, 4.72, EDGE + 0.3, 3.4, 0.4, 0.62, DRESS, { mat: S.ROCK, noShadow: true }));
+      add(statue(s * nx, EDGE + 0.55, T2, { c: MARBLE, plinth: DRESS, h: 1.9 }));
+    }
+    add(D(s * 37.5, 4.62, EDGE + 0.28, 27, 0.44, 0.8, DRESS, { mat: S.ROCK, noShadow: true }));
+  }
+  // The perron: two flights off the terrace either side of a fountain niche.
+  add(B(0, T2, EDGE - 0.55, 16, 2.85, 1.1, PLINTH, { mat: S.ROCK }));
+  add(D(0, T2 + 0.1, EDGE + 0.15, 5.2, 2.5, 0.5, 0x8f8168, { mat: S.ROCK, noShadow: true }));
+  for (let i = 0; i < 4; i++) {
+    const u1 = ((i + 1) / 4) * 2.6;
+    const half = Math.sqrt(Math.max(0, 6.76 - u1 * u1));
+    const sw = 2.6 - half;
+    if (sw < 0.08) continue;
+    for (const sx of [-1, 1]) {
+      add(D(sx * (half + sw / 2), T2 + 2.6 + (i / 4) * 0.6, EDGE + 0.15, sw, 0.6 / 4 + 0.06, 0.5,
+        0x8f8168, { mat: S.ROCK, noShadow: true }));
+    }
+  }
+  add(B(0, T2, EDGE + 1.1, 4.4, 0.62, 1.7, DRESS, { mat: S.ROCK }));               // its basin
+  add(D(0, T2 + 0.5, EDGE + 1.1, 3.6, 0.14, 1.2, WATERC, { mat: S.WATER, noShadow: true }));
+  add(D(0, T2 + 1.3, EDGE + 0.55, 0.9, 1.1, 0.3, DRESS, { mat: S.ROCK, noShadow: true }));
+  add(jet(0, EDGE + 0.9, T2 + 0.6, 1.4, { r: 0.09 }));
+
+  for (const [sx, sw] of [[43, 4.6], [30, 4.6], [5.6, 5.0]]) {
+    for (const s of [-1, 1]) {
+      add(stairs({ x: s * sx, z: -27.3, y: T2, w: sw, steps: 6, rise: 0.5667, run: 0.95,
+        dir: '-z', c: DRESS, mat: S.ROCK }));
+      for (const e of [-1, 1]) {
+        add(B(s * (sx + e * (sw / 2 + 0.35)), T2, -30.1, 0.7, 3.4, 6.2, DRESS, { mat: S.ROCK }));
+        add(urn(s * (sx + e * (sw / 2 + 0.35)), -27.0, T3, { c: DRESS, h: 1.4 }));
+      }
+    }
+  }
+  // The balustrade along the whole edge, with the six flights cut out of it.
+  add(balustrade({ axis: 'x', at: EDGE - 0.35, from: -51, to: 51, y: T3, h: 1.15, t: 0.5,
+    c: DRESS, pitch: 1.1,
+    gaps: [[-45.6, -40.4], [-32.6, -27.4], [-8.4, -3.0], [3.0, 8.4], [27.4, 32.6], [40.4, 45.6]],
+    urns: [-51, -37, -20, 20, 37, 51] }));
+  for (const s of [-1, 1]) {
+    add(balustrade({ axis: 'z', at: s * 50.7, from: -44, to: EDGE, y: T3, h: 1.15, t: 0.5, c: DRESS, pitch: 1.1 }));
+    add(B(s * 51.05, 0, -38.5, 0.9, T3, 11, PLINTH, { mat: S.ROCK }));
+    // Orange trees in their tubs, the way they are wheeled out of the orangery
+    // in May: two rows the length of the terrace, with a walk down the middle.
+    for (const tz of [-35.4, -39.6]) {
+      for (const tx of [11.5, 17, 22.5, 29, 34.5, 40, 45.5]) {
+        add(topiary(s * tx, tz, { y: T3, kind: 'ball', h: 2.5, r: 1.0, c: LEAF, tub: 1.3, tubC: 0x2f6b4a }));
+      }
+    }
+    for (const tx of [25.75, 42.75]) {                     // and a pair of great vases between them
+      add(B(s * tx, T3, -37.5, 1.6, 0.5, 1.6, DRESS, { mat: S.ROCK }));
+      add(urn(s * tx, -37.5, T3 + 0.5, { c: DRESS, h: 2.3 }));
+    }
+    // Inside the loggia, where the terrace cannot see: benches and a statue.
+    add(statue(s * 16, -42.4, T2, { c: MARBLE, plinth: DRESS, h: 1.9 }));
+    add(bench(s * 10.5, -42.6, 0, 0xb8752f, T2), bench(s * 21.5, -42.6, 0, 0xb8752f, T2));
+  }
+
+  /* ── The upper parterre ────────────────────────────────────────────────────
+   * Two beds of broderie, two fountains, and the topiary that stops the
+   * terrace above from owning everything below it.
+   * ────────────────────────────────────────────────────────────────────────*/
+  add(B(0, 0, -22.3, 120, T2, 21.4, GRAVEL, { roof: true, mat: S.SAND }));
+  add(D(0, T2, -22.3, 22, 0.05, 21.4, 0xcbb68c, { mat: S.SAND, noShadow: true }));   // the axis, raked
+  const parterre = [];
+  const pw = (...xs) => { for (const x of xs) parterre.push(...(Array.isArray(x) ? x : [x])); };
+  pw(broderie(-40, -22.25, 13, 16.5, { y: T2, gravel: TERRE, box: BOXC, edge: 0xcbb68c }));
+  pw(broderie(-19.5, -22.25, 13, 16.5, { y: T2, gravel: TERRE, box: BOXC, edge: 0xcbb68c }));
+  pw(basin(-29.75, -22.25, 3.4, { y: T2, c: PLINTH, dress: DRESS, water: WATERC, rim: 0.9 }));
+  pw(drum(-29.75, T2 + 0.16, -22.25, 1.0, 1.0, DRESS, { mat: S.ROCK }));
+  pw(drum(-29.75, T2 + 1.16, -22.25, 1.5, 0.3, DRESS, { mat: S.ROCK, decor: true, noShadow: true }));
+  pw(drum(-29.75, T2 + 1.46, -22.25, 0.4, 1.4, MARBLE, { mat: S.ROCK, decor: true, noShadow: true }));
+  pw(jet(-29.75, -22.25, T2 + 1.46, 2.6, { r: 0.11 }));
+  for (const tz of [-30.4, -25.4, -19.1, -14.1]) {
+    pw(topiary(-46.5, tz, { y: T2, kind: 'cone', h: 3.0, r: 1.15, c: BOXC }));
+    pw(topiary(-33.5, tz, { y: T2, kind: 'cone', h: 2.7, r: 1.05, c: BOXC }));
+    pw(topiary(-26.0, tz, { y: T2, kind: 'cone', h: 2.7, r: 1.05, c: BOXC }));
+    pw(topiary(-13.0, tz, { y: T2, kind: 'obelisk', h: 3.2, r: 1.0, c: YEW }));
+  }
+  for (const tz of [-28, -22.25, -16.5]) pw(statue(-10.6, tz, T2, { c: MARBLE, plinth: DRESS, rot: 1 }));
+  for (const tz of [-31.2, -13.4]) {
+    pw(topiary(-6.4, tz, { y: T2, kind: 'ball', h: 2.3, r: 0.95, c: BOXC, tub: 1.4 }));
+    pw(hedge({ axis: 'x', at: tz, from: -48, to: -11.5, y: T2, h: 1.1, w: 1.0, c: BOXC }));
+  }
+  pw(hedge({ axis: 'z', at: -48.5, from: -31.2, to: -13.4, y: T2, h: 1.1, w: 1.0, c: BOXC }));
+  add(parterre, mx(parterre));
+  // Its retaining wall, and the five flights down into the garden.
+  for (let i = 0; i < 2; i++) {
+    add(D(0, 0.12 + i * 0.72, -11.35, 120, 0.6, 0.4, i % 2 ? PLINTH : DRESS, { mat: S.ROCK, noShadow: true }));
+  }
+  add(D(0, T2 - 0.3, -11.3, 120, 0.34, 0.5, DRESS, { mat: S.ROCK, noShadow: true }));
+  add(balustrade({ axis: 'x', at: -12.1, from: -60, to: 60, y: T2, h: 1.1, t: 0.46, c: DRESS, pitch: 1.1,
+    gaps: [[-8, 8], [-29.6, -22.4], [22.4, 29.6], [-51.6, -44.4], [44.4, 51.6]],
+    urns: [-60, -40, -16, 16, 40, 60] }));
+  add(stairs({ x: 0, z: -8.6, y: 0, w: 15, steps: 3, rise: 0.5333, run: 1.0, dir: '-z', c: DRESS, mat: S.ROCK }));
+  for (const s of [-1, 1]) {
+    for (const sx of [26, 48]) {
+      add(stairs({ x: s * sx, z: -8.6, y: 0, w: 6.6, steps: 3, rise: 0.5333, run: 1.0, dir: '-z', c: DRESS, mat: S.ROCK }));
+    }
+    // Two water buffets set into the wall, either side of the great steps.
+    add(D(s * 14, 0.2, -11.5, 3.2, 1.4, 0.7, 0x8f8168, { mat: S.ROCK, noShadow: true }));
+    add(B(s * 14, 0, -10.7, 4.0, 0.55, 1.5, DRESS, { mat: S.ROCK }));
+    add(D(s * 14, 0.45, -10.7, 3.2, 0.14, 1.0, WATERC, { mat: S.WATER, noShadow: true }));
+    add(D(s * 14, 0.9, -11.35, 0.7, 0.7, 0.4, DRESS, { mat: S.ROCK, noShadow: true }));
+  }
+
+  /* ── The grand basin ───────────────────────────────────────────────────────
+   * The lowest ground on the map and twenty-four metres across, with everything
+   * around it looking down into it. Which is precisely why the middle point of
+   * the match is the island in the middle of it.
+   * ────────────────────────────────────────────────────────────────────────*/
+  add(D(0, 0.01, 3, 46, 0.04, 30, LAWNC, { mat: S.GRASS, noShadow: true }));
+  add(basin(0, 3, 12, { c: PLINTH, dress: DRESS, water: WATERC, rim: 1.0 }));
+  add(drum(0, 0, 3, 5.3, 0.55, PLINTH, { mat: S.ROCK }));                         // the island, in two steps
+  add(drum(0, 0.55, 3, 4.0, 0.55, PLINTH, { mat: S.ROCK }));
+  add(drum(0, 1.1, 3, 4.24, 0.22, DRESS, { mat: S.ROCK, decor: true, noShadow: true }));
+  add(drum(0, 1.32, 3, 1.9, 1.1, 0x8f8168, { mat: S.ROCK }));                     // the rocaille
+  add(statue(0, 3, 2.4, { c: MARBLE, plinth: 0x8f8168, h: 2.4 }));
+  add(jet(0, 3, 6.5, 3.2, { r: 0.16 }));
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+    add(jet(Math.cos(a) * 2.9, 3 + Math.sin(a) * 2.9, 1.32, 1.7, { r: 0.1 }));
+  }
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
+    const px = Math.cos(a) * 7.6, pz = 3 + Math.sin(a) * 7.6;
+    add(D(px, 0.06, pz, 1.1, 0.66, 1.1, 0x8f8168, { mat: S.ROCK, noShadow: true }));
+    add(D(px, 0.72, pz, 0.6, 0.7, 0.6, 0x7d6a52, { mat: S.ROCK, noShadow: true }));   // a bronze mask
+    add(jet(px, pz, 1.42, 1.1, { r: 0.075 }));
+    add(urn(Math.cos(a) * 13.4, 3 + Math.sin(a) * 13.4, 0, { c: DRESS, h: 1.9 }));
+  }
+
+  /* ── The flanks ────────────────────────────────────────────────────────────
+   * A grove of pleached lime either side of the basin, planted on the
+   * quincunx. Not only because a garden of this kind always has them: both
+   * team spawns are in these two rectangles, and with nothing standing in them
+   * a player's first three seconds are spent in the open with a five-metre
+   * terrace looking straight down their length. A pleached tree is exactly the
+   * right answer to that — the trunks are thin enough to see and shoot between
+   * at head height, and the clipped block of leaves above them is solid, so
+   * nothing on the terrace holds a line into here that somebody down here
+   * cannot take straight back.
+   * ────────────────────────────────────────────────────────────────────────*/
+  const flank = [];
+  const fk = (...xs) => { for (const x of xs) flank.push(...(Array.isArray(x) ? x : [x])); };
+  fk(D(-36, 0.01, 0.5, 38, 0.04, 23, 0x5da245, { mat: S.GRASS, noShadow: true }));
+  for (const tx of [-46, -36.5, -27]) {
+    for (const tz of [-6, 1, 8]) {
+      if (tx === -36.5 && tz === 1) continue;               // the middle of a quincunx is its ornament
+      fk(B(tx, 0, tz, 0.8, 2.5, 0.8, TRUNK, { mat: S.BARK }));
+      fk(B(tx, 2.5, tz, 4.9, 2.4, 4.9, LEAF, { mat: S.FOLIAGE }));
+      fk(B(tx, 4.9, tz, 3.4, 0.95, 3.4, 0x35853a, { mat: S.FOLIAGE, noShadow: true }));
+    }
+  }
+  fk(B(-36.5, 0, 1, 5.2, 0.34, 5.2, DRESS, { mat: S.ROCK }));
+  fk(B(-36.5, 0.34, 1, 4.0, 0.34, 4.0, DRESS, { mat: S.ROCK }));
+  fk(B(-36.5, 0.68, 1, 1.5, 1.5, 1.5, PLINTH, { mat: S.ROCK }));
+  fk(D(-36.5, 2.18, 1, 1.8, 0.24, 1.8, DRESS, { mat: S.ROCK, noShadow: true }));
+  fk(urn(-36.5, 1, 2.42, { c: MARBLE, h: 2.4 }));
+  fk(hedge({ axis: 'x', at: -9.8, from: -43.5, to: -30.5, h: 1.35, w: 1.1, c: BOXC }));
+  fk(hedge({ axis: 'x', at: 11.8, from: -50.5, to: -45.5, h: 1.35, w: 1.1, c: BOXC }));
+  fk(hedge({ axis: 'x', at: 11.8, from: -39.5, to: -29, h: 1.35, w: 1.1, c: BOXC }));
+  fk(hedge({ axis: 'z', at: -50.5, from: -9.8, to: -2, h: 1.35, w: 1.1, c: BOXC }));
+  fk(hedge({ axis: 'z', at: -50.5, from: 4, to: 11.8, h: 1.35, w: 1.1, c: BOXC }));
+  for (const [tx, tz] of [[-43.5, -9.8], [-30.5, -9.8], [-50.5, 11.8], [-29, 11.8]]) {
+    fk(topiary(tx, tz, { kind: 'obelisk', h: 3.0, r: 0.95, c: YEW }));
+  }
+  for (const [tx, tz] of [[-55, -9], [-55, 11]]) fk(statue(tx, tz, 0, { c: MARBLE, plinth: DRESS, h: 2.0 }));
+  fk(bench(-31.5, -2.5, 1, 0xb8752f), bench(-31.5, 4.5, 1, 0xb8752f));
+  fk(urn(-19, -6, 0, { c: DRESS, h: 1.8 }), urn(-19, 8, 0, { c: DRESS, h: 1.8 }));
+  add(flank, mx(flank));
+
+  /* ── The bosquets ──────────────────────────────────────────────────────────
+   * Yew two and a half metres tall, cut into rooms around a green cabinet with
+   * a fountain in it. The close-quarters half of the map, and there is one for
+   * each team at exactly the same distance from their spawn.
+   * ────────────────────────────────────────────────────────────────────────*/
+  const HW = { h: 2.6, w: 1.7, c: YEW };
+  const bosquet = [];
+  const bq = (...xs) => { for (const x of xs) bosquet.push(...(Array.isArray(x) ? x : [x])); };
+  bq(D(-35.5, 0.01, 21.25, 44, 0.04, 17.5, 0x559b3f, { mat: S.GRASS, noShadow: true }));
+  // The palisade round it, with four ways in cut out of it.
+  for (const zz of [12.5, 30]) {
+    let cur = -57;
+    for (const [gs, ge] of [[-45, -40], [-28, -23]]) {
+      if (gs > cur) bq(hedge({ axis: 'x', at: zz, from: cur, to: gs, ...HW }));
+      cur = ge;
+    }
+    bq(hedge({ axis: 'x', at: zz, from: cur, to: -14, ...HW }));
+  }
+  bq(hedge({ axis: 'z', at: -14, from: 12.5, to: 17.5, ...HW }));
+  bq(hedge({ axis: 'z', at: -14, from: 25, to: 30, ...HW }));
+  bq(hedge({ axis: 'z', at: -56.5, from: 12.5, to: 30, ...HW }));
+  /*
+   * The cabinet de verdure at the heart of it: a hedged room with four ways in
+   * and a fountain in the middle. Every alley in here clears two metres
+   * between the leaves, and that number is the whole design — a body is 84
+   * centimetres across, so an alley much under two is a wall with a pattern
+   * drawn on it, and a bosquet built out of those is not a place you fight in,
+   * it is a place you get stuck in.
+   */
+  for (const zz of [16.4, 26.2]) {
+    bq(hedge({ axis: 'x', at: zz, from: -44.5, to: -38.8, ...HW }));
+    bq(hedge({ axis: 'x', at: zz, from: -32.2, to: -26.5, ...HW }));
+  }
+  for (const xx of [-44.5, -26.5]) {
+    bq(hedge({ axis: 'z', at: xx, from: 16.4, to: 19.6, ...HW }));
+    bq(hedge({ axis: 'z', at: xx, from: 23.0, to: 26.2, ...HW }));
+  }
+  bq(basin(-35.5, 21.25, 2.6, { c: PLINTH, dress: DRESS, water: WATERC, rim: 0.85 }));
+  bq(drum(-35.5, 0.1, 21.25, 0.9, 1.2, DRESS, { mat: S.ROCK }));
+  bq(statue(-35.5, 21.25, 1.3, { c: MARBLE, plinth: DRESS, h: 1.8 }));
+  bq(jet(-35.5, 21.25, 2.5, 1.8, { r: 0.1 }));
+  for (const [tx, tz] of [[-41.6, 18.3], [-29.4, 18.3], [-41.6, 24.2], [-29.4, 24.2]]) {
+    bq(topiary(tx, tz, { kind: 'spiral', h: 2.8, r: 0.95, c: YEW }));
+  }
+  bq(bench(-40.5, 21.25, 1, 0xb8752f), bench(-30.5, 21.25, 1, 0xb8752f));
+  // The rooms outside it: enough free-standing hedge that no alley ever runs
+  // the length of the bosquet, and something to look at in each of them.
+  bq(hedge({ axis: 'x', at: 18.5, from: -56.5, to: -49.5, ...HW }));
+  bq(hedge({ axis: 'x', at: 24.5, from: -56.5, to: -49.5, ...HW }));
+  bq(hedge({ axis: 'z', at: -20.5, from: 17.5, to: 26.0, ...HW }));
+  for (const [tx, tz] of [[-52.8, 15.4], [-52.8, 21.25], [-52.8, 27.6], [-17.2, 21.25]]) {
+    bq(statue(tx, tz, 0, { c: MARBLE, plinth: DRESS, h: 2.0 }));
+  }
+  for (const [tx, tz] of [[-23.5, 15.4], [-23.5, 27.1], [-17.2, 15.4], [-17.2, 27.1]]) {
+    bq(topiary(tx, tz, { kind: 'cone', h: 2.9, r: 1.1, c: YEW }));
+  }
+  for (const [tx, tz] of [[-47.4, 21.25], [-23.5, 21.25]]) bq(urn(tx, tz, 0, { c: DRESS, h: 2.0 }));
+  for (const [tx, tz] of [[-46.5, 8.5], [-24, 8.5], [-24, 33.5], [-56.5, 33.5]]) {
+    bq(tree(tx, tz, { h: 6.2, r: 5.4, c: LEAF, trunk: TRUNK }));
+  }
+  add(bosquet, mx(bosquet));
+  // The axis running between them, and what lines it.
+  add(D(0, 0.01, 21.25, 26, 0.05, 17.5, GRAVEL, { mat: S.SAND, noShadow: true }));
+  for (const s of [-1, 1]) {
+    for (const tz of [13.8, 18.8, 23.8, 28.8]) {
+      add(topiary(s * 11.5, tz, { kind: 'cone', h: 3.1, r: 1.15, c: YEW }));
+      add(urn(s * 6.0, tz, 0, { c: DRESS, h: 1.7 }));
+    }
+  }
+
+  /* ── The water garden ──────────────────────────────────────────────────────
+   * A low terrace with a canal cut into it, an orangery down either side of
+   * it, and a domed temple closing the axis. The canal is half a metre
+   * down, which is a free step in and a free step back out: a lane you use to
+   * cross this end of the map under the sightlines rather than over them.
+   * ────────────────────────────────────────────────────────────────────────*/
+  add(B(0, 0, 34.75, 120, T0, 7.5, GRAVEL, { roof: true, mat: S.SAND }));
+  add(B(0, 0, 54.75, 120, T0, 14.5, GRAVEL, { roof: true, mat: S.SAND }));
+  for (const s of [-1, 1]) add(B(s * 41.5, 0, 43, 37, T0, 9, GRAVEL, { roof: true, mat: S.SAND }));
+  add(D(0, 0.05, 43, 46, 0.12, 9, WATERC, { mat: S.WATER, noShadow: true }));       // the canal
+  for (const s of [-1, 1]) {
+    add(D(0, T0 - 0.2, 43 + s * 4.6, 47, 0.24, 0.9, DRESS, { mat: S.ROCK, noShadow: true }));
+    add(D(s * 23.1, T0 - 0.2, 43, 0.9, 0.24, 9.8, DRESS, { mat: S.ROCK, noShadow: true }));
+    for (const cz of [37.4, 48.6]) add(urn(s * 23.5, cz, T0, { c: DRESS, h: 1.8 }));
+    add(D(0, T0, 33.5, 120, 0.05, 5, 0x5da245, { mat: S.GRASS, noShadow: true }));
+  }
+
+  const wing = [];
+  const wg = (...xs) => { for (const x of xs) wing.push(...(Array.isArray(x) ? x : [x])); };
+  // The orangery: an open arcade facing the canal, and a roof worth climbing to.
+  wg(B(-44, T0, 49.8, 24, 6.25, 1.4, STONE, { mat: S.ROCK }));
+  wg(B(-44, T0, 37.2, 24, 6.25, 1.4, STONE, { mat: S.ROCK }));
+  wg(B(-55.3, T0, 43.5, 1.4, 6.25, 11.2, STONE, { mat: S.ROCK }));
+  wg(arcade({ axis: 'z', at: -32.7, from: 37.2, to: 49.8, y: T0, h: 6.25, t: 1.4,
+    bays: 3, pier: 1.8, c: STONE, dress: DRESS }));
+  wg(dressed({ x: -44, z: 43.5, w: 24, d: 14, h: 6.25, y: T0, courses: [] }));
+  wg(D(-44, T0 + 0.02, 43.5, 21, 0.1, 11, 0xb9ac93, { mat: S.TILE, noShadow: true }));
+  wg(B(-44, T0 + 6.25, 43.5, 25.4, 0.55, 15.4, PLINTH, { roof: true, mat: S.ROCK }));
+  wg(balustrade({ axis: 'z', at: -31.9, from: 36.2, to: 50.8, y: T0 + 6.8, h: 1.1, t: 0.46, c: DRESS, pitch: 1.4 }));
+  wg(balustrade({ axis: 'x', at: 51.0, from: -56.6, to: -31.4, y: T0 + 6.8, h: 1.1, t: 0.46, c: DRESS, pitch: 1.4 }));
+  wg(balustrade({ axis: 'x', at: 36.0, from: -56.6, to: -43.0, y: T0 + 6.8, h: 1.1, t: 0.46, c: DRESS, pitch: 1.4 }));
+  wg(balustrade({ axis: 'z', at: -56.6, from: 36.2, to: 50.8, y: T0 + 6.8, h: 1.1, t: 0.46, c: DRESS, pitch: 1.4 }));
+  for (const [ux, uz] of [[-56.6, 36.0], [-56.6, 51.0], [-31.9, 36.0], [-31.9, 51.0]]) wg(urn(ux, uz, T0 + 7.9, { c: DRESS, h: 1.5 }));
+  wg(stairs({ x: -41.6, z: 34.4, y: T0, w: 4.4, steps: 12, rise: 0.5667, run: 0.9, dir: '-x', c: DRESS, mat: S.ROCK }));
+  wg(B(-52.65, T0, 34.4, 0.7, 6.8, 4.6, DRESS, { mat: S.ROCK }));
+  wg(D(-47, T0 + 6.8, 34.4, 12, 0.3, 4.8, DRESS, { mat: S.ROCK, noShadow: true }));
+  for (const oz of [41.4, 45.6]) {           // orange trees, lined up with the piers
+    wg(topiary(-48, oz, { y: T0, kind: 'ball', h: 2.6, r: 1.05, c: LEAF, tub: 1.5, tubC: 0x2f6b4a }));
+    wg(topiary(-38.5, oz, { y: T0, kind: 'ball', h: 2.6, r: 1.05, c: LEAF, tub: 1.5, tubC: 0x2f6b4a }));
+  }
+  for (const oz of [38.4, 48.6]) {
+    wg(topiary(-52, oz, { y: T0, kind: 'ball', h: 2.4, r: 1.0, c: LEAF, tub: 1.4, tubC: 0x2f6b4a }));
+  }
+  for (const bz of [39.5, 43.5, 47.5]) wg(croisee(-55.3, T0 + 1.4, bz, { face: 'w', w: 1.8, h: 3.0, c: DRESS, glass: GLASSC }));
+  for (const bx of [-50, -44, -38]) wg(croisee(bx, T0 + 1.4, 37.2, { face: 'n', w: 1.8, h: 3.0, c: DRESS, glass: GLASSC }));
+  for (const bx of [-50, -44, -38]) wg(croisee(bx, T0 + 1.4, 49.8, { face: 's', w: 1.8, h: 3.0, c: DRESS, glass: GLASSC }));
+  add(wing, mx(wing));
+
+  // The temple on the axis, on its own belvedere.
+  add(B(0, 0, 55.5, 22, 2.6, 9, PLINTH, { roof: true, mat: S.ROCK }));
+  add(D(0, 2.6, 55.5, 21, 0.06, 8.2, 0xbfb49b, { mat: S.TILE, noShadow: true }));
+  add(stairs({ x: 0, z: 47.4, y: T0, w: 9, steps: 4, rise: 0.5125, run: 0.9, dir: '+z', c: DRESS, mat: S.ROCK }));
+  for (const s of [-1, 1]) {
+    add(stairs({ x: s * 14.5, z: 55.5, y: T0, w: 5, steps: 4, rise: 0.5125, run: 0.9,
+      dir: s < 0 ? '+x' : '-x', c: DRESS, mat: S.ROCK }));
+    add(balustrade({ axis: 'z', at: s * 10.7, from: 51.2, to: 59.8, y: 2.6, h: 1.1, t: 0.44,
+      c: DRESS, pitch: 1.05, gaps: [[53.0, 58.0]] }));
+    add(balustrade({ axis: 'x', at: 51.2 + (s + 1) * 4.3, from: -10.7, to: 10.7, y: 2.6, h: 1.1,
+      t: 0.44, c: DRESS, pitch: 1.05, gaps: s < 0 ? [[-4.7, 4.7]] : [] }));
+    for (const uz of [51.2, 59.8]) add(urn(s * 10.7, uz, 3.7, { c: DRESS, h: 1.6 }));
+  }
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
+    add(column(Math.cos(a) * 4.0, 55.5 + Math.sin(a) * 4.0, 2.6, 4.8, 0.42, MARBLE, { dress: DRESS }));
+  }
+  add(drum(0, 7.4, 55.5, 4.9, 0.55, DRESS, { mat: S.ROCK, decor: true, noShadow: true }));
+  add(drum(0, 7.95, 55.5, 5.2, 0.42, DRESS, { mat: S.ROCK, decor: true, noShadow: true }));
+  add(drum(0, 8.37, 55.5, 4.6, 0.7, DRESS, { mat: S.ROCK, decor: true, noShadow: true }));
+  add(domeRoof(0, 9.07, 55.5, 4.4, 3.4, SLATE_D, { steps: 8, ogee: 0.5 }));
+  add(drum(0, 12.4, 55.5, 0.55, 0.7, GOLD, { mat: S.NEON, decor: true, noShadow: true, glow: 1.25 }));
+  add(D(0, 13.1, 55.5, 0.18, 1.3, 0.18, GOLD, { mat: S.NEON, noShadow: true, glow: 1.25 }));
+  // A temple of this shape has a figure standing in the middle of it, and this
+  // one deliberately does not: the middle of it is a capture point, and a point
+  // you cannot stand on the centre of is a point that plays as a doughnut. It
+  // gets a knee-high plinth instead, which is a free step up and reads as the
+  // pedestal whatever used to be there once stood on.
+  add(B(0, 2.6, 55.5, 2.2, 0.4, 2.2, MARBLE, { mat: S.ROCK }));
+  add(D(0, 3.0, 55.5, 2.5, 0.14, 2.5, DRESS, { mat: S.ROCK, noShadow: true }));
+  add(drum(0, 3.14, 55.5, 0.5, 0.9, GOLD, { mat: S.NEON, decor: true, noShadow: true, glow: 1.15 }));
+  for (const s of [-1, 1]) {
+    add(statue(s * 7.4, 52.6, 2.6, { c: MARBLE, plinth: DRESS, h: 2.0 }));
+    add(urn(s * 7.4, 58.4, 2.6, { c: DRESS, h: 1.8 }));
+  }
+
+  /* ── The park past the garden ──────────────────────────────────────────────
+   * The invisible edge is at sixty metres. Everything from here on stands on
+   * the far side of it: the gates in the flanking railings, and then a park
+   * that carries on until the haze takes it.
+   * ────────────────────────────────────────────────────────────────────────*/
+  for (const s of [-1, 1]) {
+    for (const gz of [-2.6, 8.6]) {
+      add(B(s * 58, 0, gz, 4, 5.4, 2.6, PLINTH, { mat: S.ROCK }));
+      add(D(s * 58, 5.4, gz, 4.6, 0.5, 3.2, DRESS, { mat: S.ROCK, noShadow: true }));
+      add(D(s * 58, 5.9, gz, 2.0, 0.9, 1.6, DRESS, { mat: S.ROCK, noShadow: true }));
+      add(D(s * 58, 6.8, gz, 1.1, 1.3, 1.5, MARBLE, { mat: S.ROCK, noShadow: true }));
+      add(D(s * 58, 8.1, gz, 0.9, 0.5, 0.9, MARBLE, { mat: S.ROCK, noShadow: true }));
+    }
+    add(railings({ axis: 'z', at: s * 58, from: -1.3, to: 7.3, y: 0, h: 3.4, c: IRON, gold: GOLD }));
+    add(railings({ axis: 'z', at: s * 58, from: -10.5, to: -3.9, y: 0, h: 3.0, c: IRON, gold: GOLD }));
+    add(railings({ axis: 'z', at: s * 58, from: 9.9, to: 30, y: 0, h: 3.0, c: IRON, gold: GOLD }));
+  }
+
+  add(bounds(120, 40));
+  // A wall of park either side, and the avenue running away from the front.
+  for (const s of [-1, 1]) {
+    for (let i = 0; i < 9; i++) {
+      add(tree(s * (68 + (i % 3) * 9), -52 + i * 15, { h: 8 + (i % 4) * 1.6, r: 7.4, c: 0x357c34, trunk: TRUNK })
+        .map((b) => ({ ...b, decor: true, noShadow: true })));
+    }
+    for (let i = 0; i < 6; i++) {
+      add(tree(s * (14 + i * 7), 74 + (i % 2) * 6, { h: 7.4, r: 6.4, c: 0x3c8a3a, trunk: TRUNK })
+        .map((b) => ({ ...b, decor: true, noShadow: true })));
+    }
+  }
+  add(treeline(96, { count: 44, seed: 41, c: 0x35793a, trunk: TRUNK }));
+  add(treeline(136, { count: 34, seed: 19, c: 0x2f6f38, trunk: TRUNK, kind: 'pine' }));
+  // A village on the horizon and its spire: the only other vertical for a mile.
+  add(skyline(155, { count: 16, seed: 61, palette: [0xe4d7bd, 0xd9c8a8, 0xefe4cc], h: [6, 12], roofC: 0x8d5240 }));
+  add(D(122, 0, 98, 7, 16, 7, 0xe4d7bd, { mat: S.ROCK, noShadow: true }));
+  add(roofStack(122, 16, 98, 8, 8, 12, SLATE, { steps: 8, curve: 0.8, ridgeW: 0.8, ridgeD: 0.8 }));
+  add(D(122, 28, 98, 0.5, 3.0, 0.5, GOLD, { mat: S.NEON, noShadow: true }));
+
+  return {
+    id: 'chateau', name: 'Château',
+    description: 'A neo-Renaissance palace you can never get into, and the formal garden in front of it. Terrace, parterre, fountain, bosquets, canal.',
+    size: 120, tags: ['large', 'vertical', 'long range'],
+    /*
+     * Late afternoon in high summer, with the sun in the south-east so that it
+     * rakes across the front of the building instead of flattening it. The
+     * façade is what the map is for, and a façade lit head-on has no depth in
+     * it whatsoever: what makes ninety-six metres of stone read as carved is
+     * the shadow every string course and every pediment throws down it.
+     */
+    sky: { top: 0x2f7fcc, bottom: 0xf6e2b4, haze: 0xa9cfec, clouds: 0.95 },
+    fog: { color: 0xe6dcc0, near: 95, far: 320 },
+    sun: { dir: [0.5, 0.6, 0.62], color: 0xfff1cd, intensity: 1.52 },
+    ambient: { color: 0xaed5f2, intensity: 0.86 },
+    ground: { color: 0x6ab84a, size: 380, mat: S.GRASS },
+    boxes,
+    /*
+     * The teams start at the east and west ends of the middle, which puts them
+     * the same distance from all three points and from both bosquets. The
+     * free-for-all spawns are spread over every level the map has — terrace,
+     * parterre, garden and the roofs at the far end — because a level with
+     * this much vertical in it should never drop everyone onto one floor.
+     *
+     * `yaw` is Math.atan2(x - tx, z - tz) for a body looking at (tx, tz): the
+     * movement code's own convention, where a yaw of zero looks down -Z. Every
+     * one of these faces either the basin or the front of the house, so the
+     * first frame of a match always has the map's landmark in it.
+     */
+    spawns: {
+      ffa: [
+        [-54, 0.1, 0, -1.626], [54, 0.1, 6, 1.515],
+        [-37, T3 + 0.1, -37.5, -2.394], [37, T3 + 0.1, -37.5, 2.394],
+        [-44, T2 + 0.1, -22.3, -2.093], [44, T2 + 0.1, -22.3, 2.093],
+        [0, T2 + 0.1, -30, Math.PI], [0, 0.1, 20, 0],
+        [-35.5, 0.1, 25.9, -0.998], [35.5, 0.1, 25.9, 0.998],
+        [-44, T0 + 6.9, 43.5, -0.827], [44, T0 + 6.9, 43.5, 0.827],
+        [0, 2.7, 58, 0], [-19, T0 + 0.1, 43, -0.443], [19, T0 + 0.1, 43, 0.443],
+      ],
+      red: [
+        [-54, 0.1, -4, -1.700], [-54, 0.1, 4, -1.552], [-53, 0.1, 9, -1.457],
+        [-56, T2 + 0.1, -16, -1.898], [-44, T0 + 6.9, 43.5, -0.827],
+      ],
+      blue: [
+        [54, 0.1, 4, 1.552], [54, 0.1, -4, 1.700], [53, 0.1, 9, 1.457],
+        [56, T2 + 0.1, -16, 1.898], [44, T0 + 6.9, 43.5, 0.827],
+      ],
+    },
+    /*
+     * All three on the axis, because the teams come at them from the sides: the
+     * terrace in front of the house, the island in the middle of the basin, and
+     * the temple at the far end. Not one of them has anywhere to hide — A is
+     * nine metres of open stone in view of the whole garden, B is an island you
+     * wade out to, and C is a colonnade you can see straight through.
+     */
+    objectives: [
+      { id: 'A', x: 0, y: T3 + 0.1, z: -37.5 },
+      { id: 'B', x: 0, y: 1.2, z: 3 },
+      { id: 'C', x: 0, y: 2.7, z: 55.5 },
+    ],
+  };
+}
+
+/**
  * RANGE — the practice map. No enemies unless you ask for them: a firing line,
  * a movement course and a wall of targets to learn a spray pattern against.
  */
@@ -2306,10 +3545,10 @@ function range() {
 /* ── Registry ────────────────────────────────────────────────────────────── */
 
 const _cache = new Map();
-const BUILDERS = { littletown, burgtown, sandstorm, shipyard, subzero, crossfire, nova, range };
+const BUILDERS = { littletown, burgtown, sandstorm, shipyard, subzero, crossfire, nova, chateau, range };
 
 /** Maps that appear in normal rotation (the range is opt-in only). */
-export const MAP_IDS = ['littletown', 'burgtown', 'crossfire', 'sandstorm', 'shipyard', 'subzero', 'nova'];
+export const MAP_IDS = ['littletown', 'burgtown', 'crossfire', 'sandstorm', 'shipyard', 'subzero', 'nova', 'chateau'];
 export const ALL_MAP_IDS = Object.keys(BUILDERS);
 
 /** Build (and memoise) a map by id. */
