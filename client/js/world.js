@@ -51,6 +51,19 @@ const QUALITY = {
 
 const quality = () => QUALITY[settings.quality] ?? QUALITY.high;
 
+/**
+ * How much post-processing the player asked for, 0–1.
+ *
+ * `Number` rather than a plain read so a build that stored the old switch is
+ * still understood here: `true` is 1 and `false` is 0, which is exactly the
+ * migration settings.js does on load, done again at the point of use because
+ * this is the only place the value means anything.
+ */
+const postAmount = () => {
+  const v = Number(settings.postProcessing ?? 1);
+  return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1;
+};
+
 /** How much brighter every map's ambient term runs than its own palette says. */
 const AMBIENT_GAIN = 1.4;
 
@@ -278,7 +291,7 @@ export class GameWorld {
      * the buffer from the moment the page loads, and toggling the setting
      * mid-session moves the antialiasing at the next reload.
      */
-    const wantsPost = q.post && settings.postProcessing !== false;
+    const wantsPost = q.post && postAmount() > 0;
 
     this.renderer = renderer ?? new THREE.WebGLRenderer({
       canvas, antialias: q.antialias && !wantsPost, powerPreference: 'high-performance',
@@ -393,7 +406,8 @@ export class GameWorld {
    * when the setting actually does.
    */
   _applyToneMapping() {
-    const usePost = quality().post && settings.postProcessing !== false;
+    const amount = postAmount();
+    const usePost = quality().post && amount > 0;
     const want = usePost ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
     const bright = settings.brightness ?? 0;
     const sat = Math.max(0, settings.saturation ?? 1);
@@ -408,12 +422,28 @@ export class GameWorld {
     this.post.configure({
       enabled: usePost,
       quality: settings.quality,
-      bloom: settings.bloom ?? 0.62,
+      /*
+       * The four effects, scaled together by the amount.
+       *
+       * Each one keeps its own switch — somebody who wants the bloom and not
+       * the grain still gets to say so — and the amount is a master fader over
+       * whichever of them are on. Scaled rather than switched off in turn
+       * because the chain is a look rather than a list: half the bloom with
+       * half the vignette and half the fringing is the same picture, quieter,
+       * and dropping them one at a time is three different pictures.
+       *
+       * Tone mapping and the grade are deliberately *not* faded. They are what
+       * makes the render correct rather than what makes it pretty — an
+       * un-tone-mapped frame is not a subtler frame, it is a blown-out one —
+       * so they are on in full for every amount above zero, and handed to the
+       * renderer itself at zero.
+       */
+      bloom: (settings.bloom ?? 0.62) * amount,
       // One vignette, in the post chain. #grade used to stack a second, far
       // heavier one on top of this in CSS.
-      vignette: settings.vignette ? 0.2 : 0.05,
-      grain: settings.filmGrain ? 0.024 : 0,
-      chroma: settings.chromatic ? 0.55 : 0,
+      vignette: (settings.vignette ? 0.2 : 0.05) * amount,
+      grain: (settings.filmGrain ? 0.024 : 0) * amount,
+      chroma: (settings.chromatic ? 0.55 : 0) * amount,
       exposure: 1.14 + bright,
       gamma: 1.16 + Math.max(0, bright) * 0.4,
       saturation: BASE_SATURATION * sat,
@@ -970,7 +1000,7 @@ export class GameWorld {
    * exists to answer in one keypress.
    */
   setPostEnabled(on) {
-    this.post.enabled = !!on && settings.postProcessing;
+    this.post.enabled = !!on && postAmount() > 0;
   }
 
   /**

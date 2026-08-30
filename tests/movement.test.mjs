@@ -222,6 +222,85 @@ export default function run() {
     Math.hypot(sloppy.vx, sloppy.vz) > K.BASE_SPEED * 0.85,
     `${Math.hypot(sloppy.vx, sloppy.vz).toFixed(2)} u/s`);
 
+  /* ── Prediction, and the half of the state no packet carries ───────────────
+   *
+   * A client rewinds to the server's body and replays every input still in
+   * flight, several times a second. The packet holds a position, a velocity, a
+   * ground flag and a height — and nothing at all about how far into its second
+   * and a third a slide is, or how long ago a crouch was pressed. Replaying
+   * inputs without putting those back advances them once per replay on top of
+   * the once they were meant to be advanced, and the worse the connection the
+   * faster they run: the slide players reported as glitchy.
+   *
+   * This is that failure, reproduced against nothing but `step` — one body
+   * simulated straight through, and a second one rewound and replayed the way
+   * client prediction does it. With `carry`/`restore` the two agree exactly;
+   * without them the second body's slide is over before the first one's is
+   * halfway.
+   * ────────────────────────────────────────────────────────────────────────*/
+
+  suite('Movement — replaying inputs');
+
+  check('a rewound body that replays its inputs slides for exactly as long', (() => {
+    /** Six ticks of lag: what a hundred-millisecond round trip holds in flight. */
+    const LAG = 6;
+    // Ninety ticks of running to build the speed a slide needs, then crouch
+    // and hold it: the press is the edge that starts the slide, and holding it
+    // is what lets the slide run to its own limit rather than to a key release.
+    const keysAt = (i) => M.KEY.FWD | (i >= 90 ? M.KEY.CROUCH : 0);
+
+    // The authority: one body, one pass, no replays. `truthAt` is what the
+    // server would have put in each snapshot — the eight numbers, and nothing
+    // else, which is the whole point.
+    const truth = M.createState(0, 0.5, 0, 0);
+    let prev = 0;
+    const truthSlide = [], truthAt = [];
+    for (let i = 0; i < 200; i++) {
+      const keys = keysAt(i);
+      M.step(truth, { keys, prev, yaw: 0, pitch: 0 }, flat, K.TICK_DT);
+      prev = keys;
+      truthSlide.push(truth.slideTime);
+      truthAt.push({
+        x: truth.x, y: truth.y, z: truth.z,
+        vx: truth.vx, vy: truth.vy, vz: truth.vz,
+        onGround: truth.onGround, height: truth.height,
+      });
+    }
+
+    // The client: the same inputs, plus a rewind-and-replay every other tick.
+    const local = M.createState(0, 0.5, 0, 0);
+    const pending = [];
+    let cPrev = 0;
+    const localSlide = [];
+    for (let i = 0; i < 200; i++) {
+      const keys = keysAt(i);
+      const inp = { keys, prev: cPrev, yaw: 0, pitch: 0, pre: M.carry(local) };
+      cPrev = keys;
+      pending.push(inp);
+      M.step(local, inp, flat, K.TICK_DT);
+
+      // A snapshot lands: everything older than LAG ticks has been consumed, so
+      // rewind to it and replay what is left. The authoritative half is taken
+      // from `truth` at that tick, which is exactly what the packet carries.
+      if (i % 2 === 1 && i >= LAG) {
+        const ackAt = i - LAG;
+        while (pending.length > LAG) pending.shift();
+        const t = truthAt[ackAt];
+        local.x = t.x; local.y = t.y; local.z = t.z;
+        local.vx = t.vx; local.vy = t.vy; local.vz = t.vz;
+        local.onGround = t.onGround; local.height = t.height;
+        M.restore(local, pending[0]?.pre);
+        for (const p2 of pending) M.step(local, p2, flat, K.TICK_DT);
+      }
+      localSlide.push(local.slideTime);
+    }
+
+    const drift = Math.max(...localSlide.map((v, i) => Math.abs(v - truthSlide[i])));
+    info(`slide clock drifts ${(drift * 1000).toFixed(1)} ms over ${localSlide.length} ticks`);
+    // Both bodies must actually have slid, or this proves nothing.
+    return Math.max(...truthSlide) > 0.5 && drift < K.TICK_DT * 1.5;
+  })(), 'the timers a snapshot does not carry are rewound with the ones it does');
+
   suite('Movement — carving');
 
   /** Signed angle in (-π, π]; the raw remainder keeps the sign of its dividend. */

@@ -1766,8 +1766,8 @@ function nova() {
    * soup the moment you look at them together — every hue in the scene is
    * either one of the three lights or a shade of blue-grey that reads as none.
    */
-  const DECKC = 0x3a465e, DARK = 0x222a3a, FRAME = 0x1a2030, PANEL = 0xa9b8d0,
-        TRIM = 0x55637e, PLATE = 0x2d3648, GLASSC = 0x1b3350;
+  const DECKC = 0x4a5872, DARK = 0x2e3849, FRAME = 0x252c3e, PANEL = 0xb8c6dc,
+        TRIM = 0x66748f, PLATE = 0x3b4558, GLASSC = 0x27436a;
   /* The three lights, and they mean three different things — see the header. */
   const CYA = 0x4fe3ff, MAG = 0xff4fa3, WHT = 0xdfe8ff;
 
@@ -2152,23 +2152,32 @@ function nova() {
       top: 0x070a1a, bottom: 0x2a1042, haze: 0x3d1a55,
       nebula: { warm: 0xff4fa3, cool: 0x3f86ff, density: 1.05, speed: 1 },
     },
-    fog: { color: 0x1d1533, near: 78, far: 260 },
+    fog: { color: 0x271d44, near: 88, far: 275 },
     /*
      * There is no sun. What this is, is the nebula: a broad cool light from
      * high and behind, dim enough to read as night and directional enough that
      * every box still has a lit face and a dark one — without which a map made
      * of boxes is a map made of silhouettes.
      */
-    sun: { dir: [-0.32, 0.86, 0.4], color: 0x9db4ff, intensity: 0.92 },
+    sun: { dir: [-0.32, 0.86, 0.4], color: 0xb0c2ff, intensity: 1.16 },
     /*
      * …and the ambient carries the rest, which is where a night map is won or
      * lost. Too little and the level is unreadable; too much and the neon stops
      * being the brightest thing in the frame and the whole art direction goes
      * with it. This sits just under the point where the strips stop reading as
      * light sources.
+     *
+     * It was under it by rather too much on the first pass. Players read the
+     * map as "too dark" — not unreadable, but a shade below the point where you
+     * can tell a crate from a doorway at thirty metres without a strip on it —
+     * so the ambient, the key and the structure palette all came up about a
+     * quarter together. Together, because lifting only one of the three is what
+     * turns a night map into a grey one: more ambient alone flattens every box,
+     * a brighter key alone blows the lit faces out, and a paler palette alone
+     * makes the neon stop being the brightest thing in the frame.
      */
-    ambient: { color: 0x6f63b4, intensity: 1.05 },
-    ground: { color: 0x171d2b, size: 420, mat: S.TILE },
+    ambient: { color: 0x8478c8, intensity: 1.34 },
+    ground: { color: 0x212a3d, size: 420, mat: S.TILE },
     boxes,
     /*
      * Every one of these faces the reactor.

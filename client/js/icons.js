@@ -68,6 +68,20 @@ const PATHS = {
   wave: 'M3 12h2l1.6-5.5L9.2 18l2.4-9 2.2 6.5L15.6 12H21',
   camera: 'M4.5 7.5h3l1.3-2.2h6.4L16.5 7.5h3v11h-15v-11Z M12 16.2a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2Z',
   gauge: 'M4 17.5a9 9 0 1 1 16 0 M12 12.8 16.2 8.6 M12 14.2a1.4 1.4 0 1 1 0-2.8 1.4 1.4 0 0 1 0 2.8Z',
+
+  /* ── Perks ─────────────────────────────────────────────────────
+     One per entry in PERKS, and each is named after the perk's own id rather
+     than after what it draws — `icon(perk.id)` is then the whole of the lookup,
+     in the picker, on the HUD card and anywhere else a perk is shown. A perk
+     added to shared/constants.js without a path here draws nothing rather than
+     the wrong thing, which is what `hasIcon` is for at the call site. */
+  trooper: 'M6 8.6 12 5.2l6 3.4M6 13 12 9.6l6 3.4M6 17.4 12 14l6 3.4',
+  runner: 'M14.8 6.5a1.6 1.6 0 1 1 0-3.2 1.6 1.6 0 0 1 0 3.2Z M16.4 8.5 12.6 10.6l2.3 2.7-1.3 5.4 M14.9 13.3 10.9 15.4l-1.5 3.9 M12.6 10.6 9.4 9.1M16.4 8.5l3 1.4 M2.6 8.2h3.2M2 12h4.2M3 15.8h3',
+  juggernaut: 'M12 3.4 19 6v5.6c0 4.3-2.9 7.5-7 9.1-4.1-1.6-7-4.8-7-9.1V6l7-2.6Z M5.4 11.2h13.2M12 3.6v17',
+  marksman: 'M12 20a8 8 0 1 1 0-16 8 8 0 0 1 0 16Z M12 2.2v4M12 17.8v4M2.2 12h4M17.8 12h4 M12 13.4a1.4 1.4 0 1 1 0-2.8 1.4 1.4 0 0 1 0 2.8Z',
+  medic: 'M6.6 4.6h10.8a2 2 0 0 1 2 2v10.8a2 2 0 0 1-2 2H6.6a2 2 0 0 1-2-2V6.6a2 2 0 0 1 2-2Z M12 8.2v7.6M8.2 12h7.6',
+  berserker: 'M12 21c3.5 0 5.9-2.4 5.9-5.5 0-4.2-4.2-5.6-3.5-11.3-2.5 1.2-4 3.5-4 6 0 .9-.6 1.5-1.3 1.5s-1.2-.5-1.3-1.4C6.7 11.5 6.1 13.1 6.1 15.5 6.1 18.6 8.5 21 12 21Z M9.9 16.6c0 1.2.9 2.1 2.1 2.1s2.1-.9 2.1-2.1c0-1.5-1.5-2.1-1.3-4-.9.5-1.5 1.4-1.5 2.3 0 .5-.6.6-.8.2-.4.4-.6 1-.6 1.5Z',
+  scavenger: 'M7.4 8.4h6.2a1.4 1.4 0 0 1 1.4 1.4v10.4H6V9.8a1.4 1.4 0 0 1 1.4-1.4Z M8.8 8.4V5.5h3.4v2.9 M8.1 12.3h4.8M8.1 15.6h4.8 M18.4 4.4v5.4M15.7 7.1h5.4',
 };
 
 /**

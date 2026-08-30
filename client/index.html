@@ -100,26 +100,42 @@
     <div class="gg-next" id="ggNext"></div>
   </div>
 
-  <div id="bottomLeft">
-    <div class="hp-wrap">
-      <div class="hp-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="26" height="26"><path d="M12 21s-7.5-4.6-9.4-9.2C1.2 8.2 3.3 4.6 6.9 4.6c2 0 3.6 1 5.1 3 1.5-2 3.1-3 5.1-3 3.6 0 5.7 3.6 4.3 7.2C19.5 16.4 12 21 12 21z"/></svg>
+  <!-- The bottom-left corner is a stack rather than one card: the health block
+       is the same in every mode, and the perk card above it exists only in the
+       one mode that has perks. Two cards, so the second can simply not be
+       there rather than leaving a gap inside the first. -->
+  <div id="bottomLeftStack">
+    <!-- What kind of player this is, and what that costs, for the whole match.
+         The pick is made once and cannot be changed, so the trade belongs on
+         screen rather than behind a key: a Runner on half health should be able
+         to see *why* at the moment it matters. Hidden outright in every mode
+         that has no perks. -->
+    <div id="perkPanel" class="perk-panel hidden">
+      <div class="pp-head">
+        <span class="pp-ic" id="perkIcon" aria-hidden="true"></span>
+        <b id="perkName" data-i18n-skip>TROOPER</b>
       </div>
-      <div class="hp-stack">
-        <div class="hp-num" id="hpNum">100</div>
-        <div class="hp-bar"><span id="hpFill"></span><i id="hpGhost"></i></div>
-        <!-- What kind of player this is, in the mode that has kinds. Hidden
-             outright everywhere else: an empty element still takes its margin,
-             and every other mode would carry a gap for a feature it lacks. -->
-        <div class="perk-chip hidden" id="perkChip"><b id="perkName" data-i18n-skip>TROOPER</b></div>
+      <ul class="pp-good" id="perkGood"></ul>
+      <ul class="pp-bad" id="perkBad"></ul>
+    </div>
+
+    <div id="bottomLeft">
+      <div class="hp-wrap">
+        <div class="hp-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="26" height="26"><path d="M12 21s-7.5-4.6-9.4-9.2C1.2 8.2 3.3 4.6 6.9 4.6c2 0 3.6 1 5.1 3 1.5-2 3.1-3 5.1-3 3.6 0 5.7 3.6 4.3 7.2C19.5 16.4 12 21 12 21z"/></svg>
+        </div>
+        <div class="hp-stack">
+          <div class="hp-num" id="hpNum">100</div>
+          <div class="hp-bar"><span id="hpFill"></span><i id="hpGhost"></i></div>
+        </div>
       </div>
+      <div class="lvl-wrap">
+        <span id="playerNameTag" data-i18n-skip>Guest</span>
+        <img id="playerVerified" class="verified hidden" src="/check.png" alt="verified" width="14" height="14">
+        <span class="lvl" id="playerLevel">LVL 1</span>
+      </div>
+      <div class="speedo hidden" id="speedo"><b id="speedVal">0</b><span>u/s</span><i id="speedBar"></i></div>
     </div>
-    <div class="lvl-wrap">
-      <span id="playerNameTag" data-i18n-skip>Guest</span>
-      <img id="playerVerified" class="verified hidden" src="/check.png" alt="verified" width="14" height="14">
-      <span class="lvl" id="playerLevel">LVL 1</span>
-    </div>
-    <div class="speedo hidden" id="speedo"><b id="speedVal">0</b><span>u/s</span><i id="speedBar"></i></div>
   </div>
 
   <!-- Chat lives in the bottom-right corner, above the ammo readout. -->
@@ -1525,18 +1541,28 @@
 
 <!-- ══ Perk picker ══════════════════════════════════════════════════════
      Only ever opened in the Perks mode, and opened for you at the start of
-     every match in it — the choice belongs to the match, not to the account.
-     Every card is a pair of lists: what this body is better at than anybody,
-     and what it pays for it. There is no "balanced" card on purpose; see the
-     block above PERKS in shared/constants.js.
+     every match in it — the choice belongs to the match, not to the account,
+     and it is made once. Every card is a pair of lists: what this body is
+     better at than anybody, and what it pays for it. There is no "balanced"
+     card on purpose; see the block above PERKS in shared/constants.js.
+
+     Three parts, all filled in by menu.js: the rail of icons for anybody who
+     already knows which one they want, the grid of cards for anybody who does
+     not, and the button that commits. Selecting previews; only the button
+     sends. See `_bindPerkModal`.
      ═══════════════════════════════════════════════════════════════════════ -->
 <div id="perkModal" class="modal hidden">
-  <div class="modal-card wide">
+  <div class="modal-card wide perk-modal">
     <button class="modal-x" id="perkClose">×</button>
     <h3>WHAT KIND OF PLAYER ARE YOU?</h3>
+    <p class="modal-lede">One pick, for the whole match. Every one of them is a trade.</p>
+    <div id="perkRail" class="perk-rail"></div>
     <div id="perkGrid" class="perk-grid"></div>
-    <p class="modal-note">Out of combat the swap is instant — otherwise it lands on your
-      next respawn. You can change it any time; the match asks again when the next one starts.</p>
+    <div class="perk-commit">
+      <button class="btn-primary perk-confirm" id="perkConfirm"></button>
+      <p class="modal-note">You cannot change it once the match has started — the next
+        match asks again.</p>
+    </div>
   </div>
 </div>
 

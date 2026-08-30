@@ -51,6 +51,58 @@ export function createState(x = 0, y = 0, z = 0, yaw = 0) {
   };
 }
 
+/**
+ * The fields `step` carries between calls that no snapshot ever contains.
+ *
+ * ── Why this list has to exist ─────────────────────────────────────────────
+ *
+ * A snapshot is a position, a velocity, a ground flag and a height. That is
+ * everything the *server* needs to describe a body, and it is not everything
+ * `step` needs to continue one: a slide is half a second into its second and a
+ * third, a hop is inside its grace window, a crouch was pressed two frames ago
+ * and is still waiting for the ground. None of that is on the wire.
+ *
+ * Client prediction rewinds to the server's state and replays every input still
+ * in flight, several times a second, and for a long time it rewound only the
+ * eight numbers the packet carried. The timers were left alone — so every
+ * replayed input advanced them *again*, on top of the once they had already
+ * been advanced by the frame that first simulated it. At sixty ticks with six
+ * inputs in flight and thirty snapshots a second, `slideTime` ran at about four
+ * times real time: a slide the server was still running at a second and a
+ * quarter had ended on the client at a third of a second, the client stood the
+ * body up, the next snapshot put it back down, and the result was the thing
+ * players reported as the slide being glitchy. It was worse the worse the
+ * connection, which is exactly the wrong way round.
+ *
+ * So the caller saves these before an input is first simulated and restores
+ * them before it replays it — `carry` and `restore` below. The list lives here,
+ * next to `createState`, because the invariant is "every field `step` reads
+ * from the previous call and no packet carries": adding a timer to the state
+ * and forgetting it here reintroduces the same bug in a new shape.
+ *
+ * Position, velocity, ground and height are deliberately *not* in it: those
+ * come from the server, and copying the client's own back over them is what a
+ * rewind exists to undo. Nor are `landed`, `fallSpeed` and `steppedUp`, which
+ * are outputs of a single step rather than state carried into the next one.
+ */
+export const CARRIED = [
+  'crouching', 'sliding', 'slideTime', 'slideCd', 'jumpCd',
+  'coyote', 'jumpBuffer', 'slideBuffer', 'hopGrace', 'hopping',
+];
+
+/** Copies the carried fields out of a state, into `into` if one is given. */
+export function carry(s, into = {}) {
+  for (const k of CARRIED) into[k] = s[k];
+  return into;
+}
+
+/** Puts them back. A null `from` is a no-op, which is the "nothing in flight" case. */
+export function restore(s, from) {
+  if (!from) return s;
+  for (const k of CARRIED) s[k] = from[k];
+  return s;
+}
+
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
 /** Quake accelerate: only add speed along wishdir up to `wishSpeed`. */

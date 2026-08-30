@@ -356,9 +356,18 @@ export default function run() {
   const pk = makeRoom({ id: 'test-perks', mapId: 'nova', modeId: 'perks' });
   const runner = addHuman(pk, 'Runner', 201);
   const jug = addHuman(pk, 'Jug', 202);
-  /** Picks a perk the way a player out of combat does: cleanly, at once. */
+  /**
+   * Picks a perk the way a player out of combat does: cleanly, at once.
+   *
+   * The latch is cleared first, because the pick is once per match and the
+   * checks below are a dozen different bodies asked for out of one room. Every
+   * one of them is standing in for "a fresh match, chosen at the start" — which
+   * is what `startMatch` does for real — and the latch itself has a suite of
+   * its own further down.
+   */
   const pick = (p, id) => {
     p.lastCombatAt = -999;
+    p.perkChosen = false;
     pk.onPerkChange(p, { p: id });
   };
 
@@ -501,7 +510,7 @@ export default function run() {
       && p.moveOpts(false).airMax === 1;
     plain.onPerkChange(p, { p: 'juggernaut' });
     const refused = p.perkId === 'runner'
-      && plain.messages.some((m) => m.phase === 'perkLocked');
+      && plain.messages.some((m) => m.phase === 'perkLocked' && m.reason === 'mode');
     return untouched && refused;
   })());
 
@@ -513,13 +522,19 @@ export default function run() {
     return p.profile().perk === undefined && q.profile().perk === K.DEFAULT_PERK;
   })());
 
-  check('a swap under fire waits for the respawn, the way a class swap does', (() => {
+  /* ── The pick is once ──────────────────────────────────────────────────────
+   *
+   * The mode is built on committing to a trade, so the rule that makes it a
+   * trade is worth as many checks as the numbers are: a perk you can drop the
+   * moment it stops paying is a menu, not a choice.
+   * ────────────────────────────────────────────────────────────────────────*/
+
+  check('a first pick made under fire waits for the respawn', (() => {
     const p = addHuman(pk, 'Fighter', 206);
-    pick(p, 'trooper');
     p.alive = true;
     p.lastCombatAt = pk.now;            // shot at, right now
     pk.onPerkChange(p, { p: 'juggernaut' });
-    const queued = p.perkId === 'trooper' && p.pendingPerk === 'juggernaut';
+    const queued = p.perkId === K.DEFAULT_PERK && p.pendingPerk === 'juggernaut';
     // …and it is applied *before* the spawn, because `spawnAt` reads the
     // ceiling and the spare ammunition off it.
     p.alive = false;
@@ -528,6 +543,27 @@ export default function run() {
     return queued && p.perkId === 'juggernaut' && p.pendingPerk === null
       && p.health === p.maxHealth;
   })(), 'queued, then applied on the respawn at full health');
+
+  check('and a second answer in the same match is refused, with the perk they have', (() => {
+    const p = addHuman(pk, 'Committed', 207);
+    p.lastCombatAt = -999;
+    pk.onPerkChange(p, { p: 'runner' });
+    pk.messages.length = 0;
+    pk.onPerkChange(p, { p: 'juggernaut' });
+    const refusal = pk.messages.find((m) => m.phase === 'perkLocked');
+    return p.perkId === 'runner' && p.pendingPerk === null
+      && refusal?.reason === 'chosen' && refusal.perk === 'runner';
+  })(), 'a perk is a trade, and a trade you can walk out of is not one');
+
+  check('…and the next match asks again', (() => {
+    const p = addHuman(pk, 'Asked', 208);
+    p.lastCombatAt = -999;
+    pk.onPerkChange(p, { p: 'medic' });
+    pk.messages.length = 0;
+    pk.startMatch();
+    const asked = pk.messages.find((m) => m.phase === 'perkPick');
+    return !p.perkChosen && !!asked && asked.list?.length === K.PERK_IDS.length;
+  })());
 
   check('a nuke still kills the hardest body in the game', (() => {
     // Two hundred points of damage against a Juggernaut's hundred and ninety

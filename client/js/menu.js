@@ -984,7 +984,7 @@ export class Menu {
         const rankCls = e.rank <= 3 ? ` top${e.rank}` : '';
         list.appendChild(el('div', `lb-row${rankCls}${e.username === mine ? ' me' : ''}`, `
           <span class="r">${e.rank}</span>
-          <span class="n">${lbAvatar(e)}<button type="button" class="pname" data-profile="${
+          <span class="n" data-i18n-skip>${lbAvatar(e)}<button type="button" class="pname" data-profile="${
   escapeHtml(e.username)}" title="View ${escapeHtml(e.username)}'s profile"><span class="n-text">${
   escapeHtml(e.username)}</span>${badge(e.verified)}</button>${clanTag(e.clan, e.clanVerified)}</span>
           <span class="lv">${e.level}</span>
@@ -1665,7 +1665,7 @@ export class Menu {
     sfx.ui();
     this.cardName = name;
     card.classList.remove('hidden');
-    body.innerHTML = `<div class="pc-stub"><h3>${escapeHtml(name)}</h3>
+    body.innerHTML = `<div class="pc-stub"><h3 data-i18n-skip>${escapeHtml(name)}</h3>
       <p class="empty">Loading…</p></div>`;
 
     let data;
@@ -1673,7 +1673,7 @@ export class Menu {
       data = await api.player(name);
     } catch (ex) {
       if (this.cardName !== name) return;               // a later click won
-      body.innerHTML = `<div class="pc-stub"><h3>${escapeHtml(name)}</h3>
+      body.innerHTML = `<div class="pc-stub"><h3 data-i18n-skip>${escapeHtml(name)}</h3>
         <p class="empty">${escapeHtml(ex.status === 404
     ? 'That name has no account behind it — a guest, or a player who has since been removed.'
     : ex.message || 'That profile is unavailable right now.')}</p></div>`;
@@ -3780,17 +3780,33 @@ export class Menu {
 
   /* ── The perk picker ────────────────────────────────────────────────────────
    *
-   * Deliberately the same shape as the class modal above, because it is the
-   * same gesture: a grid of cards, one of them lit, click to choose. What is
-   * different is what the cards say — a class card is a stat block, and there
-   * is no useful stat block for "half the health, hops that never bleed". So
-   * each card is two lists in plain words, the good and the bad, and the player
-   * reads a trade rather than four bars.
+   * A grid of cards, one of them lit — but not the same gesture as the class
+   * modal above, and that is the whole design of it. A class you may change all
+   * match; a perk you choose once and live with, so this picker has to make the
+   * commitment obvious *before* it is made rather than report it afterwards.
+   *
+   * Three things do that job:
+   *
+   *   the rail    Seven icons across the top, one per perk, so the whole
+   *               catalogue is one glance and one click away. It selects; it
+   *               does not commit. Somebody who knows what they want is two
+   *               keystrokes from the match, and somebody who does not can
+   *               flick along it and read each card in turn.
+   *   the cards   Icon, name, tagline, then the trade in two coloured columns —
+   *               what this body is better at than anybody, and what it pays.
+   *               Selecting one *previews* it. Nothing has been sent yet.
+   *   the button  The commit, named for what it does and unmissable, with the
+   *               chosen perk's own colour on it. Below it, the one line that
+   *               matters: this is for the whole match.
    *
    * The catalogue comes from the room over the wire rather than from this
    * client's copy of the constants, so a server running its own numbers
    * describes its own numbers. `onPerkChange` is the game's; nothing here
    * decides anything.
+   *
+   * Reopened after the choice, it is the same panel with the rail and the
+   * button inert: a player who wants to reread what they signed up for should
+   * be able to, and a picker that refuses to open is a picker that looks broken.
    * ─────────────────────────────────────────────────────────────────────────*/
 
   _bindPerkModal() {
@@ -3798,33 +3814,84 @@ export class Menu {
     $('perkModal').addEventListener('click', (e) => {
       if (e.target === $('perkModal')) this.closePerkModal();
     });
-    $('perkGrid').addEventListener('click', (e) => {
+    // One handler for the rail and the grid: both are "select this one", and
+    // both are refused outright once the match's choice has been made.
+    const select = (e) => {
       const card = e.target.closest('[data-perk]');
-      if (!card) return;
+      if (!card || this.perkLocked) return;
+      if (card.dataset.perk === this.selectedPerk) return;
+      sfx.ui('click');
+      this.buildPerks(this.perkCatalogue, card.dataset.perk, false);
+    };
+    $('perkGrid').addEventListener('click', select);
+    $('perkRail').addEventListener('click', select);
+    // A card is a `div` with a role, and the browser does not synthesise a
+    // click on one from a key the way it does for a real button. Without this
+    // a keyboard could focus a perk and never pick it.
+    $('perkGrid').addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      if (!e.target.closest('[data-perk]')) return;
+      e.preventDefault();
+      select(e);
+    });
+    $('perkConfirm').addEventListener('click', () => {
+      if (this.perkLocked || !this.selectedPerk) return;
       sfx.ui('ok');
-      this.selectedPerk = card.dataset.perk;
-      this.buildPerks(this.perkCatalogue, this.selectedPerk);
+      // Locked here rather than on the server's answer: the answer is a round
+      // trip away, and a second click inside it would send a second choice the
+      // room is about to refuse.
+      this.perkLocked = true;
       this.onPerkChange?.(this.selectedPerk);
       this.closePerkModal();
     });
   }
 
-  buildPerks(list, selected) {
+  /**
+   * Draws the rail, the cards and the button.
+   *
+   * @param {object[]} list     the room's catalogue, or null to keep the last
+   * @param {string}   selected which one is lit, or null to keep the last
+   * @param {boolean}  locked   read-only, because this match's pick is made
+   */
+  buildPerks(list, selected, locked = null) {
     this.perkCatalogue = list ?? this.perkCatalogue ?? [];
     this.selectedPerk = selected ?? this.selectedPerk;
+    if (locked !== null) this.perkLocked = !!locked;
     const hex = (n) => `#${Number(n ?? 0x8b95a6).toString(16).padStart(6, '0')}`;
+    const chosen = this.perkCatalogue.find((p) => p.id === this.selectedPerk) ?? null;
+
+    $('perkRail').innerHTML = this.perkCatalogue.map((p) => `
+      <button type="button" class="perk-pip${p.id === this.selectedPerk ? ' selected' : ''}"
+        data-perk="${escapeHtml(p.id)}" style="--pk:${hex(p.color)}"
+        aria-label="${escapeHtml(p.name)}" data-i18n-skip>
+        ${icon(p.id)}<span>${escapeHtml(p.name)}</span>
+      </button>`).join('');
+
     $('perkGrid').innerHTML = this.perkCatalogue.map((p) => `
-      <div class="perk-card${p.id === this.selectedPerk ? ' selected' : ''}" data-perk="${escapeHtml(p.id)}">
-        <span class="pick">SELECTED</span>
-        <h4 style="color:${hex(p.color)}">${escapeHtml(p.name)}</h4>
+      <div class="perk-card${p.id === this.selectedPerk ? ' selected' : ''}"
+        data-perk="${escapeHtml(p.id)}" style="--pk:${hex(p.color)}"
+        tabindex="0" role="button">
+        <span class="pick">${this.perkLocked ? 'PLAYING AS' : 'SELECTED'}</span>
+        <div class="pc-head">
+          <span class="pc-ic">${icon(p.id)}</span>
+          <h4 data-i18n-skip>${escapeHtml(p.name)}</h4>
+        </div>
         <p>${escapeHtml(p.tagline ?? '')}</p>
         <ul class="perk-good">${(p.good ?? []).map((g) => `<li>${escapeHtml(g)}</li>`).join('')}</ul>
         <ul class="perk-bad">${(p.bad ?? []).map((b) => `<li>${escapeHtml(b)}</li>`).join('')}</ul>
       </div>`).join('');
+
+    const btn = $('perkConfirm');
+    btn.disabled = this.perkLocked || !chosen;
+    btn.style.setProperty('--pk', hex(chosen?.color));
+    btn.innerHTML = this.perkLocked
+      ? `${icon('lock')}<span>LOCKED IN FOR THIS MATCH</span>`
+      : `${icon('check')}<span>PLAY AS</span><b data-i18n-skip>${escapeHtml(chosen?.name ?? '')}</b>`;
+    $('perkModal').classList.toggle('locked', this.perkLocked);
   }
 
-  openPerkModal(list, selected) {
-    this.buildPerks(list, selected);
+  openPerkModal(list, selected, locked = false) {
+    this.buildPerks(list, selected, locked);
     $('perkModal').classList.remove('hidden');
   }
 
@@ -4513,7 +4580,7 @@ export class Menu {
     const list = $('crBriefs');
     list.innerHTML = requests.length ? requests.map((r) => `
       <article class="cr-brief ${escapeHtml(r.status)}">
-        <header><b>${escapeHtml(r.name)}</b><span>${escapeHtml(r.status.toUpperCase())}</span></header>
+        <header><b data-i18n-skip>${escapeHtml(r.name)}</b><span>${escapeHtml(r.status.toUpperCase())}</span></header>
         <p>${escapeHtml(r.brief)}</p>
         <div class="cr-swatches">${r.palette.map((hex) =>
     `<i style="background:${escapeHtml(hex)}" title="${escapeHtml(hex)}"></i>`).join('')}</div>
@@ -5212,7 +5279,7 @@ function playerCardHtml(data, accent) {
           <img class="av-img hidden" alt="" width="112" height="112"><span class="av-initial">?</span>
         </span>
         <div class="pc-id">
-          <h3>${clanTag(user.clan, user.clanVerified)}<span class="pc-name">${escapeHtml(user.username)}</span>${
+          <h3 data-i18n-skip>${clanTag(user.clan, user.clanVerified)}<span class="pc-name">${escapeHtml(user.username)}</span>${
   user.verified ? '<img class="verified big" src="/check.png" alt="verified" width="18" height="18">' : ''}</h3>
           ${card.title ? `<p class="pc-flair">${escapeHtml(card.title)}</p>` : ''}
           <div class="ph-tags">${pills}</div>

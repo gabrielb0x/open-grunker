@@ -87,7 +87,23 @@ export const DEFAULTS = {
   particles: true,
   particleAmount: 1.0,
   dynamicLights: true,
-  postProcessing: true,
+  /**
+   * How much post-processing, from none to all of it.
+   *
+   * It was a switch. A switch is the wrong control for this: the chain is five
+   * effects of very different cost and taste — bloom, the grade, the vignette,
+   * the grain and the lens fringing — and "on" was one answer to all five.
+   * Somebody on a laptop wants less of it, not none of it, and somebody who
+   * finds the bloom heavy wants it quieter rather than gone.
+   *
+   * So it is an amount now. 1 is the look every map was painted against, 0 is
+   * the chain switched off outright — which is still a real answer and still
+   * the fastest the game gets — and everything between scales the four that
+   * can be scaled. The grade is not one of them: see `_applyToneMapping` in
+   * world.js for why tone mapping is never faded. A build that stored
+   * `true`/`false` is migrated on load; see `migrate` below.
+   */
+  postProcessing: 1,
   bloom: 0.6,
   /**
    * The colour grade, as multipliers on the game's own look rather than as raw
@@ -182,11 +198,28 @@ export const settings = { ...DEFAULTS, ...load() };
 
 const listeners = new Set();
 
+/**
+ * Settings whose stored *shape* has changed since a build that wrote them.
+ *
+ * Unknown keys are dropped and mistyped ones are ignored, which is the right
+ * default and the wrong answer for a setting that has been rethought: somebody
+ * who turned post-processing off two versions ago would silently have it turned
+ * back on. So a value written by an older build is translated rather than
+ * discarded, and the translation lives here rather than at the twenty places
+ * that read it.
+ */
+function migrate(raw) {
+  // Post-processing was a switch and is an amount. Off is one end of the range
+  // rather than a different kind of answer, so the two map cleanly.
+  if (typeof raw.postProcessing === 'boolean') raw.postProcessing = raw.postProcessing ? 1 : 0;
+  return raw;
+}
+
 function load() {
   try {
     const raw = localStorage.getItem(KEY) ?? localStorage.getItem(LEGACY_KEY);
     if (!raw) return {};
-    const parsed = JSON.parse(raw);
+    const parsed = migrate(JSON.parse(raw));
     // Drop unknown keys so an old build can't inject junk.
     return Object.fromEntries(Object.entries(parsed).filter(([k]) => k in DEFAULTS));
   } catch {
@@ -268,7 +301,8 @@ export function importText(text) {
   }
   // A bare settings object is accepted too: somebody who copied the inner half
   // out of a file should not be told their own settings are the wrong shape.
-  const incoming = parsed.settings && typeof parsed.settings === 'object' ? parsed.settings : parsed;
+  const incoming = migrate(parsed.settings && typeof parsed.settings === 'object'
+    ? parsed.settings : parsed);
   const patch = {};
   for (const [k, v] of Object.entries(incoming)) {
     if (!(k in DEFAULTS)) continue;
@@ -373,7 +407,13 @@ export const SCHEMA = [
     group: 'Video', icon: '🖥', items: [
       { key: 'quality', label: 'Quality preset', type: 'select', options: ['low', 'medium', 'high', 'ultra'] },
       { key: 'shadows', label: 'Shadows', type: 'bool' },
-      { key: 'postProcessing', label: 'Post-processing', type: 'bool', hint: 'Bloom, tone mapping, grade and vignette.' },
+      {
+        key: 'postProcessing', label: 'Post-processing', type: 'range', min: 0, max: 1, step: 0.05,
+        fmt: (v) => (v <= 0 ? 'Off' : pct(v)),
+        hint: 'Bloom, tone mapping, grade, vignette and grain — and how much of them. '
+          + '100% is what the maps were painted against. Off skips the whole chain, '
+          + 'which is the fastest the game gets and the flattest it looks.',
+      },
       { key: 'bloom', label: 'Bloom strength', type: 'range', min: 0, max: 1.4, step: 0.05, fmt: (v) => v.toFixed(2) },
       {
         key: 'saturation', label: 'Saturation', type: 'range', min: 0, max: 2, step: 0.02,

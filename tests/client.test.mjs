@@ -52,6 +52,7 @@ const { surfaceTexture, SURFACE_TILE, SURFACE_SHADING } = await import('/js/text
 const { GameWorld } = await import('/js/world.js');
 const { collapseStatic, skinnedBoxGeometry } = await import('/js/gunskin.js');
 const { Menu } = await import('/js/menu.js');
+const { hasIcon } = await import('/js/icons.js');
 // Only the class: the boot at the bottom of main.js runs on DOMContentLoaded,
 // which this shim never fires, so importing it builds no game.
 const { Game } = await import('/js/main.js');
@@ -3252,5 +3253,124 @@ export default async function run() {
     const quiet = audio.voiceCount() === before;
     settings.sfxVolume = was;
     return quiet;
+  })());
+
+  /* ── Perks, on the HUD and in the picker ────────────────────────────────
+   *
+   * The pick is once per match now, which moves the weight of the feature out
+   * of the picker and onto two things: the panel has to make the commitment
+   * obvious before it is made, and the card on the HUD has to carry the trade
+   * for the rest of the match, because there is no longer a menu to go back to.
+   * Both are drawn from the room's own catalogue rather than from this client's
+   * copy of the constants, so both are checked against `perkList()`.
+   * ─────────────────────────────────────────────────────────────────────── */
+
+  suite('Client — the perk card and its picker');
+
+  const perkHud = new Hud();
+
+  check('the HUD card carries the perk, its icon and both halves of its trade', (() => {
+    const p = K.getPerk('runner');
+    perkHud.setPerk(p);
+    const panel = document.getElementById('perkPanel');
+    const li = (id) => (document.getElementById(id).innerHTML.match(/<li>/g) ?? []).length;
+    const good = li('perkGood');
+    const bad = li('perkBad');
+    info(`${p.name}: ${good} good, ${bad} bad`);
+    return !panel.classList.contains('hidden')
+      && document.getElementById('perkName').textContent === 'RUNNER'
+      && document.getElementById('perkIcon').innerHTML.includes('<svg')
+      && good === p.good.length && bad === p.bad.length;
+  })());
+
+  check('…and it is absent rather than blank in every mode without perks', (() => {
+    perkHud.setPerk(null);
+    return document.getElementById('perkPanel').classList.contains('hidden');
+  })());
+
+  check('an icon exists for every perk the room can offer',
+    K.PERK_IDS.every((id) => hasIcon(id)),
+    K.PERK_IDS.filter((id) => !hasIcon(id)).join(' ') || `${K.PERK_IDS.length} perks`);
+
+  const perkMenu = new Menu({});
+
+  check('the picker draws the rail, the cards and a commit button in the chosen colour', (() => {
+    perkMenu.buildPerks(K.perkList(), 'juggernaut', false);
+    const rail = document.getElementById('perkRail').innerHTML;
+    const grid = document.getElementById('perkGrid').innerHTML;
+    const btn = document.getElementById('perkConfirm');
+    const pips = (rail.match(/perk-pip/g) ?? []).length;
+    const cards = (grid.match(/class="perk-card/g) ?? []).length;
+    info(`${pips} pips, ${cards} cards`);
+    return pips === K.PERK_IDS.length && cards === K.PERK_IDS.length
+      && (grid.match(/<svg/g) ?? []).length === K.PERK_IDS.length
+      && rail.includes('perk-pip selected')
+      && btn.innerHTML.includes('Juggernaut') && !btn.disabled;
+  })());
+
+  check('…and nothing is sent by selecting: only the button commits', (() => {
+    // The whole point of the commit step. `buildPerks` is what a click on a
+    // card or a pip runs, and a picker that told the room about a preview
+    // would have made the choice before the player did.
+    let told = 0;
+    perkMenu.onPerkChange = () => { told++; };
+    perkMenu.buildPerks(K.perkList(), 'medic', false);
+    return told === 0 && perkMenu.selectedPerk === 'medic';
+  })());
+
+  check('reopened after the choice it is a reference card, not a menu', (() => {
+    perkMenu.buildPerks(null, null, true);
+    const btn = document.getElementById('perkConfirm');
+    return perkMenu.perkLocked && btn.disabled
+      && btn.innerHTML.includes('LOCKED IN FOR THIS MATCH')
+      && document.getElementById('perkModal').classList.contains('locked');
+  })());
+
+  /* ── The kill cam's shot log ────────────────────────────────────────────
+   *
+   * The replay is the snapshot ring read at an older moment, and a shot is not
+   * in that ring: it is one packet and one frame of tracer. So it is written
+   * down separately, and the two things that can go wrong with it are the ring
+   * growing without bound and the window being replayed twice.
+   * ─────────────────────────────────────────────────────────────────────── */
+
+  check('the shot log stamps on the render clock and forgets past the buffer', (() => {
+    const g = Object.create(Game.prototype);
+    g.shotLog = [];
+    let now = 100000;
+    g.net = { get serverTime() { return now; } };
+    g.logShot({ id: 1 });
+    const stamped = g.shotLog[0].t === 100000 - K.INTERP_DELAY * 1000;
+    // Fifteen seconds later: everything from the first three is older than the
+    // ring the replay can read out of, and cannot be played back at all.
+    const fired = 31;
+    for (let i = 1; i < fired; i++) { now = 100000 + i * 500; g.logShot({ id: 1 }); }
+    const oldest = g.shotLog[0].t;
+    const newest = g.shotLog[g.shotLog.length - 1].t;
+    info(`${g.shotLog.length} of ${fired} kept, spanning ${((newest - oldest) / 1000).toFixed(1)}s`);
+    return stamped && g.shotLog.length < fired
+      && newest - oldest <= (K.KILLCAM_SECONDS + 2) * 1000;
+  })());
+
+  check('and a replay frame fires the rounds inside its window, once each', (() => {
+    const g = Object.create(Game.prototype);
+    let tracers = 0;
+    g.shotLog = [10, 20, 30, 40].map((t) => ({
+      t, id: 3, x: 0, y: 1.6, z: 0, yaw: 0, pitch: 0, spread: 0, seq: t, w: 'ar',
+    }));
+    g.world = { raycast: () => null };
+    g.entities = { players: new Map() };
+    g.effects = { tracer: () => { tracers++; }, impact() {}, muzzleFlash() {} };
+    g.viewmodel = { fire() {}, meleeSwing() {} };
+    g.killCam = { shot: { targetId: 9 } };
+    g.gfx = { camera: { quaternion: new THREE.Quaternion(), position: new THREE.Vector3() } };
+    g.tmp = new THREE.Vector3();
+    // (15, 35] holds two of the four, and the ends are exclusive-then-inclusive
+    // so a frame boundary never draws a round twice or drops one.
+    g.replayShots(15, 35);
+    const inWindow = tracers;
+    g.replayShots(35, 45);
+    info(`${inWindow} in (15,35], ${tracers - inWindow} in (35,45]`);
+    return inWindow === 2 && tracers - inWindow === 1;
   })());
 }

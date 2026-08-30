@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import * as K from '/shared/constants.js';
 import { World } from '/shared/physics.js';
 import { getMap, ALL_MAP_IDS } from '/shared/maps.js';
-import { step, createState, eyeY, KEY } from '/shared/movement.js';
+import { step, createState, eyeY, carry, restore, KEY } from '/shared/movement.js';
 import { shotDirections, shotSeed } from '/shared/shot.js';
 import {
   loadoutFor, getClass, drawStamp, shotInterval, spreadFor, recoilKick, recoilRecovery, weaponById,
@@ -47,6 +47,48 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
 /** How long after the last shot the view starts walking recoil back down. */
 const RECOVER_DELAY = 0.12;
+
+/* ── The eye, and why it is not welded to the body ──────────────────────────
+ *
+ * The collision box changes height instantly, because it has to: the server
+ * runs the same `step` this client does, and a body that shrank over a tenth of
+ * a second would be a different body on each side of the wire for that tenth.
+ *
+ * The camera is under no such obligation, and nailing it to the top of that box
+ * is what made sliding read as broken. Crouching drops the box by eighty
+ * centimetres in one frame; standing up raises it in one frame; a slide does
+ * both, half a second apart, and every stair in the game teleports the whole
+ * thing up by the step height. Those are four hard cuts in a first-person view
+ * that is otherwise continuous, and a cut in a first-person view does not read
+ * as movement — it reads as a fault. Players called it glitchy, and they were
+ * describing exactly this.
+ *
+ * So the eye follows the body rather than being welded to it. Two filters, and
+ * they are separate because they are answering different questions:
+ *
+ *   DUCK_TAU     going down: a crouch or a slide. Deliberately the faster of
+ *                the two. Dropping is meant to feel like dropping — this is a
+ *                smoothing pass, not slow motion — and it is also the direction
+ *                with a cost: while the eye is still catching up it sits above
+ *                the crouched head, so a long one would put the camera through
+ *                the ceiling of a low gap the body has already fitted under.
+ *   RISE_TAU     coming back up. Softer, because standing is the half that
+ *                reads as a snap and the eye rising *into* a space the body
+ *                already occupies can clip nothing.
+ *   STEP_UP_TAU  a stair. Shorter again, because a step is at most a third of
+ *                the crouch delta and a slow one feels like the floor is soft.
+ *
+ * All three are time constants in seconds, so the result is the same at 60 fps
+ * and at 240. None of them touches the simulation: the body is exactly where
+ * the server says it is, the hitbox is exactly the height the server says it
+ * is, and what moves is where the picture is taken from. That is the only kind
+ * of smoothing a networked shooter is allowed to do to a player's own eye.
+ * ────────────────────────────────────────────────────────────────────────── */
+const DUCK_TAU = 0.04;
+const RISE_TAU = 0.07;
+const STEP_UP_TAU = 0.04;
+/** A jump this big is a teleport, not a crouch: adopt it rather than sliding. */
+const VIEW_HEIGHT_SNAP = 1.2;
 /** A round passing closer than this makes an audible snap. */
 const WHIZZ_RADIUS = 3.2;
 /** Frame rate the live match is drawn at behind the menu, and behind a panel. */
@@ -248,9 +290,42 @@ export class Game {
     this.renderTime = 0;
     /** True while the scene is being drawn at a moment in the past. */
     this.replaying = false;
+    /*
+     * Every shot fired in the last dozen seconds, so the kill cam can fire them
+     * again.
+     *
+     * The replay itself needs no recording — it is the snapshot ring read at an
+     * older moment (see killcam.js) — but a shot is not in that ring. It is an
+     * event: one packet, one flash, one tracer, gone by the next frame. So the
+     * one thing the cam cannot reconstruct is the only thing the fight was
+     * actually made of, and without this the replay is two people running
+     * around a map in silence and then one of them falling over.
+     *
+     * Each entry is stamped with the moment on the *render* timeline rather
+     * than with arrival time, because that is the clock the bodies are drawn
+     * on: a tracer stamped with `serverTime` would be played back a fifth of a
+     * second before the body that fired it got there.
+     */
+    this.shotLog = [];
+    /** How far through the log the replay has got, on the same clock. */
+    this.replayShotAt = 0;
+    /** Which weapon the replay has put in the killer's hands, and from which slot. */
+    this.replayWeapon = null;
+    this.replaySlot = -1;
+    /** The killer's view angles on the previous replay frame, for the gun's sway. */
+    this.replayAim = null;
     /** Whether the controller legend is up, so the class is toggled on change. */
     this._padLegend = false;
     this.smooth = new THREE.Vector3();
+    /**
+     * The height the camera is currently taken from, chasing `local.height`.
+     *
+     * Not `local.height` itself: see DUCK_TAU above for why the eye is allowed
+     * to lag the collision box and the box is not allowed to lag anything.
+     */
+    this.viewHeight = K.PLAYER_HEIGHT;
+    /** How far below the body the eye still is after a step up, in metres. */
+    this.stepOffset = 0;
     this.viewRoll = 0;
     this.fovCurrent = settings.fov;
     this.footstepAcc = 0;
@@ -752,6 +827,11 @@ export class Game {
       this.endReplay();
       this.deathAt = null;
       this.smooth.set(0, 0, 0);
+      // A spawn is a cut, and the eye filters have to be told so: easing a
+      // camera across a respawn would slide it out of the last body and into
+      // the new one over a sixth of a second.
+      this.viewHeight = this.local.height;
+      this.stepOffset = 0;
       if (msg.classId && msg.classId !== this.classId) this.setClass(msg.classId);
       for (let i = 0; i < this.weapons.length; i++) {
         this.ammo[i] = this.magOf(this.weapons[i]);
@@ -1157,7 +1237,7 @@ export class Game {
         this.setClass(msg.classId);
         if (typeof msg.ammo === 'number') this.ammo[0] = msg.ammo;
         this.reserve[0] = msg.reserve ?? -1;
-        if (msg.immediate) this.hud.toast(`Switched to ${getClass(msg.classId).name}`, 'good');
+        if (msg.immediate) this.hud.toast(i18n.tf('Switched to {name}', { name: getClass(msg.classId).name }), 'good');
       } else if (msg.phase === 'classQueued') {
         this.hud.toast('In combat — the new class lands on your next respawn', '');
       } else if (msg.phase === 'classLocked') {
@@ -1182,12 +1262,28 @@ export class Game {
         this.setPerk(msg.perk);
         this.perkChosen = true;
         if (typeof msg.health === 'number') this.maxHealth = msg.health;
-        if (msg.immediate) this.hud.toast(`Playing as ${K.getPerk(msg.perk).name}`, 'good');
+        if (msg.immediate) this.hud.toast(i18n.tf('Playing as {name}', { name: K.getPerk(msg.perk).name }), 'good');
       } else if (msg.phase === 'perkQueued') {
         this.perkChosen = true;
-        this.hud.toast('In combat — the new perk lands on your next respawn', '');
+        this.hud.toast('In combat — the perk you picked lands on your next respawn', '');
       } else if (msg.phase === 'perkLocked') {
-        this.hud.toast('Perks are only a thing in the Perks mode', '');
+        /*
+         * Two different refusals, and they are not the same sentence.
+         *
+         * `mode` is a client asking for something the room does not run, which
+         * is a bug in this file if it ever happens. `chosen` is the ordinary
+         * one: the pick is per match and this match's has been made, so the
+         * answer is the perk they already have — adopted here rather than
+         * assumed, so a picker that has drifted lands back on the truth.
+         */
+        if (msg.reason === 'chosen') {
+          this.perkChosen = true;
+          if (msg.perk) this.setPerk(msg.perk);
+          this.menu.buildPerks(this.perkList, this.perkId, true);
+          this.hud.toast('Your perk is locked in — the next match asks again', '');
+        } else {
+          this.hud.toast('Perks are only a thing in the Perks mode', '');
+        }
       } else if (msg.phase === 'spectate') {
         this.specFollowId = msg.targetId;
         this.specName = msg.name ?? null;
@@ -1260,6 +1356,10 @@ export class Game {
     this.map = map;
     this.mapName = map.name;
     this.world = new World(map);
+    // A shot belongs to the level it was fired on. Kept across a map change it
+    // would be replayed against geometry that no longer exists, which is a
+    // tracer through the middle of the new map from nowhere.
+    this.shotLog.length = 0;
     this.gfx.setMap(map);
     this.hud.setMap(map);
     this.objectives.setPoints(map.objectives ?? []);
@@ -1854,6 +1954,18 @@ export class Game {
     this.local.vx = y[3]; this.local.vy = y[4]; this.local.vz = y[5];
     this.local.onGround = !!y[6];
     this.local.height = y[7];
+    /*
+     * …and the half of the state the packet does not carry.
+     *
+     * `pending[0].pre` is the timer state as it was just before the first
+     * still-unacknowledged input was simulated — which is to say, the state
+     * immediately after the input the server has just told us it consumed. An
+     * empty queue means the server is level with us and there is nothing to
+     * undo. Without this the slide, hop and coyote timers were advanced once
+     * per replay per snapshot on top of the once per frame they were meant to
+     * be, and a slide lasted a fraction of the time the room was giving it.
+     */
+    restore(this.local, this.pending[0]?.pre);
 
     for (const inp of this.pending) {
       step(this.local, inp, this.world, K.TICK_DT, this.moveOptsFor(inp.keys));
@@ -2080,7 +2192,10 @@ export class Game {
   openPerkPicker() {
     if (!this.perkList) return;
     this.input.unlock();
-    this.menu.openPerkModal(this.perkList, this.perkId);
+    // Read-only once the choice has been made. The picker still opens — a
+    // player who wants to reread what they signed up for should be able to —
+    // it simply has nothing left to click.
+    this.menu.openPerkModal(this.perkList, this.perkId, this.perkChosen);
   }
 
   requestRespawn() {
@@ -2381,6 +2496,17 @@ export class Game {
     const muzzle = this.muzzleWorld(ads);
 
     if (!w.projectile) {
+      /*
+       * Ours goes in the kill cam's log too, and it is the half that makes a
+       * replay read as a fight rather than as an execution: what the killer saw
+       * was somebody shooting back. The muzzle is the viewmodel's rather than
+       * the eye, which is the same point the live tracer leaves from — the cam
+       * should show the shot that was drawn, not a recomputed one.
+       */
+      this.logShot({
+        id: this.myId, x: muzzle.x, y: muzzle.y, z: muzzle.z,
+        yaw: this.input.yaw, pitch: this.input.pitch, spread, seq, w: w.id,
+      });
       // Only every third round leaves a visible trail, the way real tracers work.
       for (let i = 0; i < dirs.length; i++) {
         this.traceAndDraw(muzzle, dirs[i], w, (w.pellets ?? 1) > 1 || this.shotSeq % 3 === 0);
@@ -2506,6 +2632,7 @@ export class Game {
     this.viewmodel.meleeSwing(K.MELEE_COOLDOWN * 0.82);
     this.addPunch(2.4, (Math.random() * 2 - 1) * 3.5);
     sfx.shot({ ...this.weapons[2].sound, gain: 0.35 }, null, null);
+    this.logShot({ id: this.myId, melee: true, x: this.local.x, y: eyeY(this.local), z: this.local.z });
   }
 
   /**
@@ -2525,11 +2652,101 @@ export class Game {
     this.net.reload();
   }
 
+  /* ── The kill cam's shot log ───────────────────────────────────────────── */
+
+  /**
+   * Remembers one shot, so the cam can fire it again ten seconds later.
+   *
+   * Stamped with the moment on the render timeline rather than with the time it
+   * arrived: bodies are drawn `INTERP_DELAY` behind the server clock, and the
+   * whole point of the replay is that the tracer and the person who fired it
+   * are in the same frame.
+   *
+   * The ring is trimmed to the same window `entities.js` keeps snapshots for,
+   * because a shot older than the oldest frame of the replay can never be
+   * played back — the camera would have nowhere to stand for it.
+   */
+  logShot(entry) {
+    entry.t = this.net.serverTime - K.INTERP_DELAY * 1000;
+    this.shotLog.push(entry);
+    const cutoff = entry.t - (K.KILLCAM_SECONDS + 2) * 1000;
+    let drop = 0;
+    while (drop < this.shotLog.length && this.shotLog[drop].t < cutoff) drop++;
+    if (drop) this.shotLog.splice(0, drop);
+  }
+
+  /**
+   * Fires every logged shot the replay has just passed over.
+   *
+   * Called once per replay frame with the window between the last frame's
+   * moment and this one's, so a hitch draws every round inside it rather than
+   * silently swallowing the ones it stepped across.
+   *
+   * The rays are cast against the world and against the bodies *as they are
+   * drawn right now*, which during a replay is where they were at that moment —
+   * so a tracer stops on the wall it stopped on, and on the person it hit.
+   */
+  replayShots(from, to) {
+    for (const e of this.shotLog) {
+      if (e.t <= from || e.t > to) continue;
+      const at = { x: e.x, y: e.y, z: e.z };
+      if (e.melee) {
+        sfx.shot({ ...weaponById('knife').sound, gain: 0.3 }, at, this.listener());
+        if (e.id === this.killCam.shot?.targetId) this.viewmodel.meleeSwing(K.MELEE_COOLDOWN * 0.82);
+        else this.entities.meleeSwing(e.id);
+        continue;
+      }
+      const def = weaponById(e.w);
+      const fd = { x: -Math.sin(e.yaw), y: Math.sin(e.pitch), z: -Math.cos(e.yaw) };
+
+      // The killer's own rounds come out of the gun the cam is holding, so the
+      // viewmodel kicks with them; everybody else's only exist in the world.
+      if (e.id === this.killCam.shot?.targetId) this.viewmodel.fire();
+      else {
+        this.effects.muzzleFlash(at.x + fd.x * 0.9, at.y + fd.y * 0.9 - 0.15, at.z + fd.z * 0.9,
+          def?.id === 'shotgun' ? 1.6 : 1.1, fd);
+      }
+      if (def) sfx.shot(def.sound, at, this.listener());
+
+      const dirs = shotDirections(e.yaw, e.pitch, e.spread, shotSeed(e.id, e.seq), def?.pellets ?? 1);
+      for (const d of dirs) {
+        const wall = this.world.raycast(at.x, at.y, at.z, d.x, d.y, d.z, K.MAX_SHOT_RANGE);
+        let best = wall ? wall.dist : 90;
+        let hitBody = false;
+        for (const other of this.entities.players.values()) {
+          if (!other.alive || other.id === e.id) continue;
+          const t = rayAabb(at, d,
+            other.pos.x - 0.46, other.pos.y, other.pos.z - 0.46,
+            other.pos.x + 0.46, other.pos.y + other.height, other.pos.z + 0.46, best);
+          if (t >= 0 && t < best) { best = t; hitBody = true; }
+        }
+        this.effects.tracer(at, {
+          x: at.x + d.x * best, y: at.y + d.y * best, z: at.z + d.z * best,
+        }, { width: 0.028, life: 0.07 });
+        if (!hitBody && wall && best === wall.dist) {
+          this.effects.impact(at.x + d.x * best, at.y + d.y * best, at.z + d.z * best,
+            wall.nx, wall.ny, wall.nz, wall.mat ?? 'concrete');
+        }
+      }
+    }
+  }
+
   /* ── Remote fire effects ───────────────────────────────────────────────── */
 
   onRemoteShot(msg) {
     const e = this.entities.get(msg.id);
     const from = { x: msg.x, y: msg.y, z: msg.z };
+
+    // Written down before anything is drawn, so a shot fired *during* somebody
+    // else's replay is still in the log when their own cam wants it. The melee
+    // branch below logs its own, because a knife carries none of these fields.
+    if (!msg.projectile && !msg.melee) {
+      this.logShot({
+        id: msg.id, x: msg.x, y: msg.y, z: msg.z,
+        yaw: msg.yaw ?? 0, pitch: msg.pitch ?? 0, spread: msg.spread ?? 0,
+        seq: msg.seq ?? 0, w: msg.w,
+      });
+    }
 
     /*
      * A rocket is an object in the world and has to be tracked whatever is on
@@ -2556,6 +2773,8 @@ export class Game {
     }
 
     if (msg.melee) {
+      this.logShot({ id: msg.id, melee: true, x: msg.x, y: msg.y, z: msg.z });
+      if (this.replaying) return;
       sfx.shot({ ...weaponById('knife').sound, gain: 0.3 }, from, this.listener());
       this.entities.meleeSwing(msg.id);
       return;
@@ -2799,7 +3018,12 @@ export class Game {
     }
 
     this.input.applyLook();
-    this.viewmodel.addLookLag(this.input.lookDelta.yaw, this.input.lookDelta.pitch);
+    // Not while the cam is holding the gun: the sway on a replayed weapon is
+    // the killer's mouse, out of the snapshot ring, and ours dragging it around
+    // underneath theirs would be two hands on one rifle.
+    if (!this.replaying) {
+      this.viewmodel.addLookLag(this.input.lookDelta.yaw, this.input.lookDelta.pitch);
+    }
 
     // Recoil walks back down once the trigger has been quiet for a moment.
     const nowSec = performance.now() / 1000;
@@ -2837,14 +3061,21 @@ export class Game {
     // A dead player has no weapon on screen. It used to stay drawn through the
     // whole death — a rifle floating in the middle of somebody else's kill cam,
     // pointed wherever the corpse had last been facing.
-    this.viewmodel.visible = this.alive;
-    this.viewmodel.update(dt, {
-      speed: Math.hypot(this.local.vx, this.local.vz),
-      grounded: this.local.onGround,
-      ads: this.input.ads,
-      sliding: this.local.sliding,
-      scoped: this.weapon.scope && this.input.ads,
-    });
+    //
+    // The one exception is a replay, where the gun on screen is the *killer's*
+    // and `replayGun` has already posed it out of their half of the snapshot
+    // ring. Posing it again from our own dead body here would put their weapon
+    // in our hands and bob it to a speed nobody is moving at.
+    if (!this.replaying) {
+      this.viewmodel.visible = this.alive;
+      this.viewmodel.update(dt, {
+        speed: Math.hypot(this.local.vx, this.local.vz),
+        grounded: this.local.onGround,
+        ads: this.input.ads,
+        sliding: this.local.sliding,
+        scoped: this.weapon.scope && this.input.ads,
+      });
+    }
 
     this.updateHud(dt);
     this.updateNukeCountdown(nowSec);
@@ -2938,6 +3169,18 @@ export class Game {
     const inp = { seq, keys, prev: this.prevKeys ?? 0, yaw: this.input.yaw, pitch: this.input.pitch };
     this.prevKeys = keys;
 
+    /*
+     * The movement timers as they stand *before* this input is simulated.
+     *
+     * The reconciliation below replays every unacknowledged input from the
+     * server's state, and the server's state has no timers in it — see CARRIED
+     * in shared/movement.js for what that used to do to a slide. Recorded per
+     * input rather than kept in one place because the input that matters is
+     * whichever one is at the head of the queue when the packet lands, and that
+     * is not knowable here.
+     */
+    inp.pre = carry(this.local);
+
     this.pending.push(inp);
     if (this.pending.length > 200) this.pending.shift();
     this.net.queueInput(seq, keys, inp.yaw, inp.pitch);
@@ -2947,6 +3190,14 @@ export class Game {
     const wasGrounded = this.local.onGround;
     const wasSliding = this.local.sliding;
     step(this.local, inp, this.world, K.TICK_DT, this.moveOptsFor(keys));
+
+    // A stair is a teleport upward as far as the eye is concerned — the body
+    // climbs it in one step, because that is what `moveAndCollide` does with a
+    // ledge inside the step height. The camera stays where it was and rises,
+    // which is the whole of what `steppedUp` was recorded for.
+    if (this.local.steppedUp > 0) {
+      this.stepOffset = Math.min(K.STEP_HEIGHT * 1.2, this.stepOffset + this.local.steppedUp);
+    }
 
     // Local-only feedback the server doesn't need to tell us about.
     if (this.local.landed) {
@@ -3041,9 +3292,30 @@ export class Game {
       }
     }
 
+    /*
+     * The eye catches up with the body rather than being nailed to it.
+     *
+     * A crouch, a slide and every stair in the game move `local.height` or
+     * `local.y` by more in one frame than a walking player moves in ten, and
+     * a camera that copies them is a camera that cuts. Both filters are
+     * purely visual — nothing below this line is ever sent, predicted or
+     * tested against — and both are dropped for a jump too big to be either,
+     * which is a spawn or a teleport and wants to be a cut.
+     */
+    const wantHeight = this.local.height;
+    if (Math.abs(wantHeight - this.viewHeight) > VIEW_HEIGHT_SNAP) {
+      this.viewHeight = wantHeight;
+      this.stepOffset = 0;
+    } else {
+      const tau = wantHeight < this.viewHeight ? DUCK_TAU : RISE_TAU;
+      this.viewHeight += (wantHeight - this.viewHeight) * (1 - Math.exp(-dt / tau));
+    }
+    this.stepOffset *= Math.exp(-dt / STEP_UP_TAU);
+    if (this.stepOffset < 0.002) this.stepOffset = 0;
+
     cam.position.set(
       this.local.x + this.smooth.x,
-      eyeY(this.local) + this.smooth.y,
+      this.local.y + this.viewHeight - K.EYE_OFFSET - this.stepOffset + this.smooth.y,
       this.local.z + this.smooth.z,
     );
 
@@ -3148,8 +3420,15 @@ export class Game {
      */
     const replay = this.killCam.replayTime;
     if (replay !== null) {
-      if (!this.replaying) this.beginReplay();
+      if (!this.replaying) this.beginReplay(replay);
       this.entities.update(replay, dt, view);
+      // Bodies first, then the gun that is about to fire, then the rounds that
+      // passed between them: the rays below are cast against the positions this
+      // call has just written, and a shot has to kick a weapon that is already
+      // the killer's rather than the one we died holding.
+      this.replayGun(dt, replay);
+      this.replayShots(this.replayShotAt, replay);
+      this.replayShotAt = replay;
       return;
     }
     if (this.replaying) this.endReplay();
@@ -3171,17 +3450,102 @@ export class Game {
    * own body has to come off the screen because the camera is standing inside
    * it, and ours has to go on.
    */
-  beginReplay() {
+  beginReplay(at) {
     this.replaying = true;
     for (const p of this.projectiles) p.mesh.visible = false;
     this.entities.replaying = true;
     this.entities.hidden = this.killCam.shot?.targetId ?? 0;
+    // Nothing older than the first frame of the replay: the log runs a couple
+    // of seconds deeper than the cam does, and firing all of it on the opening
+    // frame would be a wall of tracers nobody fired.
+    this.replayShotAt = at;
+    this.replaySlot = -1;
+    this.replayWeapon = null;
+    this.replayAim = null;
+  }
+
+  /**
+   * Puts the killer's weapon in the cam's hands.
+   *
+   * The replay is their eye, and an eye with nothing under it is a camera
+   * floating through a level: you watch the kill without ever seeing what did
+   * it, and a shotgun and a sniper look identical from inside the skull of the
+   * person holding them. So the viewmodel — the same one that draws our own gun
+   * every other frame of the game — is handed the killer's weapon for the
+   * length of the replay and taken back afterwards.
+   *
+   * Everything it needs is already on the wire. The class rides on the profile,
+   * the slot rides in the snapshot (which is what makes a mid-replay switch
+   * follow, rather than showing the rifle they started the fight with all the
+   * way through a pistol kill), and the finish rides on the wardrobe the join
+   * announced — so the gun in the cam is the gun they were actually holding,
+   * skin and all.
+   *
+   * The pose is driven the way ours is: their ground speed bobs it, their
+   * mouse drags it. `addLookLag` wants a per-frame delta rather than an angle,
+   * so the previous frame's aim is kept and differenced here.
+   */
+  replayGun(dt, at) {
+    const shot = this.killCam.shot;
+    const s = shot ? this.entities.sampleAt(shot.targetId, at, true) : null;
+    const e = shot ? this.entities.get(shot.targetId) : null;
+    // The killer left mid-replay, and the cam has fallen back to its orbit —
+    // which is a shot from outside a body, so there is no first-person weapon
+    // to be holding. Left drawn, it is a rifle hanging in the middle of the
+    // frame belonging to nobody.
+    if (!s || !e) { this.viewmodel.visible = false; return; }
+
+    const slot = Math.max(0, Math.min(2, e.lastSlot | 0));
+    if (slot !== this.replaySlot) {
+      this.replaySlot = slot;
+      this.replayWeapon = loadoutFor(e.profile?.classId ?? this.classId)[slot] ?? null;
+      if (this.replayWeapon) {
+        // Their wardrobe, and the default rather than *ours* when they have
+        // none: `setWeapon` falls back to the last loadout it was given, which
+        // would put our own finishes on somebody else's gun.
+        this.viewmodel.setWeapon(this.replayWeapon, SLOT_FOR[slot] ?? COS.SLOT.PRIMARY,
+          e.profile?.cos ?? { ...COS.DEFAULT_EQUIP });
+      }
+    }
+    // No loadout to draw — a class this build does not know. Nothing is better
+    // than the wrong gun.
+    if (!this.replayWeapon) { this.viewmodel.visible = false; return; }
+
+    if (this.replayAim) {
+      let dy = s.yaw - this.replayAim.yaw;
+      while (dy > Math.PI) dy -= Math.PI * 2;
+      while (dy < -Math.PI) dy += Math.PI * 2;
+      this.viewmodel.addLookLag(dy, s.pitch - this.replayAim.pitch);
+      this.replayAim.yaw = s.yaw;
+      this.replayAim.pitch = s.pitch;
+    } else {
+      this.replayAim = { yaw: s.yaw, pitch: s.pitch };
+    }
+
+    this.viewmodel.visible = true;
+    this.viewmodel.update(dt, {
+      speed: e.speed ?? 0,
+      // Their sights and their feet, off the same flag word the third-person
+      // body is posed from.
+      grounded: e.grounded !== false,
+      ads: !!e.ads,
+      sliding: !!e.sliding,
+      scoped: !!this.replayWeapon.scope && !!e.ads,
+    });
   }
 
   endReplay() {
     this.replaying = false;
     this.entities.replaying = false;
     this.entities.hidden = 0;
+    // The gun goes back to being ours. `visible` is settled by the frame loop —
+    // we are still dead here, so it stays off until the respawn.
+    if (this.replayWeapon) {
+      this.viewmodel.setWeapon(this.weapons[this.slot], SLOT_FOR[this.slot] ?? COS.SLOT.PRIMARY, this.cos);
+      this.replayWeapon = null;
+      this.replaySlot = -1;
+      this.replayAim = null;
+    }
     // Ten seconds forward in one frame is not a death, and the interpolator
     // reads a death out of a body that was alive on the previous frame and is
     // not on this one. Without this, everybody who died inside the replayed
@@ -3350,6 +3714,12 @@ export class Game {
       accuracy: 0,
       practice: this.practice,
     }, dt);
+
+    // The perk card belongs to the body the camera is on rather than to us: a
+    // watcher in a Perks match is reading the trade the person they are
+    // watching took, and we took none. Absent in every other mode, because the
+    // profile only carries a perk where one was chosen.
+    this.hud.setPerk(e?.profile?.perk ? K.getPerk(e.profile.perk) : null);
 
     // The bar names whoever the camera settled on. The room retargets silently
     // when somebody dies, so the name under it has to follow every frame rather

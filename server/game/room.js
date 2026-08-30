@@ -1943,14 +1943,29 @@ export class Room {
   }
 
   /**
-   * Choosing what kind of player you are.
+   * Choosing what kind of player you are — once, for the whole match.
    *
-   * Deliberately the same shape as `onClassChange`, because it is the same
-   * decision one layer down: out of combat it lands immediately, mid-fight it
-   * waits for the respawn. That rule is doing more work here than it does for a
-   * class — a perk changes how much health you have, and a swap under fire that
-   * took effect at once would be a Runner topping themselves up to a
-   * Juggernaut's ninety hit points in the middle of losing a gunfight.
+   * ── Why it is once ─────────────────────────────────────────────────────
+   *
+   * It used to be a swap you could make at any time, on the same rule a class
+   * change follows: instant out of combat, queued to the respawn otherwise.
+   * That made the mode something other than what it says it is. A perk is a
+   * trade, and a trade you can walk out of the moment it stops paying is not a
+   * trade — the strongest way to play was to open the picker between every
+   * fight and wear whichever body suited the next thirty seconds, which is
+   * exactly the decision the mode exists to make you commit to.
+   *
+   * So `perkChosen` is now a latch rather than a note. It goes up on the first
+   * answer of the match, and every answer after it is refused with the perk the
+   * player already has — the picker reopens read-only, and the next match asks
+   * again from `startMatch`. Somebody who joins mid-match still gets their one
+   * choice, because their match starts when they walk in.
+   *
+   * The combat rule is kept underneath it, for the one case it still catches: a
+   * player who joins, spawns, runs into a fight and picks *during* it would
+   * otherwise be topped up mid-gunfight by the body they chose. That lands on
+   * the respawn instead. The latch is already down by then either way, so it
+   * decides when the choice takes effect, never whether another one is coming.
    *
    * It refuses outright in every mode that is not Perks. There is nothing to
    * exploit in a perk the room never reads, but a client that thinks it changed
@@ -1960,7 +1975,13 @@ export class Room {
   onPerkChange(player, msg) {
     if (typeof msg.p !== 'string') return;
     if (!this.mode.perks) {
-      this.sendTo(player, { o: K.S2C.MATCH, phase: 'perkLocked', perk: null });
+      this.sendTo(player, { o: K.S2C.MATCH, phase: 'perkLocked', perk: null, reason: 'mode' });
+      return;
+    }
+    if (player.perkChosen) {
+      this.sendTo(player, {
+        o: K.S2C.MATCH, phase: 'perkLocked', perk: player.perkId, reason: 'chosen',
+      });
       return;
     }
     const id = K.PERK_IDS.includes(msg.p) ? msg.p : K.DEFAULT_PERK;

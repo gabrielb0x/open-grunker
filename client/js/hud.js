@@ -18,6 +18,7 @@ import { bindingLabel, padLabel } from './keybinds.js';
 // sentence is translated where it lands, by the pass in i18n.js.
 import { t, tf } from './i18n.js';
 import { sfx } from './audio.js';
+import { icon, hasIcon } from './icons.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -51,7 +52,8 @@ export class Hud {
     this.el = {
       hud: $('hud'), crosshair: $('crosshair'), hitmarker: $('hitmarker'),
       hpFill: $('hpFill'), hpGhost: $('hpGhost'), hpNum: $('hpNum'),
-      perkChip: $('perkChip'), perkName: $('perkName'),
+      perkPanel: $('perkPanel'), perkName: $('perkName'), perkIcon: $('perkIcon'),
+      perkGood: $('perkGood'), perkBad: $('perkBad'),
       ammoMag: $('ammoMag'), ammoReserve: $('ammoReserve'),
       ammoWrap: document.querySelector('#bottomRight .ammo'), weaponName: $('weaponName'),
       reloadHint: $('reloadHint'), reloadFill: $('reloadFill'),
@@ -98,6 +100,8 @@ export class Hud {
     this.mmCtx = this.el.minimap.getContext('2d');
     /** Name buttons rather than keys in every hint — set once a pad is in use. */
     this.padHints = false;
+    /** Which perk the card is currently drawn for, so it is built once. */
+    this.perkShown = null;
     /**
      * The last value written to each DOM property this class touches.
      *
@@ -362,19 +366,34 @@ export class Hud {
   }
 
   /**
-   * The perk chip under the health bar, or nothing at all.
+   * The perk card above the health block, or nothing at all.
    *
    * Absent rather than empty outside the Perks mode: an element that is there
-   * but blank still takes its margin, and every other mode would carry a gap on
-   * the HUD for a feature it does not have.
+   * but blank still takes its gap in the stack, and every other mode would
+   * carry a hole on the HUD for a feature it does not have.
+   *
+   * The two lists are drawn here rather than left behind the picker because the
+   * pick is final — you choose once, at the start of the match — so "what did I
+   * sign up for" is a question that gets asked in the middle of a fight, and an
+   * answer that needs a key and a modal is not an answer. It is rebuilt only
+   * when the perk actually changes, which in a match is at most once.
    */
   setPerk(perk) {
-    const el = this.el.perkChip;
+    const el = this.el.perkPanel;
     if (!el) return;
     el.classList.toggle('hidden', !perk);
     if (!perk) return;
-    this._text(this.el.perkName, 'perk.name', perk.name.toUpperCase());
-    this._style(el, 'perk.col', 'color', `#${(perk.color ?? 0x8b95a6).toString(16).padStart(6, '0')}`);
+    if (this.perkShown === perk.id) return;
+    this.perkShown = perk.id;
+    el.style.setProperty('--pk', `#${(perk.color ?? 0x8b95a6).toString(16).padStart(6, '0')}`);
+    this.el.perkName.textContent = perk.name.toUpperCase();
+    this.el.perkIcon.innerHTML = hasIcon(perk.id) ? icon(perk.id) : '';
+    const items = (list) => (list ?? []).map((line) => `<li>${escapeHtml(line)}</li>`).join('');
+    // Written straight in, not through `t()`: the lists arrive as English from
+    // the room and the DOM pass translates them where they land, exactly like
+    // every other sentence the interface draws. See i18n.js.
+    this.el.perkGood.innerHTML = items(perk.good);
+    this.el.perkBad.innerHTML = items(perk.bad);
   }
 
   setMode(modeId, modeName, practice = false) {
@@ -694,7 +713,10 @@ export class Hud {
 
   streakBanner(text) {
     const el = this.el.streak;
-    el.textContent = text;
+    // Through the table by hand: the banner sits inside `data-i18n-skip`,
+    // because the killfeed line that triggers it carries player names, and the
+    // DOM pass therefore never reaches the one word in it that is ours.
+    el.textContent = t(text);
     el.classList.remove('show');
     void el.offsetWidth;
     el.classList.add('show');
@@ -1016,12 +1038,12 @@ export class Hud {
     this.el.meMvp.innerHTML = `
       <div class="mvp-main">
         <span class="mvp-label">MVP</span>
-        <b class="mvp-name">${clanTag(mvp.clan, mvp.clanVerified)}${escapeHtml(mvp.name)}${
+        <b class="mvp-name" data-i18n-skip>${clanTag(mvp.clan, mvp.clanVerified)}${escapeHtml(mvp.name)}${
   verifiedTag(mvp.verified, 16)}</b>
         <span class="mvp-line">${mvp.score} pts · ${mvp.kills}/${mvp.deaths} · ${mvp.accuracy ?? 0}% acc</span>
       </div>
       <div class="mvp-awards">${awards.map(([t, n, v]) => `
-        <div class="mvp-award"><span>${t}</span><b>${escapeHtml(n)}</b><i>${v}</i></div>`).join('')}
+        <div class="mvp-award"><span>${t}</span><b data-i18n-skip>${escapeHtml(n)}</b><i>${v}</i></div>`).join('')}
       </div>`;
   }
 

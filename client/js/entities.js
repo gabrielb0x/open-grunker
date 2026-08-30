@@ -583,6 +583,9 @@ export class EntityManager {
       pos: new THREE.Vector3(), yaw: 0, pitch: 0,
       health: K.MAX_HEALTH, alive: false, walkPhase: 0, speed: 0, height: K.PLAYER_HEIGHT,
       lastSlot: -1, visible: false, lastSeenAt: -99, visCheckAt: 0,
+      grounded: true, sliding: false, ads: false,
+      /** How far into a crouch this body is drawn, eased — see `_pose`. */
+      crouchAmt: 0,
       hitFlash: 0, deathT: 0, deathDur: 0, deathSeed: 0, faded: false,
       swingT: 0, wasAlive: false, lean: 0,
     });
@@ -950,6 +953,12 @@ export class EntityManager {
       const grounded = (b[6] & 2) !== 0;
       // Kept so local shot prediction uses the same hitbox the server rewinds.
       e.height = (crouching || sliding) ? K.PLAYER_CROUCH_HEIGHT : K.PLAYER_HEIGHT;
+      // Kept for the kill cam, which poses the killer's *viewmodel* out of the
+      // same three flags this body is posed from — so the gun in the replay is
+      // aimed, crouched and sliding when they were.
+      e.grounded = grounded;
+      e.sliding = sliding;
+      e.ads = (b[6] & 16) !== 0;
 
       if (this._worthPosing(e, camera)) this._pose(e, dt, crouching, sliding, grounded);
 
@@ -1081,6 +1090,9 @@ export class EntityManager {
     e.faded = false;
     e.deathT = 0;
     e.lean = 0;
+    // A respawn is a new body standing up, not the old one easing out of a
+    // slide: the crouch it eases from is zero.
+    e.crouchAmt = 0;
   }
 
   /**
@@ -1191,7 +1203,19 @@ export class EntityManager {
     u.armL.rotation.x = -swing * 0.5 - 0.3;
     u.gloveL.rotation.x = u.armL.rotation.x;
 
-    const crouchAmt = sliding ? 1 : crouching ? 0.78 : 0;
+    /*
+     * Eased, not switched.
+     *
+     * The collision box changes height in one step, because it has to agree
+     * with the server's — but a *body* that drops eighty centimetres between
+     * two frames and snaps back up on the frame the slide ends does not read as
+     * a slide, it reads as a stutter. The same easing the local player's own
+     * eye gets (main.js, DUCK_TAU and RISE_TAU) applied to everybody else's knees,
+     * over roughly the same sixth of a second.
+     */
+    const wantCrouch = sliding ? 1 : crouching ? 0.78 : 0;
+    e.crouchAmt += (wantCrouch - e.crouchAmt) * Math.min(1, dt * 17);
+    const crouchAmt = e.crouchAmt;
     const drop = -crouchAmt * 0.55 + bounce;
     const solid = u.solid;
     for (let i = 0; i < solid.length; i++) {

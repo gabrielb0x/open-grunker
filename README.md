@@ -234,6 +234,36 @@ flight, and a replay reading the state's own copy would compare the first
 replayed input against the last one — swallowing exactly the fresh press still
 on the wire.
 
+**The same rewind carries the timers a snapshot has no room for.** A packet is a
+position, a velocity, a ground flag and a height; it says nothing about how far
+into its second and a third a slide is, how long ago a crouch was pressed, or
+whether a landing is still inside its hop grace. `CARRIED` in
+`shared/movement.js` names every such field, the client saves them before an
+input is first simulated and restores them before replaying it, and the test
+suite drives one body straight through and a second through a rewind-and-replay
+and fails if their slide clocks disagree by more than a tick. Without it every
+replayed input advanced those timers a second time: at sixty ticks with an
+ordinary connection the slide clock ran about four times too fast, the client
+stood you up a third of a second in, the next packet put you back down, and it
+got worse the worse your line was.
+
+**The eye is not welded to the collision box.** The box has to change height in
+one frame, because the server runs the same `step` your machine does and a body
+that shrank over a tenth of a second would be two different bodies for that
+tenth. A camera is under no such obligation: crouching drops the eye eighty
+centimetres, standing up raises it, a slide does both half a second apart, and
+every stair climbs it by the step height. Four hard cuts in a view that is
+otherwise continuous do not read as movement, they read as a fault. So the
+camera height chases the body's over about a sixth of a second — quicker going
+down than coming back up, because dropping should feel like dropping and because
+that is the half where a lagging eye could sit briefly above a low ceiling the
+body has already fitted under — step-ups are eased out of `steppedUp`, and every
+filter is dropped outright for a jump too big to be either: a spawn or a
+teleport, which wants to be a cut. Nothing about the simulation moves: the
+hitbox is the height it always was, and what changed is where the picture is
+taken from. Other players' bodies ease into a crouch the same way rather than
+snapping into one.
+
 **Momentum follows your crosshair.** Hopping or sliding, with no strafe key
 held, your speed turns to point wherever you are aiming — a slide carves hard,
 a hop about half as hard. Nothing is spent doing it: the direction of your
@@ -291,6 +321,20 @@ The one thing a snapshot does not carry is your *own* entry — the server cuts 
 out, because your client is predicting it — so the client hands its own position
 and view angles to the same ring. Without that the replay would be the killer's
 ten seconds with the person they were shooting at missing from them.
+
+**The gun and the gunfire are the two things the ring cannot supply**, and both
+are in the shot anyway. The killer's weapon is put in the cam's hands for the
+length of the replay — the right class, the slot they were actually holding as
+they switch mid-fight, and the finish they own — bobbing to their speed and
+dragged around by their mouse, because an eye with nothing under it is a camera
+floating through a level and a shotgun and a sniper look identical from inside
+the head of the person holding one. A *shot* is not in the ring either: it is
+one packet, one flash and one frame of tracer, gone before the next snapshot. So
+every round fired in the last dozen seconds is written down — where from, along
+which angles, with which cone and which seed — and fired again on cue, with the
+rays cast against the bodies as the replay is drawing them. Muzzle flashes,
+tracers, impacts on the wall they actually hit, knife swings, the sound of all
+of it, and your own rounds going the other way.
 
 **The orbit is still there, as the fallback.** A slow quarter-turn around the
 killer is what runs when there is no history to replay: dying a few seconds
@@ -381,13 +425,14 @@ A few switches worth knowing about:
 | **Sensitivity while aiming** (AIM) | A multiplier on the sensitivity above it, applied only while the sights are up: below 1 the view slows down when you aim, which is what a scope wants, and 1.00 keeps the same speed everywhere. It steers a controller stick as well as a mouse |
 | **Mouse acceleration** (AIM) | Off — the default — asks the browser for raw mouse input, so the same physical flick is always the same number of degrees. On lets your operating system's pointer acceleration through. Changing it re-asks for the pointer lock, so it lands on the next mouse movement rather than the next time you alt-tab |
 | **Saturation** and **Contrast** (VIDEO) | The colour grade, as multipliers on the game's own look. 100% is exactly what the maps were painted against, so somebody who never opens these pays nothing for having them |
+| **Post-processing** (VIDEO) | How much of the chain, rather than whether. 100% is what the maps were painted against; anything below it scales the bloom, the vignette, the grain and the lens fringing together, so the picture goes quieter rather than losing one effect at a time; Off skips the chain outright, which is the fastest the game gets. Tone mapping is never faded — an un-tone-mapped frame is not a subtler frame, it is a blown-out one — so below 100% it is still applied in full, and at Off the renderer does it instead |
 | **Hide the weapon while aiming** (WEAPON) | Clears the gun out of the bottom of your screen the moment you aim. Yours alone — everyone else still sees you holding it |
 | **Replay the fight from their eyes** (KILL CAM) | The [kill cam](#the-kill-cam) as a replay from inside the killer's head, or as the orbit around their body |
 | **Spectator** | The chase camera and the through-walls view, both also on `V` and `X` while watching |
 
-**The grade is applied wherever it can be.** With post-processing on, saturation
-and contrast happen inside the composite pass, in linear light, before the
-vignette and the grain — the right place for them. With post-processing off there
+**The grade is applied wherever it can be.** With post-processing above zero,
+saturation and contrast happen inside the composite pass, in linear light, before
+the vignette and the grain — the right place for them. With post-processing off there
 is no composite to put them in, so the same two numbers are handed to the
 browser's compositor as a CSS filter on the canvas instead. It is exactly free
 while both sit at 100%: the filter string is empty and there is no extra layer to
@@ -410,7 +455,7 @@ parts of the page they live in are marked and the translator stops at them.
 **The key is the English sentence itself.** There is no `en.js` and no table of
 symbolic names: `client/js/i18n/<lang>.js` maps the English as it is written in
 the source to the translation, and anything not in it renders as the English
-somebody actually wrote. That is the one fallback that cannot rot — with six
+somebody actually wrote. That is the one fallback that cannot rot — with nine
 hundred strings across sixteen hundred lines of markup, a separate English table
 would go stale the first time anybody edited a button, and the button would
 silently go back to saying whatever it used to say. Editing the markup is editing
@@ -1308,6 +1353,14 @@ fields of gas drift past each other, stars twinkle behind them and a meteor
 crosses every few seconds, all of it derived from one clock so every screen in
 the match is looking at the same sky.
 
+It first shipped about a quarter darker than it is now. That read as too dark —
+not unreadable, but a shade under the point where you can tell a crate from a
+doorway at thirty metres without a light strip on it — so the ambient, the key
+and the structure palette were lifted **together**. Raising only one of the three
+is what turns a night map into a grey one: more ambient alone flattens every box,
+a brighter key alone blows out the lit faces, and a paler palette alone stops the
+neon being the brightest thing in the frame.
+
 Modes: **Free For All** (30 kills / 4 min), **Team Deathmatch**
 (50 kills / 4 min) and **Perks** (30 kills / 4 min — see below), up to
 **8 players** per room. When the clock runs out the
@@ -1343,13 +1396,24 @@ There is deliberately no "balanced" option. A mode built on choices whose safe
 answer is "don't choose" has no choices in it, so the mildest of the seven —
 Trooper — is still a real pick rather than the absence of one.
 
-The picker opens at the start of every match and on the class key (`B` by
-default) at any time. Out of combat a swap lands immediately; mid-fight it waits
-for your next respawn, the same rule a class change follows and for a sharper
-reason — a perk changes how much health you have, and a swap under fire that
-took effect at once would be a Runner topping up to a Juggernaut's ninety hit
-points in the middle of losing a gunfight. The choice belongs to the *match*: a
-new one asks again.
+**You choose once.** The picker opens at the start of every match; you select a
+perk from the rail of icons across the top or from the cards below it, and
+nothing is sent until you press the button that commits. After that the choice
+is final for the match — the class key (`B` by default) still reopens the panel,
+because rereading what you signed up for is a reasonable thing to want, but
+there is nothing left in it to press. The next match asks again.
+
+That rule is the mode. A perk you could drop the moment it stopped paying would
+make the strongest way to play "open the picker between every fight and wear
+whichever body suits the next thirty seconds", which is precisely the decision
+the mode exists to make you commit to. Somebody who joins mid-match still gets
+their one choice, because their match starts when they walk in; if they make it
+*during* a gunfight it lands on their next respawn rather than topping them up
+to a Juggernaut's ninety hit points in the middle of losing one.
+
+The trade stays on screen for the whole match, on a card above your health
+block: the perk's icon and name in its own colour, what this body is better at
+than anybody, and what it pays for it.
 
 Everything a perk changes is decided by the server. Movement is the one part
 that also runs on your machine, because prediction has to agree with authority —

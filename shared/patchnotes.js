@@ -17,7 +17,7 @@
  * wrote it: what they can now do, or what stopped going wrong.
  */
 
-export const GAME_VERSION = '2.2.0';
+export const GAME_VERSION = '2.3.0';
 
 export const PATCH_KINDS = {
   new: { label: 'NEW', color: '#4ddb7a' },
@@ -26,6 +26,23 @@ export const PATCH_KINDS = {
 };
 
 export const PATCH_NOTES = [
+  {
+    version: '2.3.0',
+    date: '2026-08-30',
+    title: 'A perk you commit to, a kill cam with a gun in it, and a slide that stopped stuttering',
+    changes: [
+      { kind: 'change', text: 'In Perks you now choose once, at the start of the match, and live with it. It used to be a swap you could make between every fight, which quietly made the mode something other than what it says it is: the strongest way to play was to open the picker between rounds and wear whichever body suited the next thirty seconds, and a trade you can walk out of the moment it stops paying is not a trade. The picker still opens after the choice — you can reread what you signed up for whenever you like — it simply has nothing left to press. The next match asks again.' },
+      { kind: 'change', text: 'The picker is rebuilt around that. Seven icons across the top, one per perk, so anyone who already knows what they want is one click from the match; a card each below with its own icon, colour and the trade written out as a tick list and a cross list; and one button at the bottom that commits, in the colour of whatever you picked. Selecting only previews — nothing is sent until you press it — which is what a decision you cannot undo deserves.' },
+      { kind: 'new', text: 'And the trade stays on screen. Above your health block, all match, is a card with your perk’s icon, its name in its own colour, and both lists: what this body is better at than anybody, and what it pays for it. It used to be one word under the health bar, which was enough while the pick could be changed and is not enough now — a Runner on half health should be able to see why at the moment they notice, not after a trip through a menu.' },
+      { kind: 'change', text: 'The kill cam shows you the gun that did it. The replay is the killer’s eye, and an eye with nothing under it is a camera floating through a level: a shotgun and a sniper looked identical from inside the head of the person holding one. Their weapon is now in frame for the length of the replay — the right class, the right slot as they switch mid-fight, and the finish they actually own — bobbing to their speed and dragged around by their mouse.' },
+      { kind: 'change', text: 'The shots are in it too. A replay is read out of the snapshot ring, and a shot is not in that ring: it is one packet, one flash, one tracer, gone by the next frame. So every round fired in the last dozen seconds is now kept and fired again on cue — muzzle flashes, tracers, impacts on the wall they hit, knife swings and the sound of all of it, including yours shooting back. The fight you lost plays as a fight instead of a silent run-up to falling over.' },
+      { kind: 'fix', text: 'The slide was glitchy, and there were two reasons. The first was a real bug in prediction: a snapshot carries a position, a velocity, a ground flag and a height, and nothing about how far into its second and a third a slide is — so every input replayed after a correction advanced the slide clock again on top of the once it had already been advanced. At sixty ticks with an ordinary connection it ran about four times too fast, which means the client stood you up around a third of a second in, the next packet put you back down, and it got worse the worse your line was. The clock is rewound with everything else now, so a slide lasts exactly as long as the room says it does.' },
+      { kind: 'fix', text: 'The second was the camera. Crouching drops the collision box eighty centimetres in a single frame — it has to, or the server and your screen disagree about how tall you are — and the eye was nailed to the top of it, so a slide was a hard cut down, a hard cut back up, and every stair in the game was a third cut. The eye follows the body now instead of being welded to it, over about a sixth of a second, and steps up are eased the same way. Nothing about the simulation moved: the hitbox is the height it always was, and what changed is where the picture is taken from. Other players’ bodies ease into a slide as well, rather than snapping into one.' },
+      { kind: 'change', text: 'Nova came up about a quarter in brightness. It read as too dark — not unreadable, but a shade under the point where you can tell a crate from a doorway at thirty metres without a light strip on it. The ambient, the key and the structure palette were all lifted together, because raising only one of the three is what turns a night map into a grey one: more ambient alone flattens every box, a brighter key alone blows out the lit faces, and a paler palette alone stops the neon being the brightest thing in the frame.' },
+      { kind: 'change', text: 'Post-processing is an amount now rather than a switch. It was a single answer to five questions — bloom, the grade, the vignette, the grain and the lens fringing — and somebody on a laptop usually wants less of it rather than none. SETTINGS ▸ VIDEO has a slider: 100% is what the maps were painted against, Off skips the chain outright and is the fastest the game gets, and everything between scales the effects together. Tone mapping is never faded, because an un-tone-mapped frame is not a subtler frame, it is a blown-out one.' },
+      { kind: 'new', text: 'Three hundred and thirty more strings are translated, in all seven languages. Every perk, every trade on its card, what each mode is, and every word that flashes on screen after a kill — FIRST BLOOD, GODLIKE, NO SCOPE and the rest — plus the screens that stop you playing, the market, clans, two-factor and most of the answers the menu gives back. Player names are protected in a few more places while it is at it: with more short words in the table, somebody called “Today” must still be called Today.' },
+    ],
+  },
   {
     version: '2.2.0',
     date: '2026-08-29',
