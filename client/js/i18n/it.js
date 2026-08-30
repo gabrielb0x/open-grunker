@@ -561,6 +561,9 @@ export default {
   'Invert vertical look (controller)': 'Inverti la visuale verticale (controller)',
   Vibration: 'Vibrazione',
   'Quality preset': 'Preimpostazione qualità',
+  Resolution: 'Risoluzione',
+  'Caps how many pixels the game actually renders before stretching that up to fill your screen. It never asks for more than your screen already shows, so this only ever trades detail for frame rate, never the other way round.':
+    'Limita quanti pixel il gioco renderizza davvero prima di ingrandirli per riempire lo schermo. Non chiede mai più di quanto lo schermo mostri già, quindi questo scambia sempre dettaglio per fotogrammi al secondo, mai il contrario.',
   Low: 'Bassa',
   Medium: 'Media',
   High: 'Alta',

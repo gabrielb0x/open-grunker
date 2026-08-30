@@ -544,6 +544,9 @@ export default {
   'Invert vertical look (controller)': '反转垂直视角（手柄）',
   Vibration: '震动',
   'Quality preset': '画质预设',
+  Resolution: '分辨率',
+  'Caps how many pixels the game actually renders before stretching that up to fill your screen. It never asks for more than your screen already shows, so this only ever trades detail for frame rate, never the other way round.':
+    '限制游戏实际渲染的像素数量，然后再放大填满屏幕。它绝不会要求超过屏幕本身已经显示的画面，因此这只会用画面细节换取帧率，而不会反过来。',
   Low: '低',
   Medium: '中',
   High: '高',

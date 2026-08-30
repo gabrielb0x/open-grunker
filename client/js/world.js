@@ -51,6 +51,21 @@ const QUALITY = {
 
 const quality = () => QUALITY[settings.quality] ?? QUALITY.high;
 
+/** Resolution presets, as a cap on the drawing buffer's height in real pixels. */
+const RESOLUTION_HEIGHT = { '720p': 720, '1080p': 1080, '1440p': 1440, '4K': 2160 };
+
+/**
+ * The tallest the drawing buffer is allowed to be, in real pixels.
+ *
+ * Never larger than the screen already asks for — picking "4K" on a 1080p
+ * window buys nothing, so the cap can only ever trade detail for frame rate,
+ * never spend GPU time supersampling nobody will see.
+ */
+const resolutionCap = () => Math.min(
+  window.innerHeight * Math.min(window.devicePixelRatio, quality().pixelRatio),
+  RESOLUTION_HEIGHT[settings.resolution] ?? RESOLUTION_HEIGHT['1080p'],
+);
+
 /**
  * How much post-processing the player asked for, 0–1.
  *
@@ -859,7 +874,16 @@ export class GameWorld {
   /* ── Frame ─────────────────────────────────────────────────────────────── */
 
   resize() {
-    const w = window.innerWidth, h = window.innerHeight;
+    const winW = window.innerWidth, winH = window.innerHeight;
+    // `setSize` takes CSS pixels and multiplies by whatever pixel ratio is
+    // already set on the renderer to get the real drawing buffer — so the
+    // height that lands on the resolution cap is winH scaled back down by
+    // that same ratio, not winH itself. Computed rather than read off the
+    // renderer because it is set to exactly this, right before every call
+    // that reaches here — see the constructor and `applySettings` below.
+    const pixelRatio = Math.min(window.devicePixelRatio, quality().pixelRatio);
+    const h = Math.min(winH, resolutionCap() / pixelRatio);
+    const w = h * (winW / winH);
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();

@@ -17,7 +17,7 @@
  * wrote it: what they can now do, or what stopped going wrong.
  */
 
-export const GAME_VERSION = '2.3.0';
+export const GAME_VERSION = '2.3.1';
 
 export const PATCH_KINDS = {
   new: { label: 'NEW', color: '#4ddb7a' },
@@ -26,6 +26,14 @@ export const PATCH_KINDS = {
 };
 
 export const PATCH_NOTES = [
+  {
+    version: '2.3.1',
+    date: '2026-08-30',
+    title: 'A resolution setting',
+    changes: [
+      { kind: 'new', text: 'SETTINGS ▸ VIDEO has a Resolution option now — 720p, 1080p, 1440p or 4K. It caps how many pixels the game actually renders before stretching that up to fill your screen, so it only ever trades detail for frame rate: picking 720p on a 4K monitor buys real headroom on a weak GPU, and picking 4K on a 1080p window never renders a single pixel more than the screen already shows.' },
+    ],
+  },
   {
     version: '2.3.0',
     date: '2026-08-30',

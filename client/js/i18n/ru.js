@@ -561,6 +561,9 @@ export default {
   'Invert vertical look (controller)': 'Инвертировать вертикальный обзор (геймпад)',
   Vibration: 'Вибрация',
   'Quality preset': 'Профиль качества',
+  Resolution: 'Разрешение',
+  'Caps how many pixels the game actually renders before stretching that up to fill your screen. It never asks for more than your screen already shows, so this only ever trades detail for frame rate, never the other way round.':
+    'Ограничивает, сколько пикселей игра действительно отрисовывает, прежде чем растянуть изображение на весь экран. Никогда не запрашивает больше, чем уже показывает ваш экран, поэтому это всегда меняет детализацию на частоту кадров, а не наоборот.',
   Low: 'Низкое',
   Medium: 'Среднее',
   High: 'Высокое',

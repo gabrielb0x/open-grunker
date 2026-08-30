@@ -83,6 +83,7 @@ export const DEFAULTS = {
 
   /* Video */
   quality: 'high',          // low | medium | high | ultra
+  resolution: '1080p',      // 720p | 1080p | 1440p | 4K
   shadows: true,
   particles: true,
   particleAmount: 1.0,
@@ -406,6 +407,12 @@ export const SCHEMA = [
   {
     group: 'Video', icon: '🖥', items: [
       { key: 'quality', label: 'Quality preset', type: 'select', options: ['low', 'medium', 'high', 'ultra'] },
+      {
+        key: 'resolution', label: 'Resolution', type: 'select', options: ['720p', '1080p', '1440p', '4K'],
+        hint: 'Caps how many pixels the game actually renders before stretching that up to fill '
+          + 'your screen. It never asks for more than your screen already shows, so this only ever '
+          + 'trades detail for frame rate, never the other way round.',
+      },
       { key: 'shadows', label: 'Shadows', type: 'bool' },
       {
         key: 'postProcessing', label: 'Post-processing', type: 'range', min: 0, max: 1, step: 0.05,
