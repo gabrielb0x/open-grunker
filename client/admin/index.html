@@ -513,35 +513,82 @@
       </div>
     </section>
 
-    <!-- Logs -->
+    <!-- Logs ─────────────────────────────────────────────────────────────
+         Every line the server has written, as records rather than as prose:
+         each one carries its level, what it is about, which namespace wrote
+         it and — when it concerns somebody — who. Which is what makes the
+         filter row above it worth having, and what makes "show me everything
+         that happened to this player" one click instead of a grep.
+         ──────────────────────────────────────────────────────────────────── -->
     <section class="panel" data-panel="logs">
       <div class="page-head">
         <h2>LOGS</h2>
-        <p>Live server output and every write an administrator has made.</p>
+        <p>Everything the server has said since it started — and, if you switch it on below, since before that too.</p>
       </div>
 
-      <div class="toolbar">
-        <select id="logLevel">
-          <option value="">All levels</option>
-          <option value="error">Errors</option>
-          <option value="warn">Warnings</option>
-          <option value="info">Info</option>
-          <option value="debug">Debug</option>
-        </select>
-        <label class="check"><input type="checkbox" id="logFollow" checked> Auto-refresh</label>
-        <span class="count" id="logCount">—</span>
-        <button class="btn" id="btnLogReload">REFRESH</button>
+      <!-- What is in the buffer right now. Errors and warnings first: they are
+           the two anybody opens this page to find. -->
+      <div class="lg-counters" id="logCounters"></div>
+
+      <div class="lg-filters">
+        <div class="lg-levels" id="logLevels">
+          <button class="lg-chip active" data-level="">ALL</button>
+          <button class="lg-chip lv-error" data-level="error">ERROR</button>
+          <button class="lg-chip lv-warn" data-level="warn">WARN</button>
+          <button class="lg-chip lv-info" data-level="info">INFO</button>
+          <button class="lg-chip lv-debug" data-level="debug">DEBUG</button>
+        </div>
+        <div class="lg-row-2">
+          <select id="logCat"><option value="">Every category</option></select>
+          <select id="logNs"><option value="">Every source</option></select>
+          <input type="search" id="logSearch" placeholder="Search messages and fields…">
+          <input type="search" id="logPlayer" placeholder="Player…">
+          <label class="check"><input type="checkbox" id="logFollow" checked> Follow</label>
+          <button class="btn" id="btnLogReload">REFRESH</button>
+          <button class="btn danger" id="btnLogClear">CLEAR BUFFER</button>
+        </div>
       </div>
 
-      <div class="logs-split">
-        <div class="log-col">
-          <h3>SERVER</h3>
-          <div class="log-box" id="logBox"></div>
+      <div class="lg-split">
+        <div>
+          <div class="lg-stream" id="logBox"></div>
+          <div class="lg-hint">Click a line for the whole record. Click a name or a room to filter by it.</div>
         </div>
-        <div class="log-col">
-          <h3>ADMIN ACTIONS</h3>
-          <div class="log-box" id="auditBox"></div>
-        </div>
+
+        <aside class="lg-rail">
+          <!-- ── Storage ────────────────────────────────────────────────────
+               The switch the whole page is built around: in memory the log
+               dies with the process, on disk it does not. Off by default,
+               because writing every line of a busy server to a disk is a
+               choice, not a default.
+               ──────────────────────────────────────────────────────────── -->
+          <div class="lg-card">
+            <h3>STORAGE</h3>
+            <label class="lg-switch">
+              <input type="checkbox" id="logToDisk">
+              <span><b>Keep a copy on disk</b>
+                <small>One JSON record per line, rolled daily. Survives a restart.</small></span>
+            </label>
+            <label class="lg-switch">
+              <input type="checkbox" id="logTrace">
+              <span><b>Verbose game trace</b>
+                <small>Every shot, hit, spawn and refused request. Loud — for when you are chasing something.</small></span>
+            </label>
+            <div class="lg-retention">
+              <label>KEEP<input type="number" id="logKeepDays" min="1" max="365" step="1"><small>days</small></label>
+              <label>FILE CAP<input type="number" id="logMaxFile" min="1" max="512" step="1"><small>MB</small></label>
+              <label>TOTAL CAP<input type="number" id="logMaxTotal" min="8" max="20000" step="8"><small>MB</small></label>
+            </div>
+            <div class="lg-diskstate" id="logDiskState">—</div>
+            <div class="lg-files" id="logFiles"></div>
+            <button class="btn danger small" id="btnLogPurge">DELETE OLD FILES</button>
+          </div>
+
+          <div class="lg-card">
+            <h3>ADMIN ACTIONS</h3>
+            <div class="lg-audit" id="auditBox"></div>
+          </div>
+        </aside>
       </div>
     </section>
   </main>

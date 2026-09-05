@@ -17,7 +17,7 @@
  * wrote it: what they can now do, or what stopped going wrong.
  */
 
-export const GAME_VERSION = '2.4.0';
+export const GAME_VERSION = '2.5.0';
 
 export const PATCH_KINDS = {
   new: { label: 'NEW', color: '#4ddb7a' },
@@ -26,6 +26,20 @@ export const PATCH_KINDS = {
 };
 
 export const PATCH_NOTES = [
+  {
+    version: '2.5.0',
+    date: '2026-09-05',
+    title: 'The frame rate, the aim that would not hold still, and a log worth reading',
+    changes: [
+      { kind: 'fix', text: 'On a machine that had dropped below about fourteen frames a second, firing made the view spin. Not shake — spin, through angles with eleven digits in them, several times a second, until the screen was strobing and the aim appeared to point everywhere at once. That is a hazard rather than a glitch for anyone photosensitive, and it is fixed at the root. The view punch and the weapon\u2019s recoil were both springs stepped forward one frame at a time, and a spring stepped that way is only stable while the step is small: past 0.072 seconds the punch stopped settling and started *growing*, by a factor of 2.4 every frame. Neither is stepped any more. Both are solved — the closed form of the same spring, evaluated directly — which is exact at every frame rate, cannot grow at any of them, and is more accurate at sixty than the old code was. There is a hard clamp behind it as well, so no arithmetic anywhere can put a number on the camera that would strobe it.' },
+      { kind: 'change', text: 'Turning the quality down now actually turns the cost down. Every explosion and every muzzle flash used to keep a light of its own alive permanently — eighteen of them, in the scene, for the life of the process — and three.js compiles the *number* of lights in a scene into every shader it builds. So eighteen lights were being evaluated on every surface of every map at every setting, including Low, whether anything was lit or not, and switching the effect off only set their brightness to zero. They are a shared pool now, sized by the preset: none at all on Low, three on Medium, six on High, eight on Ultra, handed to whatever is nearest and most important. Low also drops the two support lights from the map\u2019s own rig and lifts the ambient to pay for them, so the picture keeps its brightness. That is the single biggest reason \u201Ceverything at minimum\u201D used to buy so little.' },
+      { kind: 'change', text: 'Big maps are split into chunks the renderer can skip. A level used to be one mesh per material spanning the whole thing, which is the fewest draw calls and exactly the wrong trade once a map gets large: a batch that spans the level can never be culled, so every box in it was submitted whichever way you were facing, and it all sorted as one thing, which throws away the depth buffer\u2019s ability to reject what is hidden behind the wall in front of you. Ch\u00e2teau is six thousand three hundred boxes over a hundred and twenty metres — five times the next biggest map in the game — and about a third of it is now skipped outright on an average frame, with the rest reaching the screen nearest-first. Small maps are deliberately left in one piece: a draw call you cannot skip is one you pay for twice.' },
+      { kind: 'new', text: 'The game tells the server how it is actually running. The server can time its own tick and nothing else — whether your machine is drawing a hundred and forty frames a second or nine has always been invisible from the other end of the socket, which makes \u201Cit is unplayably slow\u201D a report nobody can act on. So the client now reports it: once at start-up with the GPU, the screen and the quality preset, then a rolling window of frame times while you play, and immediately if the frame rate collapses. Uncaught errors come up the same channel with their stack, so an exception inside the render loop reaches somebody who can fix it instead of just freezing the picture. Nothing about your position, your aim, your input or anybody else in the match is in any of it.' },
+      { kind: 'new', text: 'The whole log is rebuilt, and it is attached to people. Every line the server writes is now a record rather than a sentence: it carries its level, a category, which part of the server wrote it, and — whenever it is about somebody — their name, their account, their address and their room. Kills, spawns, joins, leaves, chat, sign-ins and the ones that failed, bans, mutes, anti-cheat flags, rooms opening and closing, matches starting and ending, map rotations, refused connections, floods, a simulation that fell behind. \u201CEverything that happened to this player\u201D is now a question the server can answer.' },
+      { kind: 'new', text: 'The admin panel\u2019s LOGS tab was rebuilt around that. Level chips and a category list one click away, search across messages *and* fields, a player box, counters for what is in the buffer, and a stream that tails live — click any name or room to filter to it, click a line to open the whole record underneath it. The audit trail of administrator writes sits beside it, as it did.' },
+      { kind: 'new', text: 'And you can keep it. A switch on that page writes every line to disk as well — one JSON record per line, rolled daily, with a per-file cap, a retention in days and a ceiling on the whole directory so it can never be the thing that fills the volume. It is off by default, it is remembered per instance so a restart keeps it, and the files are listed and downloadable from the panel. A second switch turns on a verbose trace — every shot, every hit, every spawn, every refused request — which is far too loud to leave on and exactly what you want for the twenty minutes you are chasing something.' },
+    ],
+  },
   {
     version: '2.4.0',
     date: '2026-08-30',

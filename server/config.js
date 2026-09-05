@@ -395,6 +395,30 @@ export const config = {
   maxWsPerIp: num('MAX_WS_PER_IP', 6),
 
   logLevel: str('LOG_LEVEL', 'info'),
+
+  /*
+   * The log.
+   *
+   * `ring` is how many records the admin panel can look back through without
+   * touching a disk — they are small, and five thousand is about an hour of a
+   * busy server. Everything under it is the *optional* copy on disk: off by
+   * default, switched on per instance from the panel (the switch is remembered
+   * in the database, so a restart keeps it), and bounded on three axes so it
+   * can never be the thing that fills the volume.
+   *
+   * `trace` is the other switch on that page: it turns on the per-shot,
+   * per-hit, per-snapshot lines that are far too loud to keep on all the time
+   * and exactly what you want for the twenty minutes you are chasing something.
+   */
+  logs: {
+    dir: resolve(ROOT, str('LOG_DIR', 'data/logs')),
+    ring: num('LOG_RING', 5000),
+    toDisk: bool('LOG_TO_DISK', false),
+    trace: bool('LOG_TRACE', false),
+    maxFileMb: num('LOG_MAX_FILE_MB', 32),
+    keepDays: num('LOG_KEEP_DAYS', 14),
+    maxTotalMb: num('LOG_MAX_TOTAL_MB', 512),
+  },
 };
 
 export default config;

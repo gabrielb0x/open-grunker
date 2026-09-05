@@ -8,7 +8,7 @@
 import { fail } from '../util/http.js';
 import log from '../util/log.js';
 
-const logger = log.child('api');
+const logger = log.child('http', 'net');
 
 export class Router {
   constructor() { this.routes = []; }
@@ -59,8 +59,14 @@ export class Router {
       await hit.route.handler(ctx);
     } catch (err) {
       const status = err.status ?? 500;
-      if (status >= 500) logger.error(`${ctx.method} ${ctx.path}:`, err.stack ?? err.message);
-      else logger.debug(`${ctx.method} ${ctx.path}: ${err.message}`);
+      const where = {
+        method: ctx.method, path: ctx.path, status, ip: ctx.ip ?? null,
+        player: ctx.auth?.user?.username ?? null, userId: ctx.auth?.user?.id ?? null,
+      };
+      // A 500 is a bug and gets its stack; a 4xx is the API doing its job and
+      // is only interesting when somebody is chasing one, so it is a trace.
+      if (status >= 500) logger.error(`${ctx.method} ${ctx.path} failed:`, err.stack ?? err.message, where);
+      else logger.trace(`${ctx.method} ${ctx.path} refused — ${err.message}`, where);
       // Keep the human-readable message: the client shows it verbatim.
       if (!ctx.res.headersSent) {
         const code = err.code ?? (status >= 500 ? 'internal_error' : 'error');

@@ -30,26 +30,55 @@ import { PostFX, BASE_SATURATION, BASE_CONTRAST } from './postfx.js';
  * moving through it. Nothing on a 60 Hz screen can tell; a 144 Hz screen gets
  * more than half its shadow passes back.
  */
+/*
+ * `lights` is the size of the dynamic lamp pool — see effects.js.
+ *
+ * It is a *quality* number rather than an effects number because of how
+ * three.js works: the count of lights in the scene is compiled into every
+ * shader, so a light that exists costs every surface in the level whether it is
+ * switched on or not. Explosions and muzzle flashes used to keep eighteen of
+ * them alive permanently, which is eighteen light evaluations per fragment on
+ * every wall of every map, at every setting — including Low. That is the single
+ * biggest reason turning the quality down used to buy so little.
+ *
+ * `fillRig` is the same question asked of the map's own lighting: a sun, an
+ * opposing fill and a bounce from below is three directional lights, and on the
+ * preset meant for machines that are struggling, two of them are a luxury. The
+ * hemisphere term is lifted to make up the brightness when they go.
+ */
 const QUALITY = {
   low: {
     shadowMap: 0, pixelRatio: 1, antialias: false, shadowRange: 0, sky: 24,
     texture: 128, aniso: 1, post: false, phong: false, fillLight: false, shadowHz: 30,
+    lights: 0, fillRig: false,
   },
   medium: {
     shadowMap: 1024, pixelRatio: 1.2, antialias: false, shadowRange: 48, sky: 40,
     texture: 256, aniso: 4, post: true, phong: true, fillLight: false, shadowHz: 45,
+    lights: 3, fillRig: true,
   },
   high: {
     shadowMap: 2048, pixelRatio: 1.6, antialias: true, shadowRange: 70, sky: 56,
     texture: 256, aniso: 8, post: true, phong: true, fillLight: true, shadowHz: 60,
+    lights: 6, fillRig: true,
   },
   ultra: {
     shadowMap: 4096, pixelRatio: 2, antialias: true, shadowRange: 92, sky: 80,
     texture: 512, aniso: 16, post: true, phong: true, fillLight: true, shadowHz: 60,
+    lights: 8, fillRig: true,
   },
 };
 
 const quality = () => QUALITY[settings.quality] ?? QUALITY.high;
+
+/**
+ * How many dynamic lights the current preset will pay for.
+ *
+ * Read by effects.js, which owns the pool. It lives here because the number is
+ * part of the quality preset, and a second copy of that table in a second file
+ * is a second copy that drifts.
+ */
+export const dynamicLightBudget = () => quality().lights ?? 0;
 
 /** Resolution presets, as a cap on the drawing buffer's height in real pixels. */
 const RESOLUTION_HEIGHT = { '720p': 720, '1080p': 1080, '1440p': 1440, '4K': 2160 };
@@ -81,6 +110,36 @@ const postAmount = () => {
 
 /** How much brighter every map's ambient term runs than its own palette says. */
 const AMBIENT_GAIN = 1.4;
+
+/**
+ * How big a chunk of map is, in metres, and how many boxes make chunking worth
+ * doing at all. See `_buildBoxes`.
+ *
+ * Forty is about a third of the widest level in the game: small enough that
+ * turning round drops most of the map out of the frustum, large enough that a
+ * town does not become four hundred draw calls.
+ */
+const CHUNK_SIZE = 40;
+const CHUNK_MIN_BOXES = 400;
+/** A surface has to be at least this many boxes before it is worth splitting… */
+const CHUNK_MIN_SURFACE = 120;
+/** …and a cell this many before it is worth its own draw call. */
+const CHUNK_MIN_CELL = 40;
+
+/**
+ * A box's own tint jitter, 0-1, from where it stands.
+ *
+ * Position rather than index, so the shade a wall is painted does not depend on
+ * which batch it happened to land in — otherwise splitting a material into
+ * chunks would repaint every level in the game.
+ */
+function tintJitter(b) {
+  let h = (Math.round(b.x * 8) * 73856093) ^ (Math.round(b.y * 8) * 19349663)
+    ^ (Math.round(b.z * 8) * 83492791);
+  h = Math.imul(h ^ (h >>> 15), 2246822507);
+  h = Math.imul(h ^ (h >>> 13), 3266489909);
+  return (((h ^ (h >>> 16)) >>> 0) % 1000) / 1000;
+}
 
 /** Pulls a colour toward white — used to keep dark skies from killing the fill. */
 function lighten(color, amount) {
@@ -389,14 +448,53 @@ export class GameWorld {
     this.scene.add(this.sun);
 
     // A dim opposing fill keeps shadowed faces from going flat black, and a
-    // cold bounce from below stops undersides reading as holes.
+    // cold bounce from below stops undersides reading as holes. Both are built
+    // whatever the preset says; `_applyRig` decides whether they are *in* the
+    // scene, because that is the part a shader pays for.
     this.fill = new THREE.DirectionalLight(0x9fc0ff, 0.46);
     this.fill.position.set(-40, 30, -30);
-    this.scene.add(this.fill);
 
     this.bounce = new THREE.DirectionalLight(0xffe6c0, 0.24);
     this.bounce.position.set(10, -40, 10);
-    this.scene.add(this.bounce);
+
+    this.rigLit = false;
+    this._applyRig();
+  }
+
+  /**
+   * Adds or removes the two support lights, and pays for their absence.
+   *
+   * Only ever called from construction and from a settings change: three.js
+   * recompiles every material in the scene when the light counts move, which is
+   * a one-frame hitch where it belongs (the moment you press the setting) and
+   * an unacceptable one anywhere else.
+   */
+  _applyRig() {
+    const want = quality().fillRig !== false;
+    if (want === this.rigLit) return false;
+    this.rigLit = want;
+    if (want) {
+      this.scene.add(this.fill);
+      this.scene.add(this.bounce);
+    } else {
+      this.scene.remove(this.fill);
+      this.scene.remove(this.bounce);
+    }
+    this._applyAmbient();
+    return true;
+  }
+
+  /**
+   * The hemisphere term, lifted when the rig is not there to help it.
+   *
+   * A map's palette says how much ambient it wants; this is that number plus
+   * whatever the fill and the bounce would have contributed had they been in
+   * the scene, so dropping them changes how the light *falls* without changing
+   * how bright the level is.
+   */
+  _applyAmbient() {
+    const base = (this.map?.ambient?.intensity ?? 0.7) * AMBIENT_GAIN;
+    this.hemi.intensity = this.rigLit ? base : base * 1.34;
   }
 
   _configureShadow() {
@@ -502,7 +600,7 @@ export class GameWorld {
     this.sun.intensity = map.sun?.intensity ?? 1.3;
     this.hemi.color.setHex(map.ambient?.color ?? sky.top);
     this.hemi.groundColor.setHex(map.ground?.color ?? 0x6b5c42);
-    this.hemi.intensity = (map.ambient?.intensity ?? 0.7) * AMBIENT_GAIN;
+    this._applyAmbient();
     // The fill borrows the sky's hue but not its darkness: on an overcast or
     // night palette the raw sky colour is almost black and fills nothing.
     this.fill.color.setHex(sky.top);
@@ -738,16 +836,80 @@ export class GameWorld {
     if (!boxes.length) return;
     this.batches.length = 0;
 
-    const groups = new Map();
+    /*
+     * …and, on a level big enough for it to matter, per *place* as well.
+     *
+     * One mesh per material for the whole map is the fewest draw calls, and it
+     * was the wrong trade the moment a map got large. A batch that spans the
+     * level can never be frustum-culled, so every box in it is transformed and
+     * submitted whichever way the player is facing; and because the renderer
+     * sorts opaques by distance *per object*, one map-wide batch also sorts as
+     * one thing, which throws away early-Z and makes the GPU shade every wall
+     * the player cannot see behind the wall they can.
+     *
+     * Splitting each material into a grid of chunks fixes both. Château is six
+     * thousand three hundred boxes over a hundred and twenty metres — five
+     * times the next biggest map in the game — and standing in a hedge alley
+     * looking north, most of that is behind the player. Chunks let it be
+     * skipped, and let the rest reach the depth buffer nearest-first.
+     *
+     * Small maps are left in one piece on purpose: a draw call the renderer
+     * cannot skip is a draw call paid for twice, and a level that fits inside
+     * one chunk has nothing to cull.
+     */
+    let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+    for (const b of boxes) {
+      if (b.x < minX) minX = b.x;
+      if (b.x > maxX) maxX = b.x;
+      if (b.z < minZ) minZ = b.z;
+      if (b.z > maxZ) maxZ = b.z;
+    }
+    const span = Math.max(maxX - minX, maxZ - minZ);
+    const chunked = boxes.length >= CHUNK_MIN_BOXES && span > CHUNK_SIZE * 1.5;
+
+    // By surface first — the material decides the texture, shadow casting
+    // decides which of two meshes a box lands in, and `glow` decides whether it
+    // is lit at all. A glowing box never casts, so the two flags collapse.
+    const surfaces = new Map();
     for (const b of boxes) {
       const mat = b.mat ?? SURFACE.CONCRETE;
-      // Three axes, not one: the material decides the texture, shadow casting
-      // decides which of two meshes it lands in, and `glow` decides whether it
-      // is lit at all. A glowing box never casts, so the two flags collapse.
-      const key = `${mat}|${b.glow || b.noShadow ? 1 : 0}|${b.glow ? 1 : 0}`;
-      let list = groups.get(key);
-      if (!list) groups.set(key, (list = []));
+      const surface = `${mat}|${b.glow || b.noShadow ? 1 : 0}|${b.glow ? 1 : 0}`;
+      let list = surfaces.get(surface);
+      if (!list) surfaces.set(surface, (list = []));
       list.push(b);
+    }
+
+    /*
+     * …then by place, but only where that buys something.
+     *
+     * A chunk earns its draw call by being skippable, and a chunk of twenty
+     * boxes cannot possibly save more time than submitting it costs. So a
+     * surface is only split when there is enough of it to be worth splitting,
+     * and inside that split every cell too thin to matter is swept back into
+     * one leftover batch that is never culled. Château ends up with the
+     * façade, the terrace and each bosquet as their own chunks — which is
+     * exactly the granularity that turning round can skip — instead of three
+     * hundred batches of nothing.
+     */
+    const groups = new Map();
+    for (const [surface, list] of surfaces) {
+      if (!chunked || list.length < CHUNK_MIN_SURFACE) {
+        groups.set(`${surface}#all`, list);
+        continue;
+      }
+      const cells = new Map();
+      for (const b of list) {
+        const cell = `${Math.floor((b.x - minX) / CHUNK_SIZE)},${Math.floor((b.z - minZ) / CHUNK_SIZE)}`;
+        let bucket = cells.get(cell);
+        if (!bucket) cells.set(cell, (bucket = []));
+        bucket.push(b);
+      }
+      const rest = [];
+      for (const [cell, bucket] of cells) {
+        if (bucket.length >= CHUNK_MIN_CELL) groups.set(`${surface}#${cell}`, bucket);
+        else rest.push(...bucket);
+      }
+      if (rest.length) groups.set(`${surface}#all`, rest);
     }
 
     const shadows = this.renderer.shadowMap.enabled;
@@ -755,10 +917,17 @@ export class GameWorld {
     const m = new THREE.Matrix4();
     const col = new THREE.Color();
 
+    // One material per surface, shared by every chunk that wears it: the
+    // uniforms and the compiled program are identical, and a second copy is a
+    // second set of state changes for nothing.
+    const materials = new Map();
+
     for (const [key, list] of groups) {
-      const surface = key.slice(0, key.indexOf('|'));
-      const glows = key.endsWith('|1');
-      const casts = shadows && key.split('|')[1] === '0';
+      const surfaceKey = key.slice(0, key.indexOf('#'));
+      const flags = surfaceKey.split('|');
+      const surface = flags[0];
+      const glows = flags[2] === '1';
+      const casts = shadows && flags[1] === '0';
       const tex = surfaceTexture(surface);
       const shading = SURFACE_SHADING[surface] ?? { shininess: 6, specular: 0x101010 };
       const tile = SURFACE_TILE[surface] ?? 4;
@@ -779,38 +948,44 @@ export class GameWorld {
        * the haze reads as a decal on the lens rather than as something standing
        * in the world.
        */
-      const material = glows
-        ? new THREE.MeshBasicMaterial({ map: tex, vertexColors: true })
-        : usePhong
-          ? new THREE.MeshPhongMaterial({
-            map: tex, vertexColors: true,
-            shininess: shading.shininess, specular: shading.specular,
-          })
-          : new THREE.MeshLambertMaterial({ map: tex, vertexColors: true });
-      material.onBeforeCompile = (shader) => {
-        // All four hooks or none: a half-applied injection would declare a
-        // varying the other stage never writes, and the program would not link.
-        const hooks = ['#include <common>', '#include <begin_vertex>'];
-        const ok = hooks.every((h) => shader.vertexShader.includes(h))
-          && shader.fragmentShader.includes('#include <common>')
-          && shader.fragmentShader.includes('#include <map_fragment>');
-        if (!ok) return;
-        shader.uniforms.uTile = { value: 1 / tile };
-        shader.vertexShader = shader.vertexShader
-          .replace('#include <common>', `#include <common>\n${BOX_COMMON}`)
-          .replace('#include <begin_vertex>', BOX_VERTEX);
-        shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', `#include <common>\n${BOX_COMMON}`)
-          .replace('#include <map_fragment>', BOX_MAP);
-      };
-      // Every batch compiles to the same program; only the tile uniform differs.
-      material.customProgramCacheKey = () => `og-box-${glows ? 'e' : usePhong ? 'p' : 'l'}`;
+      let material = materials.get(surfaceKey);
+      if (!material) {
+        material = glows
+          ? new THREE.MeshBasicMaterial({ map: tex, vertexColors: true })
+          : usePhong
+            ? new THREE.MeshPhongMaterial({
+              map: tex, vertexColors: true,
+              shininess: shading.shininess, specular: shading.specular,
+            })
+            : new THREE.MeshLambertMaterial({ map: tex, vertexColors: true });
+        material.onBeforeCompile = (shader) => {
+          // All four hooks or none: a half-applied injection would declare a
+          // varying the other stage never writes, and the program would not link.
+          const hooks = ['#include <common>', '#include <begin_vertex>'];
+          const ok = hooks.every((h) => shader.vertexShader.includes(h))
+            && shader.fragmentShader.includes('#include <common>')
+            && shader.fragmentShader.includes('#include <map_fragment>');
+          if (!ok) return;
+          shader.uniforms.uTile = { value: 1 / tile };
+          shader.vertexShader = shader.vertexShader
+            .replace('#include <common>', `#include <common>\n${BOX_COMMON}`)
+            .replace('#include <begin_vertex>', BOX_VERTEX);
+          shader.fragmentShader = shader.fragmentShader
+            .replace('#include <common>', `#include <common>\n${BOX_COMMON}`)
+            .replace('#include <map_fragment>', BOX_MAP);
+        };
+        // Every batch compiles to the same program; only the tile uniform differs.
+        material.customProgramCacheKey = () => `og-box-${glows ? 'e' : usePhong ? 'p' : 'l'}`;
+        materials.set(surfaceKey, material);
+      }
 
       const mesh = new THREE.InstancedMesh(this.boxGeo, material, list.length);
       mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
       mesh.castShadow = casts;
       mesh.receiveShadow = shadows;
-      mesh.frustumCulled = false;
+      // A chunk is worth testing against the frustum; a batch that spans the
+      // level is not, because the test can only ever come back "yes".
+      mesh.frustumCulled = chunked && !key.endsWith('#all');
       mesh.userData.noShadow = !casts;
 
       for (let i = 0; i < list.length; i++) {
@@ -831,8 +1006,9 @@ export class GameWorld {
           col.multiplyScalar(typeof b.glow === 'number' ? b.glow : 1.55);
         } else {
           // Deterministic per-box tint jitter breaks up large flat surfaces.
-          const j = (((i * 2654435761) >>> 0) % 100) / 100;
-          col.offsetHSL(0, 0, (j - 0.5) * 0.055);
+          // Seeded from where the box *is* rather than from its index in the
+          // batch, so splitting a material into chunks cannot repaint the map.
+          col.offsetHSL(0, 0, (tintJitter(b) - 0.5) * 0.055);
           if (b.roof) col.offsetHSL(0, 0, 0.025);
         }
         mesh.setColorAt(i, col);
@@ -841,21 +1017,31 @@ export class GameWorld {
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       mesh.updateMatrix();
       mesh.matrixAutoUpdate = false;              // static for the life of the map
+      // Worked out now rather than on the first frame that needs it: the bound
+      // is what the frustum test reads, and computing it mid-match would be a
+      // hitch on exactly the frame the player turned round.
+      if (mesh.frustumCulled) mesh.computeBoundingSphere();
       this.mapGroup.add(mesh);
       this.batches.push(mesh);
     }
   }
 
   _disposeGroup(group) {
+    // One material is now worn by every chunk that shares its surface, so the
+    // set is collected first and released once — disposing the same material
+    // per mesh would fire its teardown a dozen times over.
+    const mats = new Set();
     for (let i = group.children.length - 1; i >= 0; i--) {
       const child = group.children[i];
       group.remove(child);
       // The shared box geometry and the cached surface textures outlive every
       // map; only per-map geometry and cloned textures get released.
       if (child.geometry && child.geometry !== this.boxGeo) child.geometry.dispose();
-      const mats = Array.isArray(child.material) ? child.material : [child.material];
-      for (const mat of mats) mat?.dispose();
+      for (const mat of Array.isArray(child.material) ? child.material : [child.material]) {
+        if (mat) mats.add(mat);
+      }
     }
+    for (const mat of mats) mat.dispose();
     // Surface textures are cached and shared across maps; only the ones built
     // for this map in particular (the sky dome, the ground's own repeat clone)
     // are ours to release.
@@ -906,6 +1092,9 @@ export class GameWorld {
       if (this.ground) this.ground.receiveShadow = wantShadow;
       this.scene.traverse((o) => { if (o.isMesh && o.material) markDirty(o.material); });
     }
+    // three.js tracks the lights' state version itself and rebuilds any program
+    // whose light counts no longer match, so nothing has to be marked here.
+    this._applyRig();
     this._configureShadow();
     this.invalidateShadows();
     this._applyToneMapping();

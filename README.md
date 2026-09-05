@@ -2610,10 +2610,21 @@ request that arrived via a proxy. Sign in with `POST /api/v1/admin/login`
 | `POST` | `/admin/players/:id/password` · `/kick` | Reset a password, or drop live sockets |
 | `DELETE` | `/admin/players/:id` | Delete the account and everything it owns |
 | — | `:id` = `guest:<n>` | A guest, addressed by their live connection. `GET`, `/ban`, `/unban` and `/kick` accept it; a ban on one is a ban on the address, and every other route answers `guest_has_no_account`. The id stops resolving the moment they disconnect (`guest_gone`) |
-| `GET` | `/admin/logs?level=&limit=` | Server log ring buffer plus the admin audit trail |
+| `GET` | `/admin/logs?level=&cat=&ns=&q=&player=&userId=&room=&since=&limit=` | The log, narrowed. Every filter is optional and they compose; `level` and `cat` accept comma lists, `since` is the last id you drew. Answers with the lines, the buffer's own statistics, both switches and the admin audit trail |
+| `GET` `POST` | `/admin/logs/config` | Read or set the two switches: `{ toDisk, trace, keepDays, maxFileMb, maxTotalMb }`. Remembered in the database, so it survives a restart |
+| `GET` | `/admin/logs/files` | What is on disk, newest first |
+| `GET` | `/admin/logs/file?name=` | One file, as written. The name is matched against the pattern the server writes before it is joined to a path |
+| `DELETE` | `/admin/logs/files` | Delete every file except the one being written |
+| `DELETE` | `/admin/logs` | Empty the in-memory buffer. The files on disk are untouched |
 | `GET` | `/admin/stats?hours=` | The whole STATS tab in one request: live health, every sampled series bucketed to ~200 points, match/map/mode/class mix, retention, the level histogram and the economy |
 | `GET` | `/admin/stats/series` | Every series the sampler writes, with its label and how a chart should aggregate it |
 | `GET` | `/admin/stats/events?kind=&limit=` | The raw event journal, newest first |
+
+One route on the public API belongs to the same machinery:
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `POST` | `/diag` | What a browser says about how the game is running on it: `{ kind: 'perf' \| 'boot' \| 'error', fps, fpsLow, worstMs, quality, resolution, draws, triangles, gpu, screen, build, ua }`. No session required, rate limited per address, every field clamped server-side, and nothing stored but a log line |
 
 Errors are `{ "ok": false, "error": "<code>", "message": "<human text>" }` with a
 matching HTTP status. Requesting `/api` or an unknown version returns a 404 that
@@ -2797,8 +2808,8 @@ Set `ADMIN_PASSWORD` in `.env` and restart. Five tabs:
   process. A clan's picture can be taken away on its own, and a clan can be
   disbanded outright, which strips the tag from every member on the spot,
   including anyone mid-match.
-- **Logs** — the server's log ring buffer (filterable by level, auto-refreshing)
-  next to an audit trail of every change an administrator has made.
+- **Logs** — every line the server has written, as records rather than as text.
+  See below.
 
 ### The stats tab
 
@@ -2838,6 +2849,77 @@ colours (amber "you", green fine, red sanction) held out of it entirely, text in
 text tokens rather than the data colour, and a hover layer on every chart —
 a crosshair that reads out every series at once on a line, per-mark tooltips on
 bars and arcs.
+
+### The logs tab
+
+Every line the server writes is a **record**, not a sentence. It carries the
+level, a category, which part of the server wrote it, and — whenever the line is
+about somebody — who they are, what account it is, the address and the room.
+
+That is the whole point. "Show me everything that happened to this player",
+"every warning from the anti-cheat this hour", "who was in that room when it
+emptied" are questions you can *ask* of records and can only grep for in prose.
+
+**The levels** are how loud a line is: `ERROR`, `WARN`, `INFO`, `DEBUG`.
+`LOG_LEVEL` decides what reaches the terminal; the panel sees all four
+regardless, because it reads a buffer rather than the terminal.
+
+**The categories** are what a line is *about*, which is independent of how loud
+it is — an error can be economic and an info line can be moderation:
+
+| | |
+| --- | --- |
+| `system` | boot, shutdown, maintenance, a simulation that fell behind |
+| `net` | sockets, handshakes, HTTP, refusals, floods |
+| `account` | register, sign in, email, two-factor, renames |
+| `match` | rooms opening and closing, joins, leaves, matches, map rotation |
+| `combat` | spawns, kills, damage, shots |
+| `chat` | what players said |
+| `moderation` | bans, mutes, reports, anti-cheat, refused sign-ins |
+| `economy` | cases, market, trades |
+| `admin` | every write made from this panel |
+| `client` | what a player's browser says about how the game is running on it |
+| `db` · `mail` | the database, and outbound email |
+
+**Reading it.** The level chips and the category list are the two filters
+anybody reaches for first, so they are one click away; the search box matches
+the message *and* the fields, and the player box matches a name. Clicking a name
+or a room chip on any line filters to it. Clicking the line itself opens the
+whole record as JSON underneath. With **FOLLOW** on and no filters set, the
+stream tails; the moment any filter is set it switches to replacing the list,
+because a filtered tail that only ever grows would show a slice of the past that
+does not match what the filters say.
+
+**Keeping it.** The buffer holds `LOG_RING` records (5 000 by default) and dies
+with the process, which is the right default for a game server. Switch
+**Keep a copy on disk** on and every line is *also* written to `LOG_DIR` as one
+JSON record per line, rolled daily and again whenever a file passes the size
+cap. The switch is remembered in the database, so it survives a restart, and it
+is per instance rather than an environment variable you would have to redeploy
+to change. Three bounds stop it ever being the thing that fills the volume —
+per-file megabytes, days kept, and a total for the whole directory, oldest
+deleted first. Writes are buffered and flushed on a timer, so a match never
+waits on a disk, and a failed write switches the sink off and says why rather
+than retrying into a full volume forever.
+
+**Verbose game trace** is the second switch: every shot, every hit, every spawn
+and every refused request. It is far too loud to leave on and exactly what you
+want for the twenty minutes you are chasing something. While it is off those
+call sites cost one boolean test.
+
+**What the browser sends back.** The server can measure its own tick and nothing
+else — whether the game is drawing at 140 frames a second on one machine and at
+9 on another is invisible from this end of the socket. So the client says so, in
+the `client` category: once at start-up with the GPU string, the screen and the
+quality preset, then a rolling window of frame times while playing, and
+immediately when the frame rate collapses. A report below 15 fps arrives as a
+**warning**, so it stands out without anybody having to go looking. Uncaught
+exceptions and rejected promises come up the same channel with their stack —
+otherwise an exception inside the render loop is a frozen picture with nothing
+on screen to say why. Nothing about position, aim, input or anybody else in the
+match is in any of it, and there is no identifier the client invents: the
+account is whatever the request's own session says, and a guest sends the same
+lines with no account on them.
 
 ### Working the report queue
 

@@ -31,7 +31,7 @@ register('./client-loader.mjs', import.meta.url);
 // `admin` and `build` each throw the shim's document away for a page of their
 // own, so they are the last two, in that order.
 const suites = ['movement', 'combat', 'lagcomp', 'simulation', 'keybinds', 'modes', 'rooms',
-  'anticheat', 'godmode', 'progression', 'twofactor', 'moderation', 'accounts', 'clans', 'friends', 'cosmetics',
+  'anticheat', 'godmode', 'progression', 'twofactor', 'logs', 'moderation', 'accounts', 'clans', 'friends', 'cosmetics',
   'creators', 'i18n',
   'client', 'gamepad', 'charts', 'admin', 'build'];
 const only = process.argv[2];

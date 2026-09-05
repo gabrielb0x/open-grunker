@@ -18,7 +18,11 @@ import { reportStanding, repeatDenial } from '../util/reports.js';
 import * as ac from './anticheat.js';
 import config from '../config.js';
 
-const logger = log.child('room');
+const logger = log.child('room', 'match');
+/** Everything that happens in a fight — spawns, shots, hits, kills. */
+const fight = log.child('combat', 'combat');
+/** What players said. Its own category, so it can be filtered away in one click. */
+const said = log.child('chat', 'chat');
 
 const r2 = (v) => Math.round(v * 100) / 100;
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
@@ -138,7 +142,10 @@ export class Room {
     this.dormant = true;
     this.loadMap(mapId);
     this.startMatch();
-    logger.info(`room "${id}" (${this.code}) up — ${this.map.name} / ${this.mode.name} (idle)`);
+    logger.info('room up', {
+      room: this.code, id, map: this.mapId, mode: this.modeId,
+      name: this.map.name, permanent, state: 'idle',
+    });
   }
 
   /* ── Map & match lifecycle ─────────────────────────────────────────────── */
@@ -192,6 +199,11 @@ export class Room {
     this.voteOptions = null;
     this.nuke = null;
     this.nukeEndAt = 0;
+    logger.info('match started', {
+      room: this.code, map: this.mapId, mode: this.modeId,
+      match: this.matchNumber, limit: this.mode.timeLimit,
+      players: this.playerCount, bots: this.botCount,
+    });
     for (const p of this.roster) {
       p.score = Player.emptyScore();
       p.nukeArmed = false;
@@ -421,6 +433,15 @@ export class Room {
      * counter, no journal entry, no payouts.
      */
     const humans = rows.filter((p) => !p.isBot);
+    logger.info('match over', {
+      room: this.code, map: this.mapId, mode: this.modeId, match: this.matchNumber,
+      reason, winner: winner ?? null,
+      durationSec: Math.round(this.now - this.matchStart),
+      humans: humans.length, bots: rows.length - humans.length,
+      top: rows[0] ? `${rows[0].name} ${Math.round(rows[0].score.score)}` : null,
+      teamScore: this.mode.teams
+        ? `${this.teamScore[K.TEAM.RED]}-${this.teamScore[K.TEAM.BLUE]}` : null,
+    });
     if (!humans.length) return;
 
     this.counters.matches++;
@@ -458,14 +479,14 @@ export class Room {
       db.matches.finish(this.matchDbId, winner);
     } catch (e) {
       this.matchDbId = null;
-      logger.warn('match row failed:', e.message);
+      logger.warn('match row failed:', e.message, { room: this.code, map: this.mapId });
     }
 
     for (const p of rows) {
       try {
         this.persistPlayer(db, p, won(p), playedSec);
       } catch (e) {
-        logger.warn(`persist failed for ${p.name}:`, e.message);
+        logger.for(p, this).warn('could not save this match to the account:', e.message);
       }
     }
   }
@@ -533,7 +554,7 @@ export class Room {
     try {
       passed = this.settleMilestones(db, p);
     } catch (e) {
-      logger.warn(`milestones failed for ${p.name}:`, e.message);
+      logger.for(p, this).warn('milestones failed:', e.message);
     }
     for (const m of passed) { xp += m.xp; gr += m.gr; }
 
@@ -701,7 +722,10 @@ export class Room {
     // still has to find somebody on the new map.
     for (const p of this.roster) this.respawn(p, true);
     for (const p of this.players.values()) if (p.spectator) this.focusSpectator(p);
-    logger.info(`room "${this.id}" rotated to ${this.map.name}`);
+    logger.info('rotated to a new map', {
+      room: this.code, id: this.id, map: this.mapId, mode: this.modeId,
+      name: this.map.name, players: this.playerCount, match: this.matchNumber,
+    });
   }
 
   /**
@@ -864,7 +888,9 @@ export class Room {
     // five seconds of empty arena is exactly the first impression they are for.
     if (this.mode.practice) this.fillBots(config.practiceBots);
     else if (config.botsEnabled) this.fillBots(config.botCount);
-    logger.info(`room "${this.id}" (${this.code}) woke up`);
+    logger.info('woke up — somebody walked in', {
+      room: this.code, id: this.id, map: this.mapId, mode: this.modeId,
+    });
   }
 
   /**
@@ -883,7 +909,9 @@ export class Room {
     this.nukeEndAt = 0;
     this.projectiles.length = 0;
     this.purgeChat();
-    logger.info(`room "${this.id}" (${this.code}) went idle — nobody left in it`);
+    logger.info('went idle — nobody left in it', {
+      room: this.code, id: this.id, map: this.mapId, mode: this.modeId,
+    });
   }
 
   add(player) {
@@ -1182,6 +1210,10 @@ export class Room {
   respawn(player, immediate = false) {
     const [x, y, z, yaw] = this.chooseSpawn(player);
     player.spawnAt(x, y + 0.05, z, yaw, this.now);
+    fight.for(player, this).trace('spawned', {
+      x: r2(x), y: r2(y), z: r2(z), class: player.classId,
+      team: player.team, health: player.health, map: this.mapId,
+    });
     this.sendTo(player, {
       o: K.S2C.SPAWN, x: r2(x), y: r2(y + 0.05), z: r2(z), yaw: r2(yaw),
       // Not K.MAX_HEALTH: in Perks this is whatever the body they chose has,
@@ -1390,7 +1422,7 @@ export class Room {
         if (until === 0) db.chatBans.remove(target.userId);
         else db.chatBans.set({ userId: target.userId, until, reason, actor: by, username: target.name });
       } catch (e) {
-        logger.warn('chat ban write failed:', e.message);
+        logger.warn('chat ban write failed:', e.message, { player: target.name });
       }
     }
 
@@ -1399,6 +1431,11 @@ export class Room {
     const text = until === 0
       ? `${target.name} can chat again`
       : `${target.name} was muted ${K.muteUntilText(until)} by ${by}${reason ? ` \u2014 ${reason}` : ''}`;
+
+    logger.as('moderation').for(target, this).info(until === 0 ? 'unmuted' : 'muted', {
+      by, reason: reason ?? null, until: until || null,
+      connections: live.length, persisted: !!(persist && target.userId),
+    });
 
     const rooms = new Set();
     for (const { player, room } of touched) {
@@ -1733,7 +1770,9 @@ export class Room {
 
       if (p.afk) continue;
       p.afk = true;
-      logger.info(`${p.name} (${p.id}) left the match — ${Math.round(idle)}s idle`);
+      logger.for(p, this).info('sent back to the menu — idle', {
+        idleSec: Math.round(idle), map: this.mapId, mode: this.modeId,
+      });
       this.sendTo(p, {
         o: K.S2C.AFK,
         phase: 'out',
@@ -2061,6 +2100,18 @@ export class Room {
     player.lastChatAt = nowMs;
 
     this.counters.chat++;
+    /*
+     * What was said, kept.
+     *
+     * Chat is the one thing in a match that a moderator is later asked to
+     * adjudicate, and the room's own history is thrown away when the match
+     * ends — so this is the only durable record there is. It is its own
+     * category, so somebody reading the log for anything else can switch it
+     * off in one click.
+     */
+    said.for(player, this).info(text, {
+      map: this.mapId, mode: this.modeId, team: player.team,
+    });
     // The badges travel with the message. A client that only ever sees the
     // chat frame still draws the sender exactly as the scoreboard would.
     this.pushChat({ id: player.id, name: player.name, team: player.team, text, ...player.tags });
@@ -2158,6 +2209,9 @@ export class Room {
     notice(on
       ? 'God mode ON — you cannot be hurt, your magazine never empties, and SPACE / CTRL fly you up and down.'
       : 'God mode OFF.');
+    logger.as('moderation').for(player, this).warn(`god mode ${on ? 'ON' : 'OFF'}`, {
+      map: this.mapId, mode: this.modeId, role: player.role,
+    });
     try {
       this.hub?.db?.audit?.add(player.name, on ? 'god_on' : 'god_off', this.mapId ?? null,
         JSON.stringify({ room: this.code, mode: this.modeId }));
@@ -2233,7 +2287,10 @@ export class Room {
       });
 
       player.lastReportAt = nowMs;
-      logger.info(`${player.name} reported ${target.name} (${reason}) in ${this.code}`);
+      logger.as('moderation').for(player, this).info(`reported ${target.name}`, {
+        target: target.name, targetId: target.userId ?? null, reason,
+        map: this.mapId, mode: this.modeId,
+      });
       this.logEvent(db, {
         kind: 'report.filed', userId: player.userId, name: target.name,
         detail: { reason, by: player.name },
@@ -2449,6 +2506,10 @@ export class Room {
     if (!player.god) w.ammo--;
     w.burst = burst + 1;
     this.counters.shots++;
+    fight.for(player, this).trace('fired', {
+      weapon: d.id, slot: player.slot, ammo: w.ammo, reserve: w.reserve,
+      burst: w.burst, ads: !!player.ads, seq: msg.n | 0,
+    });
     if (d.boltTime) w.pumpUntil = this.now + d.boltTime;
     player.score.shotsFired++;
     player.noteActivity();
@@ -2682,6 +2743,16 @@ export class Room {
       z: r2(attacker?.state.z ?? victim.state.z), head,
     });
 
+    // Verbose only: one line per bullet is the right amount of detail for the
+    // twenty minutes somebody is chasing a hit-registration complaint, and far
+    // too much for a Tuesday. `trace` costs a boolean test while it is off.
+    fight.for(attacker ?? victim, this).trace('hit', {
+      victim: victim.name, damage: res.damage, head: !!head,
+      left: Math.round(victim.health), weapon: weaponDef?.id ?? null,
+      distance: ctx.distance ? Math.round(ctx.distance * 10) / 10 : null,
+      dead: !!res.dead,
+    });
+
     if (res.dead) this.onKill(attacker, victim, weaponDef?.id ?? 'unknown', head, weaponDef, ctx);
   }
 
@@ -2818,6 +2889,33 @@ export class Room {
     if (killer) {
       for (const [n, label] of K.KILLSTREAK_LABELS) if (killer.score.streak === n) streakLabel = label;
     }
+
+    /*
+     * One line per death, from the killer's side when there is one.
+     *
+     * This is the single most useful line the server writes: it carries who,
+     * whom, with what, how far away, whether it was a headshot, and what the
+     * streak stood at — which between them answer nearly every "what happened
+     * in that match" question without anybody having to reconstruct it from a
+     * scoreboard.
+     */
+    fight.for(killer ?? victim, this).info(
+      killer && killer !== victim
+        ? `killed ${victim.name}`
+        : (killer ? 'killed themselves' : `died — ${ctx.cause ?? 'no killer'}`),
+      {
+        victim: victim.name,
+        victimId: victim.userId ?? null,
+        weapon: weaponId,
+        head: !!head,
+        distance: ctx.distance ? Math.round(ctx.distance * 10) / 10 : null,
+        streak: killer?.score.streak ?? 0,
+        friendly: !!(killer && this.mode.teams && killer.team === victim.team),
+        assists: assisters.length ? assisters.join(', ') : null,
+        map: this.mapId,
+        mode: this.modeId,
+      },
+    );
 
     this.broadcast({
       o: K.S2C.KILL,
@@ -3148,7 +3246,9 @@ export class Room {
       seconds: K.NUKE_COUNTDOWN,
     });
     this.pushSystemChat(`${player.name} called in a NUKE — ${Math.round(K.NUKE_COUNTDOWN)} seconds`, 'nuke');
-    logger.info(`${player.name} launched a nuke in ${this.code}`);
+    fight.for(player, this).info('launched a nuke', {
+      streak: player.score.streak, map: this.mapId, mode: this.modeId,
+    });
     for (const p of this.players.values()) this.sendNukeState(p);
   }
 

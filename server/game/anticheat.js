@@ -56,7 +56,7 @@ import * as K from '../../shared/constants.js';
 import config from '../config.js';
 import log from '../util/log.js';
 
-const logger = log.child('anticheat');
+const logger = log.child('anticheat', 'moderation');
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -292,10 +292,15 @@ export function enforce(room, player, verdict, kind) {
 
   if (verdict === 'warn') {
     st.warned = true;
-    logger.warn(`${player.name} (${player.id}) flagged — ${title} (${kind}) `
-      + `· score ${Math.round(st.score)}/${Math.round(config.anticheat.warnScore)} `
-      + `· ${JSON.stringify(st.summary())} `
-      + `· line ${Math.round((player.rtt ?? 0) * 1000)}ms`);
+    logger.for(player, room).warn(`flagged — ${title}`, {
+      kind,
+      score: Math.round(st.score),
+      warnAt: Math.round(config.anticheat.warnScore),
+      incidents: st.incidents,
+      rttMs: Math.round((player.rtt ?? 0) * 1000),
+      map: room.mapId, mode: room.modeId,
+      detail: st.summary(),
+    });
     room.sendTo(player, {
       o: K.S2C.CHAT,
       system: true,
@@ -313,10 +318,16 @@ export function enforce(room, player, verdict, kind) {
   }
 
   st.kicked = true;
-  logger.warn(`${player.name} (${player.id}) kicked — ${title} (${kind}) `
-    + `· peak score ${Math.round(st.peak)}/${Math.round(config.anticheat.kickScore)} `
-    + `over ${st.incidents} refused packets · ${JSON.stringify(st.summary())} `
-    + `· worst line ${Math.round(st.worstRtt * 1000)}ms ±${Math.round(st.worstJitter * 1000)}ms`);
+  logger.for(player, room).warn(`kicked — ${title}`, {
+    kind,
+    peakScore: Math.round(st.peak),
+    kickAt: Math.round(config.anticheat.kickScore),
+    refusedPackets: st.incidents,
+    worstRttMs: Math.round(st.worstRtt * 1000),
+    worstJitterMs: Math.round(st.worstJitter * 1000),
+    map: room.mapId, mode: room.modeId,
+    detail: st.summary(),
+  });
 
   fileReport(room, player, kind);
 
@@ -485,7 +496,7 @@ function fileReport(room, player, kind) {
       },
     });
   } catch (err) {
-    logger.warn('anti-cheat report write failed:', err.message);
+    logger.warn('anti-cheat report write failed:', err.message, { player: player?.name ?? null });
   }
 }
 

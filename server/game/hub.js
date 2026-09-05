@@ -18,7 +18,7 @@ import { MAP_IDS } from '../../shared/maps.js';
 import config from '../config.js';
 import log from '../util/log.js';
 
-const logger = log.child('hub');
+const logger = log.child('hub', 'match');
 const nowSec = () => Number(process.hrtime.bigint() / 1000n) / 1e6;
 
 export class Hub {
@@ -154,7 +154,10 @@ export class Hub {
         modeId,
       });
       if (!room) continue;
-      logger.info(`opened ${room.id} (${room.code}) — ${modeId} was down to ${m.free} free seat(s)`);
+      logger.info('opened a room on demand', {
+        room: room.code, id: room.id, map: room.mapId, mode: modeId,
+        freeSeatsWas: m.free, rooms: this.rooms.size,
+      });
     }
 
     // ── Close ──
@@ -164,7 +167,12 @@ export class Hub {
       if (occupied) { room.emptySince = 0; continue; }
       room.emptySince += dtSec;
       if (room.emptySince < cfg.idleSec) continue;
-      if (this.closeRoom(room)) logger.info(`closed ${room.id} (${room.code}) — empty for ${cfg.idleSec}s`);
+      if (this.closeRoom(room)) {
+        logger.info('closed an empty room', {
+          room: room.code, id: room.id, map: room.mapId, mode: room.modeId,
+          emptySec: Math.round(room.emptySince), rooms: this.rooms.size,
+        });
+      }
     }
   }
 
@@ -237,7 +245,26 @@ export class Hub {
       steps++;
       this.stats.ticks++;
     }
-    if (steps === 8) { this.acc = 0; this.stats.drops++; }
+    if (steps === 8) {
+      this.acc = 0;
+      this.stats.drops++;
+      /*
+       * The simulation could not keep up and threw a slice away.
+       *
+       * Rate-limited to one line a minute: a server that is genuinely
+       * overloaded produces this every frame, and a log that fills with it is
+       * a log that hides everything else that went wrong at the same moment.
+       */
+      const nowMs = Date.now();
+      if (nowMs - (this._lastOverloadLog ?? 0) > 60_000) {
+        this._lastOverloadLog = nowMs;
+        logger.as('system').warn('the simulation fell behind and dropped time', {
+          drops: this.stats.drops, lastTickMs: Math.round(this.stats.lastTickMs * 100) / 100,
+          worstTickMs: Math.round(this.stats.maxTickMs * 100) / 100,
+          rooms: this.rooms.size, players: this.humanCount,
+        });
+      }
+    }
 
     this.snapAcc += frame;
     if (this.snapAcc >= K.SNAPSHOT_DT) {
@@ -276,7 +303,9 @@ export class Hub {
       for (const p of [...room.players.values()]) {
         if (p.isBot || !p.ws) continue;
         if (nowMs - p.lastMessageAt > 45_000) {
-          logger.info(`dropping idle player ${p.name} (${p.id})`);
+          logger.for(p, room).info('dropped — stopped talking to the server', {
+            silentSec: Math.round((nowMs - p.lastMessageAt) / 1000),
+          });
           try { p.ws.close(4008, 'idle timeout'); } catch { /* already gone */ }
           this.leave(p.id);
         }
@@ -317,7 +346,9 @@ export class Hub {
         modeId,
       });
       if (room) {
-        logger.info(`opened ${room.id} (${room.code}) — every room was full`);
+        logger.info('opened a room — every other one was full', {
+          room: room.code, id: room.id, map: room.mapId, mode: room.modeId,
+        });
         return room;
       }
     }
@@ -342,9 +373,11 @@ export class Hub {
     this.playersById.set(player.id, { player, room });
     const online = this.humanCount;
     if (online > this.stats.peakPlayers) this.stats.peakPlayers = online;
-    logger.info(spectate
-      ? `${name} watching ${room.id} (${room.code})`
-      : `${name} -> ${room.id} (${room.playerCount}/${config.maxPlayersPerRoom})`);
+    logger.for(player, room).info(spectate ? 'started watching' : 'joined', {
+      map: room.mapId, mode: room.modeId, class: classId,
+      seats: `${room.playerCount}/${config.maxPlayersPerRoom}`,
+      online, level,
+    });
     return { player, room };
   }
 
@@ -352,7 +385,14 @@ export class Hub {
     const entry = this.playersById.get(playerId);
     if (!entry) return;
     this.playersById.delete(playerId);
-    entry.room.remove(playerId);
+    const { player, room } = entry;
+    logger.for(player, room).info(player.spectator ? 'stopped watching' : 'left', {
+      map: room.mapId, mode: room.modeId,
+      kills: player.score?.kills ?? 0, deaths: player.score?.deaths ?? 0,
+      seats: `${Math.max(0, room.playerCount - 1)}/${config.maxPlayersPerRoom}`,
+      online: Math.max(0, this.humanCount),
+    });
+    room.remove(playerId);
   }
 
   get(playerId) { return this.playersById.get(playerId); }

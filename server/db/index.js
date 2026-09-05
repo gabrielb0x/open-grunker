@@ -2083,6 +2083,38 @@ export const clans = {
 
 /* ── Admin audit trail ───────────────────────────────────────────────────── */
 
+/**
+ * Instance settings — the few switches the admin panel can flip at runtime.
+ *
+ * Values are JSON, so a switch that is a boolean today can become an object
+ * tomorrow without touching the table. Reads are cheap enough to do at the
+ * point of use; nothing here is on a hot path.
+ */
+export const settings = {
+  get(key, fallback = null) {
+    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    if (!row) return fallback;
+    try { return JSON.parse(row.value); } catch { return fallback; }
+  },
+
+  set(key, value) {
+    db.prepare('INSERT INTO settings (key, value, at) VALUES (?,?,?) '
+      + 'ON CONFLICT(key) DO UPDATE SET value = excluded.value, at = excluded.at')
+      .run(String(key).slice(0, 64), JSON.stringify(value ?? null), now());
+    return value;
+  },
+
+  all() {
+    const out = {};
+    for (const r of db.prepare('SELECT key, value FROM settings').all()) {
+      try { out[r.key] = JSON.parse(r.value); } catch { /* a hand-edited row */ }
+    }
+    return out;
+  },
+
+  remove(key) { return int(db.prepare('DELETE FROM settings WHERE key = ?').run(key).changes); },
+};
+
 export const audit = {
   add: (actor, action, target, detail) =>
     S.insertAdminLog.run(now(), String(actor).slice(0, 64), String(action).slice(0, 64),
@@ -3375,6 +3407,6 @@ export function close() {
 export default {
   db, users, stats, loadouts, sessions, matches, mastery, challenges, ipBans, chatBans, audit,
   reportBans, emailTokens, totp, milestones, ipIntel, reports, friends, clans, creators, normaliseIp,
-  summary, maintain, close, metrics, events, analytics,
+  summary, maintain, close, metrics, events, analytics, settings,
   inventory, cases, market, trades, cosmeticsAdmin, EconomyError,
 };

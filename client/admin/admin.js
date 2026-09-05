@@ -104,7 +104,7 @@ for (const tab of document.querySelectorAll('.tab')) {
     for (const p of document.querySelectorAll('.panel')) {
       p.classList.toggle('active', p.dataset.panel === tab.dataset.tab);
     }
-    if (tab.dataset.tab === 'logs') loadLogs(true);
+    if (tab.dataset.tab === 'logs') { loadLogs(true); loadLogFiles(); }
     if (tab.dataset.tab === 'reports') loadReports();
     if (tab.dataset.tab === 'clans') loadClans();
     if (tab.dataset.tab === 'creators') loadCreators();
@@ -1009,43 +1009,247 @@ function renderClanDetail({ clan: c, members = [], invites = [] }) {
   });
 }
 
-/* ── Logs ────────────────────────────────────────────────────────────────── */
+/* ── Logs ──────────────────────────────────────────────────────────────────
+   The stream is drawn as records rather than as text: level, category and
+   source get their own columns, and the structured half of a line becomes a
+   row of chips — the ones naming a player or a room are buttons, because
+   "everything that happened to this person" is the question this page exists
+   to answer and it should not require typing a name.
+
+   Two modes. Following appends only what is new (`since` is the last id the
+   panel drew) and keeps the view pinned to the bottom, which is a tail. Any
+   filter at all switches to replacing the whole list, because a filtered tail
+   that only ever grows would show a slice of the past that does not match
+   what the filters say.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+const logFilters = { level: '', cat: '', ns: '', q: '', player: '' };
+/* What is on screen, by id. Opening a line reads the record from here rather
+   than asking for it again — the panel already has every field it would get. */
+const logRecords = new Map();
+/* Categories and sources are discovered from the buffer, not hard-coded, so a
+   new namespace appears in the filter the first time it writes a line. */
+let logCatsSeen = '', logNsSeen = '';
+
+const logFiltered = () => !!(logFilters.cat || logFilters.ns || logFilters.q || logFilters.player);
+
+function logQuery(sinceId) {
+  const p = new URLSearchParams();
+  p.set('limit', logFiltered() ? '400' : '250');
+  p.set('auditLimit', '80');
+  for (const [k, v] of Object.entries(logFilters)) if (v) p.set(k, v);
+  if (sinceId) p.set('since', String(sinceId));
+  return `/logs?${p}`;
+}
 
 async function loadLogs(reset = false) {
-  if (reset) { lastLogId = 0; $('logBox').innerHTML = ''; }
+  if (reset) { lastLogId = 0; logRecords.clear(); $('logBox').innerHTML = ''; }
+  // A filtered view is never tailed: it is replaced, so what is on screen is
+  // always the whole answer to the question the filters ask.
+  const replace = reset || logFiltered();
   try {
-    const level = $('logLevel').value;
-    const res = await call('GET', `/logs?limit=400&auditLimit=120${level ? `&level=${level}` : ''}`);
-
-    const box = $('logBox');
-    const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
-    // Newest first from the API; render oldest first so it reads like a tail.
-    const fresh = res.lines.filter((l) => l.id > lastLogId).reverse();
-    if (fresh.length) {
-      lastLogId = Math.max(lastLogId, ...fresh.map((l) => l.id));
-      box.insertAdjacentHTML('beforeend', fresh.map(logLine).join(''));
-      while (box.children.length > 600) box.firstChild.remove();
-      if (atBottom) box.scrollTop = box.scrollHeight;
-    }
-    $('logCount').textContent = `${res.lines.length} lines buffered`;
-
-    $('auditBox').innerHTML = res.audit.map((a) => `
-      <div class="audit-line">
-        <span class="t">${fmtTime(a.at * 1000)}</span>
-        <span><span class="a">${esc(a.action)}</span>
-          <span class="d">${esc(a.target ?? '')} ${esc(a.detail ?? '')}</span></span>
-      </div>`).join('') || '<div style="color:var(--muted);font-size:12px">No admin actions yet.</div>';
+    const res = await call('GET', logQuery(replace ? 0 : lastLogId));
+    drawLogStream(res.lines ?? [], replace);
+    drawLogCounters(res.stats ?? null);
+    fillLogOptions(res);
+    drawLogSettings(res.settings ?? null);
+    drawAudit(res.audit ?? []);
   } catch (err) {
     toast(err.message, 'bad');
   }
 }
 
-const logLine = (l) => `
-  <div class="log-line ${l.level}">
-    <span class="t">${fmtTime(l.at)}</span>
-    <span class="l">${l.level.toUpperCase()}</span>
-    <span class="m">${l.ns ? `<span class="ns">[${esc(l.ns)}]</span> ` : ''}${esc(l.message)}</span>
+function drawLogStream(lines, replace) {
+  const box = $('logBox');
+  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
+  if (replace) { box.innerHTML = ''; logRecords.clear(); }
+
+  // Newest first from the API; drawn oldest first so it reads like a tail.
+  const fresh = lines.filter((l) => l.id > (replace ? 0 : lastLogId)).reverse();
+  if (fresh.length) {
+    lastLogId = Math.max(lastLogId, ...fresh.map((l) => l.id));
+    for (const l of fresh) logRecords.set(l.id, l);
+    box.insertAdjacentHTML('beforeend', fresh.map(logLine).join(''));
+    // The buffer server-side is thousands of lines; the DOM does not need to be.
+    while (box.children.length > 900) {
+      const gone = Number(box.firstChild.dataset?.id);
+      if (gone) logRecords.delete(gone);
+      box.firstChild.remove();
+    }
+    if (atBottom || replace) box.scrollTop = box.scrollHeight;
+  }
+  if (!box.children.length) {
+    box.innerHTML = `<div class="lg-empty">${logFiltered()
+      ? 'Nothing in the buffer matches those filters.'
+      : 'Nothing logged yet.'}</div>`;
+  }
+}
+
+const LOG_ABBR = { error: 'ERR', warn: 'WARN', info: 'INFO', debug: 'DBG' };
+
+function logLine(l) {
+  const tags = [];
+  if (l.player) tags.push(`<span class="lg-tag who" data-player="${esc(l.player)}">${esc(l.player)}</span>`);
+  if (l.room) tags.push(`<span class="lg-tag where" data-room="${esc(l.room)}">${esc(l.room)}</span>`);
+  if (l.map) tags.push(`<span class="lg-tag"><b>map</b> ${esc(l.map)}</span>`);
+  for (const [k, v] of Object.entries(l.fields ?? {})) {
+    tags.push(`<span class="lg-tag"><b>${esc(k)}</b> ${esc(v)}</span>`);
+  }
+  return `<div class="lg-line ${esc(l.level)}" data-id="${l.id}">
+    <span class="lg-time">${fmtClock(l.at)}</span>
+    <span class="lg-lv">${LOG_ABBR[l.level] ?? esc(l.level)}</span>
+    <span class="lg-catname">${esc(l.cat ?? '')}</span>
+    <span class="lg-body">${l.ns ? `<span class="lg-ns">[${esc(l.ns)}]</span>` : ''}<span class="lg-msg">${esc(l.msg)}</span> ${tags.join(' ')}</span>
   </div>`;
+}
+
+function drawLogCounters(stats) {
+  if (!stats) return;
+  const lv = stats.byLevel ?? {};
+  const tiles = [
+    ['error', lv.error ?? 0, 'errors'],
+    ['warn', lv.warn ?? 0, 'warnings'],
+    ['', stats.buffered ?? 0, `of ${compact(stats.capacity ?? 0)} buffered`],
+    ['', stats.sinceBoot?.error ?? 0, 'errors since boot'],
+    ['live', Math.round((stats.uptimeSec ?? 0) / 60), 'minutes up'],
+  ];
+  $('logCounters').innerHTML = tiles
+    .map(([kind, n, label]) => `<span class="lg-count ${kind}"><b>${compact(n)}</b><small>${esc(label)}</small></span>`)
+    .join('');
+}
+
+/** The category and source lists, rebuilt only when what is in the buffer moves. */
+function fillLogOptions(res) {
+  const cats = (res.categories ?? []).join(',');
+  if (cats !== logCatsSeen) {
+    logCatsSeen = cats;
+    const counts = res.stats?.byCat ?? {};
+    $('logCat').innerHTML = ['<option value="">Every category</option>']
+      .concat((res.categories ?? []).map((c) =>
+        `<option value="${esc(c)}">${esc(c)}${counts[c] ? ` (${counts[c]})` : ''}</option>`))
+      .join('');
+    $('logCat').value = logFilters.cat;
+  }
+  const namespaces = (res.stats?.namespaces ?? []).map((n) => n.ns);
+  const key = namespaces.join(',');
+  if (key !== logNsSeen) {
+    logNsSeen = key;
+    $('logNs').innerHTML = ['<option value="">Every source</option>']
+      .concat((res.stats?.namespaces ?? []).map((n) =>
+        `<option value="${esc(n.ns)}">${esc(n.ns)} (${n.n})</option>`))
+      .join('');
+    $('logNs').value = logFilters.ns;
+  }
+}
+
+function drawAudit(rows) {
+  $('auditBox').innerHTML = rows.map((a) => `
+    <div class="audit-line">
+      <span class="t">${fmtClock(a.at * 1000)}</span>
+      <span><span class="a">${esc(a.action)}</span>
+        <span class="d">${esc(a.target ?? '')} ${esc(a.detail ?? '')}</span></span>
+    </div>`).join('')
+    || '<div style="color:var(--dim);font-size:11px">No admin actions yet.</div>';
+}
+
+/* ── Storage ──────────────────────────────────────────────────────────────
+   The switch that decides whether any of this survives a restart. Kept
+   deliberately plain: two checkboxes, three numbers and the list of files
+   they produced, because an operator turning this on wants to see, straight
+   away, that something is being written and how big it is getting.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Guards the change handlers while the panel is filling the inputs in from a
+   response — otherwise drawing the current state would post it straight back. */
+let logSettingsBusy = false;
+
+function drawLogSettings(settings) {
+  if (!settings) return;
+  const d = settings.disk ?? {};
+  logSettingsBusy = true;
+  $('logToDisk').checked = !!d.enabled;
+  $('logTrace').checked = !!settings.trace;
+  $('logKeepDays').value = d.keepDays ?? 14;
+  $('logMaxFile').value = d.maxFileMb ?? 32;
+  $('logMaxTotal').value = d.maxTotalMb ?? 512;
+  logSettingsBusy = false;
+
+  const state = $('logDiskState');
+  state.classList.toggle('bad', !!d.lastError);
+  if (d.lastError) state.textContent = `Stopped — ${d.lastError}`;
+  else if (!d.enabled) state.textContent = `Off. Nothing is written to ${d.dir ?? 'disk'}.`;
+  else {
+    state.textContent = `Writing to ${d.file ?? '—'} · ${compact(d.written ?? 0)} lines`
+      + `${d.dropped ? ` · ${compact(d.dropped)} dropped` : ''} · ${fmtBytes(d.bytes ?? 0)} in ${d.files ?? 0} file(s)`;
+  }
+}
+
+function drawLogFiles(files) {
+  $('logFiles').innerHTML = (files ?? []).map((f) => `
+    <div class="lg-file${f.current ? ' current' : ''}">
+      <a href="${API}/logs/file?name=${encodeURIComponent(f.name)}" download
+         data-name="${esc(f.name)}">${esc(f.name)}</a>
+      <span>${fmtBytes(f.bytes)}</span>
+    </div>`).join('') || '<div style="color:var(--dim);font-size:11px">No files on disk.</div>';
+}
+
+async function loadLogFiles() {
+  try {
+    const res = await call('GET', '/logs/files');
+    drawLogFiles(res.files ?? []);
+  } catch { /* the storage card simply stays as it was */ }
+}
+
+async function saveLogSettings() {
+  if (logSettingsBusy) return;
+  try {
+    const res = await call('POST', '/logs/config', {
+      toDisk: $('logToDisk').checked,
+      trace: $('logTrace').checked,
+      keepDays: Number($('logKeepDays').value) || 14,
+      maxFileMb: Number($('logMaxFile').value) || 32,
+      maxTotalMb: Number($('logMaxTotal').value) || 512,
+    });
+    drawLogSettings(res.settings);
+    drawLogFiles(res.files ?? []);
+    const d = res.settings?.disk ?? {};
+    toast(d.lastError ? `Could not write: ${d.lastError}`
+      : d.enabled ? 'Writing the log to disk' : 'Disk copy off', d.lastError ? 'bad' : 'good');
+  } catch (err) {
+    toast(err.message, 'bad');
+  }
+}
+
+/**
+ * Downloads a file through the panel's own transport.
+ *
+ * A plain link cannot carry the admin token, and the token is the only thing
+ * the API accepts — so the click is intercepted, the file is fetched with the
+ * header on it, and the blob is handed to the browser to save.
+ */
+async function downloadLogFile(name) {
+  try {
+    const res = await fetch(`${API}/logs/file?name=${encodeURIComponent(name)}`,
+      { headers: { 'x-admin-token': token } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  } catch (err) {
+    toast(`Could not download — ${err.message}`, 'bad');
+  }
+}
+
+function fmtBytes(n) {
+  const v = Number(n) || 0;
+  if (v >= 1073741824) return `${(v / 1073741824).toFixed(1)} GB`;
+  if (v >= 1048576) return `${(v / 1048576).toFixed(1)} MB`;
+  if (v >= 1024) return `${Math.round(v / 1024)} KB`;
+  return `${v} B`;
+}
 
 /* ── Wiring ──────────────────────────────────────────────────────────────── */
 
@@ -1091,8 +1295,99 @@ $('clanSearch').addEventListener('input', () => {
   clanSearchTimer = setTimeout(() => loadClans(), 220);
 });
 $('btnClanReload').addEventListener('click', () => loadClans());
-$('logLevel').addEventListener('change', () => loadLogs(true));
+/* ── Logs: wiring ─────────────────────────────────────────────────────────
+   Every control narrows the same query and then reloads it. The level chips
+   are exclusive rather than additive — one level at a time is what anybody
+   actually wants, and "ALL" is the one that clears it.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+for (const chip of document.querySelectorAll('#logLevels .lg-chip')) {
+  chip.addEventListener('click', () => {
+    logFilters.level = chip.dataset.level ?? '';
+    for (const c of document.querySelectorAll('#logLevels .lg-chip')) {
+      c.classList.toggle('active', c === chip);
+    }
+    loadLogs(true);
+  });
+}
+$('logCat').addEventListener('change', () => { logFilters.cat = $('logCat').value; loadLogs(true); });
+$('logNs').addEventListener('change', () => { logFilters.ns = $('logNs').value; loadLogs(true); });
+
+let logSearchTimer = null;
+for (const [id, key] of [['logSearch', 'q'], ['logPlayer', 'player']]) {
+  $(id).addEventListener('input', () => {
+    clearTimeout(logSearchTimer);
+    logSearchTimer = setTimeout(() => { logFilters[key] = $(id).value.trim(); loadLogs(true); }, 240);
+  });
+}
+
 $('btnLogReload').addEventListener('click', () => loadLogs(true));
+
+$('btnLogClear').addEventListener('click', async () => {
+  if (!confirm('Throw away the lines held in memory? Anything already written to disk is untouched.')) return;
+  try {
+    await call('DELETE', '/logs');
+    await loadLogs(true);
+    toast('Buffer cleared', 'good');
+  } catch (err) { toast(err.message, 'bad'); }
+});
+
+/*
+ * One listener for the whole stream rather than one per line.
+ *
+ * The tail replaces its own contents several times a minute, and per-row
+ * handlers would be thousands of listeners attached and thrown away. A chip
+ * naming a player or a room sets that filter; anywhere else on the line opens
+ * the raw record underneath it.
+ */
+$('logBox').addEventListener('click', (e) => {
+  const who = e.target.closest('.lg-tag.who');
+  if (who) {
+    logFilters.player = who.dataset.player;
+    $('logPlayer').value = who.dataset.player;
+    return loadLogs(true);
+  }
+  const where = e.target.closest('.lg-tag.where');
+  if (where) {
+    logFilters.q = where.dataset.room;
+    $('logSearch').value = where.dataset.room;
+    return loadLogs(true);
+  }
+  const line = e.target.closest('.lg-line');
+  if (!line) return;
+  if (line.nextElementSibling?.classList.contains('lg-raw')) {
+    return line.nextElementSibling.remove();
+  }
+  const rec = logRecords.get(Number(line.dataset.id));
+  if (!rec) return;
+  const pre = document.createElement('pre');
+  pre.className = 'lg-raw';
+  pre.textContent = JSON.stringify(rec, null, 2);
+  line.after(pre);
+});
+
+for (const [id, handler] of [['logToDisk', saveLogSettings], ['logTrace', saveLogSettings]]) {
+  $(id).addEventListener('change', handler);
+}
+for (const id of ['logKeepDays', 'logMaxFile', 'logMaxTotal']) {
+  $(id).addEventListener('change', saveLogSettings);
+}
+
+$('logFiles').addEventListener('click', (e) => {
+  const a = e.target.closest('a[data-name]');
+  if (!a) return;
+  e.preventDefault();
+  downloadLogFile(a.dataset.name);
+});
+
+$('btnLogPurge').addEventListener('click', async () => {
+  if (!confirm('Delete every log file except the one being written?')) return;
+  try {
+    const res = await call('DELETE', '/logs/files');
+    drawLogFiles(res.files ?? []);
+    toast(`Deleted ${res.removed} file(s), freed ${fmtBytes(res.freed)}`, 'good');
+  } catch (err) { toast(err.message, 'bad'); }
+});
 
 /* ── Stats ───────────────────────────────────────────────────────────────
    One request, one window, every card. The alternative — a fetch per chart —
@@ -1455,6 +1750,11 @@ function fmtAgo(ts) {
   return `${Math.floor(d / 86400)}d ago`;
 }
 function fmtTime(ms) { return new Date(ms).toTimeString().slice(0, 8); }
+/** The log's own clock: milliseconds matter when two lines are the same event. */
+function fmtClock(ms) {
+  const d = new Date(ms);
+  return `${d.toTimeString().slice(0, 8)}.${String(d.getMilliseconds()).padStart(3, '0')}`;
+}
 
 async function start() {
   $('gate').classList.add('hidden');
@@ -1462,6 +1762,7 @@ async function start() {
   await loadOverview();
   await loadPlayers();
   await loadLogs(true);
+  loadLogFiles();
   clearInterval(logTimer);
   logTimer = setInterval(() => {
     loadOverview();

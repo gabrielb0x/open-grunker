@@ -25,6 +25,7 @@ import * as COS from '/shared/cosmetics.js';
  */
 const SLOT_FOR = [COS.SLOT.PRIMARY, COS.SLOT.SECONDARY, COS.SLOT.KNIFE];
 import { settings, set as setSetting, onChange as onSettingsChange, HEAVY_KEYS } from './settings.js';
+import { springStep, safe as springSafe, PUNCH_LIMIT } from './spring.js';
 import * as i18n from './i18n.js';
 import { binds } from './keybinds.js';
 import { api } from './api.js';
@@ -41,12 +42,16 @@ import { Menu } from './menu.js';
 import { initAudio, resumeAudio, setMasterVolume, sfx } from './audio.js';
 import { KillCam } from './killcam.js';
 import { DevMode } from './devmode.js';
+import { diag } from './diag.js';
 
 const $ = (id) => document.getElementById(id);
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
 /** How long after the last shot the view starts walking recoil back down. */
 const RECOVER_DELAY = 0.12;
+
+/** The view punch's spring, in stiffness and damping. See spring.js. */
+const PUNCH_STIFFNESS = 190, PUNCH_DAMPING = 21;
 
 /* ── The eye, and why it is not welded to the body ──────────────────────────
  *
@@ -137,6 +142,17 @@ export class Game {
   constructor() {
     this.canvas = $('view');
     this.gfx = new GameWorld(this.canvas);
+    /*
+     * What this machine tells the server about how the game is running on it.
+     *
+     * Attached to the renderer here so a report can name the GPU and quote the
+     * real draw-call and triangle counts, and listening from here on so an
+     * exception thrown inside the render loop — which otherwise just freezes
+     * the picture with nothing on screen to say why — reaches somebody who can
+     * fix it. See diag.js for exactly what is and is not sent.
+     */
+    diag.attach(this.gfx.renderer);
+    diag.listen();
     this.entities = new EntityManager(this.gfx.scene);
     this.effects = new Effects(this.gfx.scene);
     this.objectives = new Objectives(this.gfx.scene);
@@ -403,6 +419,9 @@ export class Game {
     this.viewmodel.applySettings();
     this.hud.applySettings();
     this.effects.setBudget(settings.particleAmount ?? 1);
+    // Resizing the lamp pool recompiles shaders, so it happens here — on the
+    // settings change that asked for it — and never inside a match.
+    this.effects.applyLights();
     setMasterVolume(settings.masterVolume);
     // Raw input is a property of the pointer lock itself, so a lock we are
     // already holding has to be re-asked for — see Input.refreshLockOptions.
@@ -1356,6 +1375,7 @@ export class Game {
     this.map = map;
     this.mapName = map.name;
     this.world = new World(map);
+    diag.setContext({ map: map.id ?? null, room: this.roomCode ?? null });
     // A shot belongs to the level it was fired on. Kept across a map change it
     // would be replayed against geometry that no longer exists, which is a
     // tracer through the middle of the new map from nowhere.
@@ -2974,6 +2994,11 @@ export class Game {
     }
 
     if (this.state !== 'playing') {
+      // The menu deliberately throttles its own backdrop, so its frame times
+      // are not a measurement of anything — see `MENU_BACKDROP_HZ`. Nothing is
+      // sampled here, and a report that lands from somewhere else must not
+      // claim to have been taken in a match.
+      diag.setContext({ playing: false });
       /*
        * The menu's backdrop does not need the display's full frame rate.
        *
@@ -3092,6 +3117,12 @@ export class Game {
     // leave them unconditionally in the hot loop.
     this.dev.sampleFrame(dt * 1000);
     this.dev.update(this);
+    // Same measurement, different audience: the overlay draws it for whoever is
+    // sitting here, and this puts it in the server's log so a frame rate that
+    // collapses on somebody else's machine is something the operator can see.
+    diag.setContext({ mode: this.modeId ?? null, room: this.roomCode ?? null, playing: true });
+    diag.frame(dt * 1000, dt);
+    diag.boot();
   }
 
   /* ── Developer mode ─────────────────────────────────────────────────────
@@ -3333,12 +3364,21 @@ export class Game {
       this.shake = 0;
     }
 
-    // View punch: a stiff spring that settles back to zero on its own.
-    const stiff = 190, damp = 21;
-    this.punch.vp += (-this.punch.pitch * stiff - this.punch.vp * damp) * dt;
-    this.punch.vy += (-this.punch.yaw * stiff - this.punch.vy * damp) * dt;
-    this.punch.pitch += this.punch.vp * dt;
-    this.punch.yaw += this.punch.vy * dt;
+    /*
+     * View punch: a stiff spring that settles back to zero on its own.
+     *
+     * Solved rather than integrated — see spring.js. The old step was stable
+     * only above about fourteen frames a second, and below that the punch grew
+     * by 2.4× per frame instead of decaying, which turned a slow machine into a
+     * camera spinning through eleven-digit angles. Both axes ride the same
+     * spring, so the coefficients are computed once.
+     */
+    const st = springStep(PUNCH_STIFFNESS, PUNCH_DAMPING, dt);
+    const pitch = this.punch.pitch, yaw = this.punch.yaw;
+    this.punch.pitch = springSafe(st.a * pitch + st.b * this.punch.vp);
+    this.punch.vp = springSafe(st.c * pitch + st.d * this.punch.vp, PUNCH_LIMIT * 20);
+    this.punch.yaw = springSafe(st.a * yaw + st.b * this.punch.vy);
+    this.punch.vy = springSafe(st.c * yaw + st.d * this.punch.vy, PUNCH_LIMIT * 20);
 
     // A little strafe roll — subtle, but it sells the speed.
     const strafe = this.input.strafeAxis;

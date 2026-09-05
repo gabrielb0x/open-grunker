@@ -32,7 +32,7 @@ import { reportStanding } from '../util/reports.js';
 import config from '../config.js';
 import log from '../util/log.js';
 
-const logger = log.child('api');
+const logger = log.child('api', 'account');
 export const COOKIE = 'og_session';
 
 /** Every weapon id in the game, for the mastery board. */
@@ -482,7 +482,9 @@ export function createApi({ db, hub }) {
   const refuseVpn = async (ctx) => {
     const verdict = await ipintel.check(ctx.ip);
     if (!verdict.blocked) return;
-    logger.info(`refused ${ctx.ip} — ${verdict.info.detail ?? 'proxy'} (${verdict.info.source})`);
+    logger.as('moderation').info('refused an address — proxy or datacenter', {
+      ip: ctx.ip, detail: verdict.info.detail ?? 'proxy', source: verdict.info.source,
+    });
     throw new ApiError(403, 'vpn_blocked', verdict.reason);
   };
 
@@ -547,6 +549,86 @@ export function createApi({ db, hub }) {
     uptime: Math.round(process.uptime()),
     ...(K.canModerate(ctx.auth?.user?.role) ? { game: hub.health() } : {}),
   }));
+
+  /**
+   * What a browser says about how the game is actually running on it.
+   *
+   * The server can measure its own tick and nothing else. Whether the *client*
+   * is drawing at a hundred and forty frames a second or at nine is invisible
+   * from here — and "the game is unplayably slow on my machine" is not a
+   * question anybody can answer without knowing which machine, which map,
+   * which settings and which GPU. So the client says so, and it lands in the
+   * log next to everything else that happened at that moment.
+   *
+   * Deliberately small and deliberately cheap to refuse:
+   *
+   *   • no session required — a guest's frame rate matters as much as anybody's
+   *   • rate limited per address, hard, because it is an unauthenticated write
+   *   • every field is clamped or dropped here rather than trusted
+   *   • nothing is stored except a log line; there is no table to fill
+   *
+   * A report whose frame rate is bad enough to be a problem comes in as a
+   * warning, so it stands out in the panel without anybody having to look for
+   * it. Everything else is an info line the operator can filter to.
+   */
+  r.post('/diag', async (ctx) => {
+    limit(ctx, 'diag', 20);
+    const body = await readJson(ctx.req);
+    const str = (v, n = 120) => (typeof v === 'string' && v ? v.slice(0, n) : null);
+    const int = (v, lo, hi) => {
+      const x = Math.round(Number(v));
+      return Number.isFinite(x) ? Math.max(lo, Math.min(hi, x)) : null;
+    };
+    const kind = ['perf', 'error', 'boot'].includes(body.kind) ? body.kind : 'perf';
+    const who = ctx.auth?.user ?? null;
+    const client = logger.as('client').with({
+      player: who?.username ?? str(body.name, 24),
+      userId: who?.id ?? null,
+      ip: ctx.ip,
+      room: str(body.room, 32),
+      map: str(body.map, 32),
+      mode: str(body.mode, 16),
+    });
+
+    if (kind === 'error') {
+      client.error(`client error — ${str(body.message, 200) ?? 'unknown'}`, {
+        source: str(body.source, 160), line: int(body.line, 0, 1e7),
+        stack: str(body.stack, 300), build: str(body.build, 24),
+        gpu: str(body.gpu, 120), ua: str(body.ua, 160),
+      });
+      return ok(ctx.res, { ok: true });
+    }
+
+    const fps = int(body.fps, 0, 1000);
+    const fields = {
+      fps,
+      fps1pctLow: int(body.fpsLow, 0, 1000),
+      worstFrameMs: int(body.worstMs, 0, 60_000),
+      quality: str(body.quality, 16),
+      resolution: str(body.resolution, 16),
+      pixelRatio: int(body.pixelRatio, 0, 8),
+      draws: int(body.draws, 0, 100_000),
+      triangles: int(body.triangles, 0, 50_000_000),
+      programs: int(body.programs, 0, 4000),
+      shadows: body.shadows === undefined ? null : !!body.shadows,
+      post: body.post === undefined ? null : !!body.post,
+      gpu: str(body.gpu, 120),
+      screen: str(body.screen, 24),
+      build: str(body.build, 24),
+      ua: str(body.ua, 160),
+      sampleSec: int(body.sampleSec, 0, 3600),
+    };
+    // Fifteen is the line below which the game stops being playable and starts
+    // being a slideshow, which is exactly the report worth surfacing.
+    if (kind === 'perf' && fps !== null && fps < 15) {
+      client.warn(`frame rate collapsed — ${fps} fps`, fields);
+    } else if (kind === 'boot') {
+      client.info('client started', fields);
+    } else {
+      client.debug(`${fps ?? '?'} fps`, fields);
+    }
+    ok(ctx.res, { ok: true });
+  });
 
   r.get('/meta', (ctx) => ok(ctx.res, {
     apiVersion: K.API_VERSION,
@@ -694,7 +776,9 @@ export function createApi({ db, hub }) {
     const token = newToken();
     db.sessions.create({ tokenHash: hashToken(token), userId: user.id, ip: ctx.ip, userAgent: ctx.req.headers['user-agent'] });
     db.users.touchLogin(user.id, ctx.ip);
-    logger.info(`registered ${user.username} (#${user.id})${email ? ` <${email}>` : ''}`);
+    logger.info('registered a new account', {
+      player: user.username, userId: user.id, ip: ctx.ip, email: email ?? null,
+    });
     event('signup', {
       userId: user.id, name: user.username, value: K.SIGNUP_REWARD.gr,
       detail: { email: !!email, verified: !!user.email_verified, mail: mail.transport },
@@ -726,8 +810,25 @@ export function createApi({ db, hub }) {
     const user = db.users.byName(username);
     // Always run the KDF so a missing user and a wrong password take the same time.
     const okPass = await verifyPassword(password, user?.password_hash ?? 'scrypt$16384$8$1$AAAA$AAAA');
-    if (!user || !okPass) throw new ApiError(401, 'bad_credentials', 'wrong username or password');
+    if (!user || !okPass) {
+      /*
+       * A refused sign-in, kept.
+       *
+       * One is noise. Forty from one address in a minute is a credential run,
+       * and it is invisible unless somebody wrote them down — so they are
+       * written down, with the address and the name that was tried, and never
+       * with the password that was tried with it.
+       */
+      logger.as('moderation').warn('sign-in refused — wrong username or password', {
+        tried: String(username).slice(0, 32), ip: ctx.ip, knownAccount: !!user,
+      });
+      throw new ApiError(401, 'bad_credentials', 'wrong username or password');
+    }
     if (db.users.isBanned(user)) {
+      logger.as('moderation').info('sign-in refused — the account is banned', {
+        player: user.username, userId: user.id, ip: ctx.ip,
+        until: user.banned_until || null, reason: user.ban_reason || null,
+      });
       const until = user.banned_until > 0
         ? ` until ${new Date(user.banned_until * 1000).toISOString().slice(0, 10)}`
         : '';
@@ -752,6 +853,9 @@ export function createApi({ db, hub }) {
           'this account is protected by an authenticator app — enter the six-digit code');
       }
       if (!spendSecondFactor(user, answer)) {
+        logger.as('moderation').warn('second factor refused', {
+          player: user.username, userId: user.id, ip: ctx.ip,
+        });
         throw new ApiError(401, 'totp_invalid',
           'that code is wrong or has already been used — wait for the next one');
       }
@@ -768,6 +872,12 @@ export function createApi({ db, hub }) {
       detail: { awaySec: wasSeen ? Math.max(0, Math.floor(Date.now() / 1000) - wasSeen) : null },
     });
 
+    logger.info('signed in', {
+      player: user.username, userId: user.id, ip: ctx.ip, level: user.level,
+      twoFactor: !!user.totp_secret,
+      awaySec: wasSeen ? Math.max(0, Math.floor(Date.now() / 1000) - wasSeen) : null,
+    });
+
     json(ctx.res, 200, {
       ok: true,
       token,
@@ -778,7 +888,11 @@ export function createApi({ db, hub }) {
 
   r.post('/auth/logout', (ctx) => {
     limit(ctx, 'auth', config.rateMaxAuth * 4);
-    if (ctx.token) db.sessions.destroy(hashToken(ctx.token));
+    if (ctx.token) {
+      const who = ctx.auth?.user ?? null;
+      logger.info('signed out', { player: who?.username ?? null, userId: who?.id ?? null, ip: ctx.ip });
+      db.sessions.destroy(hashToken(ctx.token));
+    }
     json(ctx.res, 200, { ok: true }, { 'set-cookie': cookieHeader(COOKIE, '', { clear: true }) });
   });
 
@@ -829,7 +943,9 @@ export function createApi({ db, hub }) {
     if (!user) throw new ApiError(404, 'not_found', 'that account no longer exists');
 
     db.users.markVerified(user.id, row.email);
-    logger.info(`verified ${user.username} <${row.email}>`);
+    logger.info('confirmed their email address', {
+      player: user.username, userId: user.id, email: row.email, ip: ctx.ip,
+    });
     ok(ctx.res, { username: user.username, email: row.email, verified: true });
   });
 
@@ -933,7 +1049,10 @@ export function createApi({ db, hub }) {
 
     // Live sockets still carry the old name; the next connection picks up the
     // new one, and telling the player that is kinder than a silent mismatch.
-    logger.info(`${user.username} renamed to ${wanted}${restyle ? ' (restyle, free)' : ` for ${cost} GR`}`);
+    logger.info(`renamed to ${wanted}`, {
+      player: user.username, userId: user.id, to: wanted,
+      restyle: !!restyle, cost: restyle ? 0 : cost,
+    });
     ok(ctx.res, {
       user: selfUser(fresh),
       spent: restyle ? 0 : cost,
@@ -1049,7 +1168,7 @@ export function createApi({ db, hub }) {
     const { codes, hashes } = newRecoveryCodes();
     db.totp.enable(user.id, secret, hashes);
     db.totp.spendStep(user.id, step);            // the setup code is spent too
-    logger.info(`${user.username} switched two-factor on`);
+    logger.info('switched two-factor on', { player: user.username, userId: user.id, ip: ctx.ip });
     event('totp.enable', { userId: user.id, name: user.username, value: codes.length });
     ok(ctx.res, {
       enabled: true,
@@ -1073,7 +1192,7 @@ export function createApi({ db, hub }) {
       throw new ApiError(401, 'totp_invalid', 'that code is wrong or has already been used');
     }
     db.totp.disable(user.id);
-    logger.info(`${user.username} switched two-factor off`);
+    logger.info('switched two-factor off', { player: user.username, userId: user.id, ip: ctx.ip });
     event('totp.disable', { userId: user.id, name: user.username });
     ok(ctx.res, {
       enabled: false,
@@ -1101,7 +1220,7 @@ export function createApi({ db, hub }) {
     }
     const { codes, hashes } = newRecoveryCodes();
     db.totp.resetRecovery(user.id, hashes);
-    logger.info(`${user.username} regenerated their recovery codes`);
+    logger.info('regenerated their recovery codes', { player: user.username, userId: user.id });
     ok(ctx.res, { recovery: codes });
   });
 

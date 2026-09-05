@@ -30,10 +30,26 @@ import { clientIp, cors, fail, parseCookies } from './util/http.js';
 import { take } from './util/ratelimit.js';
 import * as ipintel from './util/ipintel.js';
 
-const logger = log.child('server');
+const logger = log.child('server', 'system');
+/** Sockets, handshakes and everything that happens on the wire. */
+const netlog = log.child('net', 'net');
 const API_PREFIX = `/api/${K.API_VERSION}`;
 
 /* ── Game ────────────────────────────────────────────────────────────────── */
+
+/*
+ * The log's own switches, before anything has a chance to write a line.
+ *
+ * Whether this instance keeps a copy of its log on disk, and whether the
+ * verbose game trace is on, are decisions the operator makes in the admin panel
+ * rather than in the environment — so they live in the database and are read
+ * back here. The logger cannot read them itself: the database module logs, and
+ * a logger that imported the database would be a cycle.
+ */
+log.applyStored(db.settings);
+if (log.sink.enabled) {
+  logger.info('writing to disk', { dir: log.sink.dir, keepDays: log.sink.keepDays });
+}
 
 db.maintain();
 setInterval(() => db.maintain(), 3600_000).unref();
@@ -378,6 +394,9 @@ wss.on('connection', (ws, req) => {
       })));
     } catch { /* socket already gone */ }
     ws.close(4013, 'banned');
+    netlog.as('moderation').info('socket refused — address banned', {
+      ip, reason: ipBan.reason ?? null, until: ipBan.until ?? null,
+    });
     return;
   }
 
@@ -386,10 +405,15 @@ wss.on('connection', (ws, req) => {
   if (count > config.maxWsPerIp) {
     socketsPerIp.set(ip, count - 1);
     ws.close(4029, 'too many connections');
+    netlog.warn('socket refused — too many from one address', {
+      ip, open: count - 1, limit: config.maxWsPerIp,
+    });
     return;
   }
 
   const session = { player: null, room: null, ip, msgCount: 0, windowStart: Date.now(), greeting: false };
+  session.openedAt = Date.now();
+  netlog.debug('socket open', { ip, fromThisIp: count, sockets: wss.clients.size });
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
 
@@ -398,7 +422,10 @@ wss.on('connection', (ws, req) => {
     const nowMs = Date.now();
     if (nowMs - session.windowStart > 1000) { session.windowStart = nowMs; session.msgCount = 0; }
     if (++session.msgCount > 250) {
-      logger.warn(`flood from ${ip} — closing`);
+      netlog.as('moderation').warn('closing a socket for flooding', {
+        ip, player: session.player?.name ?? null, userId: session.player?.userId ?? null,
+        messages: session.msgCount, window: '1s',
+      });
       ws.close(4029, 'flood');
       return;
     }
@@ -414,7 +441,7 @@ wss.on('connection', (ws, req) => {
       session.greeting = true;
       handleHello(ws, session, msg)
         .catch((err) => {
-          logger.error('handshake failed:', err.stack ?? err.message);
+          netlog.error('handshake failed:', err.stack ?? err.message, { ip });
           try { ws.close(4000, 'handshake failed'); } catch { /* already gone */ }
         })
         .finally(() => { session.greeting = false; });
@@ -423,13 +450,19 @@ wss.on('connection', (ws, req) => {
     session.room.onMessage(session.player, msg);
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
     const n = (socketsPerIp.get(ip) ?? 1) - 1;
     if (n <= 0) socketsPerIp.delete(ip); else socketsPerIp.set(ip, n);
-    if (session.player) hub.leave(session.player.id);
+    const p = session.player;
+    netlog.for(p, session.room).info('socket closed', {
+      code, reason: reason?.toString?.().slice(0, 60) || null,
+      heldSec: Math.round((Date.now() - session.openedAt) / 1000),
+      ip,
+    });
+    if (p) hub.leave(p.id);
   });
 
-  ws.on('error', (err) => logger.debug('ws error:', err.message));
+  ws.on('error', (err) => netlog.for(session.player).debug('socket error:', err.message, { ip }));
 });
 
 /** Sends one frame and closes, for a connection we are turning away. */
@@ -456,7 +489,9 @@ function enforceSingleSession(ws, userId, username) {
   if (!others.length) return true;
 
   if (config.singleSessionPolicy === 'refuse' && others.some((e) => !e.player.spectator)) {
-    logger.info(`${username} is already playing — refusing the second connection`);
+    netlog.as('account').info('refused a second connection — already playing', {
+      player: username, userId, connections: others.length,
+    });
     refuse(ws, {
       code: 'already_playing',
       message: 'this account is already in a match — one player, one game',
@@ -465,7 +500,9 @@ function enforceSingleSession(ws, userId, username) {
   }
 
   for (const entry of others) {
-    logger.info(`${username} reconnected — dropping the older connection`);
+    netlog.as('account').info('reconnected — dropping the older connection', {
+      player: username, userId, room: entry.room?.code ?? null,
+    });
     if (entry.player.ws && entry.player.ws !== ws) {
       refuse(entry.player.ws, {
         code: 'session_replaced',
@@ -484,6 +521,9 @@ async function handleHello(ws, session, msg) {
       message: `server speaks protocol ${K.PROTOCOL_VERSION}, you sent ${msg.protocol} — reload the page`,
     }));
     ws.close(4010, 'protocol mismatch');
+    netlog.info('turned a client away — wrong protocol', {
+      ip: session.ip, theirs: msg.protocol, ours: K.PROTOCOL_VERSION,
+    });
     return;
   }
 
@@ -496,6 +536,10 @@ async function handleHello(ws, session, msg) {
   if (ban) {
     try { ws.send(JSON.stringify(banPayload({ ...ban, ip: session.ip }))); } catch { /* gone */ }
     ws.close(4013, 'banned');
+    netlog.as('moderation').info('turned a banned player away', {
+      player: raw?.user?.username ?? null, userId: raw?.user?.id ?? null, ip: session.ip,
+      scope: ban.scope, reason: ban.reason, until: ban.until ?? null,
+    });
     return;
   }
 
@@ -506,6 +550,10 @@ async function handleHello(ws, session, msg) {
   if (verdict.blocked) {
     if (ws.readyState !== ws.OPEN) return;
     refuse(ws, ipintel.refusalPayload(verdict.reason, verdict.info), 4014, 'vpn blocked');
+    netlog.as('moderation').info('turned a connection away — address intelligence', {
+      ip: session.ip, reason: verdict.reason,
+      player: raw?.user?.username ?? null, userId: raw?.user?.id ?? null,
+    });
     return;
   }
   if (ws.readyState !== ws.OPEN) return;               // gave up while we asked
@@ -519,6 +567,9 @@ async function handleHello(ws, session, msg) {
       message: 'confirm your email address to play — check your inbox, or ask for a new link',
       email: auth.user.email ?? null,
     }, 4016, 'email unverified');
+    netlog.as('account').info('seat refused — email not confirmed', {
+      player: auth.user.username, userId: auth.user.id, ip: session.ip,
+    });
     return;
   }
 
@@ -600,11 +651,21 @@ async function handleHello(ws, session, msg) {
   if (!joined) {
     ws.send(JSON.stringify({ o: K.S2C.ERROR, code: 'server_full', message: 'every room is full — try again shortly' }));
     ws.close(4003, 'full');
+    netlog.warn('turned a player away — every room is full', {
+      player: name, userId, ip: session.ip, rooms: hub.rooms.size,
+    });
     return;
   }
 
   session.player = joined.player;
   session.room = joined.room;
+  netlog.as('match').for(joined.player, joined.room).info(
+    joined.player.spectator ? 'took a seat to watch' : 'took a seat', {
+      authed: !!auth, level, class: classId,
+      map: joined.room.mapId, mode: joined.room.modeId,
+      handshakeMs: Date.now() - session.openedAt,
+    },
+  );
   ws.send(JSON.stringify({
     ...joined.room.welcomePayload(joined.player),
     authed: !!auth,

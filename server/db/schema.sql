@@ -382,6 +382,20 @@ CREATE TABLE IF NOT EXISTS events (
   detail  TEXT
 );
 
+-- Instance settings the admin panel can change at runtime.
+--
+-- Everything else about how this server behaves comes from the environment,
+-- which is right for anything you would redeploy to change. This table is for
+-- the handful of switches that have to survive a restart *and* be flippable
+-- from the panel without one — whether the log is written to disk, whether the
+-- verbose game trace is on. One row per switch, the value JSON so a setting can
+-- grow a shape later without a migration.
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT    NOT NULL,
+  at    INTEGER NOT NULL
+);
+
 -- Every write an administrator makes through the local admin panel.
 CREATE TABLE IF NOT EXISTS admin_log (
   id       INTEGER PRIMARY KEY AUTOINCREMENT,

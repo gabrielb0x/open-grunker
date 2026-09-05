@@ -12,6 +12,7 @@ import * as THREE from 'three';
 import { SURFACE_FX } from '/shared/constants.js';
 import { settings } from './settings.js';
 import { spriteTexture } from './textures.js';
+import { dynamicLightBudget } from './world.js';
 
 const MAX_PARTICLES = 1100;                 // per cloud
 /**
@@ -240,6 +241,7 @@ export class Effects {
     this.smoke = new ParticleCloud(scene, {
       blending: THREE.NormalBlending, texture: spriteTexture('smoke'), max: MAX_PARTICLES,
     });
+    this._initLights();
     this._initTracers();
     this._initBlasts();
     this._initFlashes();
@@ -358,6 +360,93 @@ export class Effects {
     }
   }
 
+  /* ── The lamp pool ─────────────────────────────────────────────────────── */
+
+  /**
+   * Every dynamic light in the game, and there are not many of them.
+   *
+   * There used to be twenty-eight: eight explosions and ten muzzle flashes,
+   * each owning a `PointLight` for the life of the process, plus the map's own
+   * rig. Turning the setting off only set their intensity to zero, which is not
+   * the same thing at all — three.js bakes the *count* of lights in the scene
+   * into every shader it compiles, so all eighteen were still looped over per
+   * fragment (or per vertex, on a Lambert material) on every surface of every
+   * map, at every quality level, whether anything was lit or not. That is why
+   * turning the settings down did not help: nothing in the video panel touched
+   * the number.
+   *
+   * They are a shared pool now, sized by the quality preset — none at all on
+   * Low — and handed out to whatever needs one. An effect that cannot get a
+   * lamp still draws its fireball and its flare; it simply does not also light
+   * the wall behind it, which on a machine with no headroom is exactly the
+   * right thing to lose first.
+   *
+   * The size only ever changes when the player changes a video setting, never
+   * during a match: adding or removing a light recompiles every material in the
+   * scene, and doing that mid-firefight would be a far worse stutter than the
+   * light was ever worth.
+   */
+  _initLights() {
+    /** @type {{light: THREE.PointLight, owner: ?object, priority: number}[]} */
+    this.lamps = [];
+    this.lampBudget = -1;
+    this.applyLights();
+  }
+
+  /** Resizes the pool to what the current video settings allow. */
+  applyLights() {
+    const want = settings.dynamicLights ? dynamicLightBudget() : 0;
+    if (want === this.lampBudget) return false;
+    this.lampBudget = want;
+
+    while (this.lamps.length > want) {
+      const lamp = this.lamps.pop();
+      if (lamp.owner) lamp.owner.lamp = null;
+      this.scene.remove(lamp.light);
+      lamp.light.dispose?.();
+    }
+    while (this.lamps.length < want) {
+      const light = new THREE.PointLight(0xffffff, 0, 12);
+      this.scene.add(light);
+      this.lamps.push({ light, owner: null, priority: -1 });
+    }
+    return true;
+  }
+
+  /**
+   * Claims a lamp for `owner`, or returns null when every one is spoken for by
+   * something at least as important.
+   *
+   * An explosion outranks a muzzle flash and will take its lamp — a rocket
+   * going off two metres away matters more than somebody's rifle across the
+   * map, and the alternative is the blast having no light at all because eight
+   * flashes got there first. Equal ranks never evict each other, so a firefight
+   * cannot make the lights strobe between shooters.
+   */
+  _takeLamp(owner, priority) {
+    let free = null, weakest = null;
+    for (const lamp of this.lamps) {
+      if (!lamp.owner) { free = lamp; break; }
+      if (!weakest || lamp.priority < weakest.priority) weakest = lamp;
+    }
+    const lamp = free ?? (weakest && weakest.priority < priority ? weakest : null);
+    if (!lamp) return null;
+    if (lamp.owner) lamp.owner.lamp = null;
+    lamp.owner = owner;
+    lamp.priority = priority;
+    return lamp;
+  }
+
+  /** Hands a lamp back, dark. */
+  _freeLamp(owner) {
+    const lamp = owner.lamp;
+    if (!lamp) return;
+    lamp.light.intensity = 0;
+    lamp.owner = null;
+    lamp.priority = -1;
+    owner.lamp = null;
+  }
+
   /* ── Explosions ────────────────────────────────────────────────────────── */
 
   _initBlasts() {
@@ -382,9 +471,7 @@ export class Effects {
       shock.visible = false;
       this.scene.add(shock);
 
-      const light = new THREE.PointLight(0xff8a3d, 0, 26);
-      this.scene.add(light);
-      this.blasts.push({ mesh, shock, light, life: 0, maxLife: 0.5, radius: 5, peakLight: 12 });
+      this.blasts.push({ mesh, shock, lamp: null, life: 0, maxLife: 0.5, radius: 5, peakLight: 12 });
     }
     this.blastIndex = 0;
   }
@@ -415,10 +502,15 @@ export class Effects {
     b.radius = radius;
     b.shock.position.set(x, Math.max(0.05, y - radius * 0.35), z);
     b.shock.visible = true;
-    b.light.position.set(x, y + 0.5, z);
-    b.light.intensity = settings.dynamicLights ? 12 * k : 0;
-    b.light.distance = radius * 5;
-    b.peakLight = b.light.intensity;
+    b.peakLight = 12 * k;
+    // A blast outranks every muzzle flash on the map — see `_takeLamp`.
+    this._takeLamp(b, 100);
+    if (b.lamp) {
+      b.lamp.light.color.setHex(0xff8a3d);
+      b.lamp.light.position.set(x, y + 0.5, z);
+      b.lamp.light.intensity = b.peakLight;
+      b.lamp.light.distance = radius * 5;
+    }
 
     const fire = new THREE.Color(0xffb347);
     const hot = new THREE.Color(0xfff0c0);
@@ -463,7 +555,8 @@ export class Effects {
       if (b.life <= 0) continue;
       b.life -= dt;
       if (b.life <= 0) {
-        b.mesh.visible = false; b.shock.visible = false; b.light.intensity = 0;
+        b.mesh.visible = false; b.shock.visible = false;
+        this._freeLamp(b);
         continue;
       }
       const p = 1 - b.life / b.maxLife;
@@ -471,7 +564,7 @@ export class Effects {
       b.mesh.material.opacity = 0.9 * (1 - p) ** 1.6;
       b.shock.scale.setScalar(b.radius * (0.4 + p * 2.2));
       b.shock.material.opacity = 0.65 * (1 - p) ** 2.2;
-      b.light.intensity = (settings.dynamicLights ? (b.peakLight ?? 12) : 0) * (1 - p) ** 2;
+      if (b.lamp) b.lamp.light.intensity = (b.peakLight ?? 12) * (1 - p) ** 2;
     }
   }
 
@@ -491,9 +584,7 @@ export class Effects {
       mesh.frustumCulled = false;
       mesh.renderOrder = 4;
       this.scene.add(mesh);
-      const light = new THREE.PointLight(0xffc978, 0, 9);
-      this.scene.add(light);
-      this.flashes.push({ mesh, light, life: 0, maxLife: 0.05, scale: 1 });
+      this.flashes.push({ mesh, lamp: null, life: 0, maxLife: 0.05, scale: 1 });
     }
     this.flashIndex = 0;
   }
@@ -513,10 +604,12 @@ export class Effects {
     f.mesh.material.opacity = 1;
     f.mesh.visible = true;
     f.life = f.maxLife;
-    if (settings.dynamicLights) {
-      f.light.position.set(x, y, z);
-      f.light.intensity = 6 * scale;
-      f.light.distance = 11 * scale;
+    this._takeLamp(f, 1);
+    if (f.lamp) {
+      f.lamp.light.color.setHex(0xffc978);
+      f.lamp.light.position.set(x, y, z);
+      f.lamp.light.intensity = 6 * scale;
+      f.lamp.light.distance = 11 * scale;
     }
 
     const n = this._count(3 * scale);
@@ -538,11 +631,15 @@ export class Effects {
     for (const f of this.flashes) {
       if (f.life <= 0) continue;
       f.life -= dt;
-      if (f.life <= 0) { f.mesh.visible = false; f.mesh.material.opacity = 0; f.light.intensity = 0; continue; }
+      if (f.life <= 0) {
+        f.mesh.visible = false; f.mesh.material.opacity = 0;
+        this._freeLamp(f);
+        continue;
+      }
       const p = f.life / f.maxLife;
       f.mesh.material.opacity = p;
       f.mesh.scale.setScalar(f.scale * (1.25 - p * 0.25));
-      f.light.intensity *= 0.68;
+      if (f.lamp) f.lamp.light.intensity *= 0.68;
       if (camera) f.mesh.quaternion.copy(camera.quaternion);
     }
   }
@@ -931,9 +1028,10 @@ export class Effects {
     this.smoke.clear();
     for (const t of this.tracers) { t.life = 0; t.mesh.visible = false; }
     for (const b of this.blasts) {
-      b.life = 0; b.mesh.visible = false; b.shock.visible = false; b.light.intensity = 0;
+      b.life = 0; b.mesh.visible = false; b.shock.visible = false;
+      this._freeLamp(b);
     }
-    for (const f of this.flashes) { f.life = 0; f.mesh.visible = false; f.light.intensity = 0; }
+    for (const f of this.flashes) { f.life = 0; f.mesh.visible = false; this._freeLamp(f); }
     const zero = new THREE.Matrix4().makeScale(0, 0, 0);
     for (const kind of ['hole', 'blood']) {
       const set = this.decalSets[kind];

@@ -39,6 +39,7 @@ const { World } = await import('/shared/physics.js');
 const { Hud } = await import('/js/hud.js');
 const { Effects } = await import('/js/effects.js');
 const { ViewModel } = await import('/js/viewmodel.js');
+const { springStep, safe: springSafe } = await import('/js/spring.js');
 const gunskin = await import('/js/gunskin.js');
 const { EntityManager } = await import('/js/entities.js');
 const { Objectives } = await import('/js/objectives.js');
@@ -1896,7 +1897,118 @@ export default async function run() {
     return ok && obj.points.length === 0;
   })());
 
-  suite('Client — renderer');
+  suite('Client — frame-rate safety');
+
+  /*
+   * The bug this suite exists for.
+   *
+   * Recoil and view punch were integrated with semi-implicit Euler, which is
+   * conditionally stable: the step has to satisfy `stiffness·dt² + 2·damping·dt
+   * < 4` or the spring grows instead of settling. The view punch (190 / 21)
+   * failed that above 0.072 s and the weapon's recoil (130 / 16) above 0.091 s,
+   * and the frame loop clamps dt at 0.1 — so any machine under about fourteen
+   * frames a second turned every shot into a camera accelerating by 2.4× per
+   * frame. Within a couple of seconds the view is rotating through angles with
+   * eleven digits in them: the screen strobes and the aim appears to point in
+   * every direction at once, which for a photosensitive player is a hazard
+   * rather than a glitch.
+   */
+  check('a spring settles from any state at any step, however long', (() => {
+    let ok = true;
+    for (const [k, c] of [[190, 21], [130, 16], [100, 20], [50, 30], [400, 12]]) {
+      for (const dt of [1 / 240, 1 / 60, 0.1, 0.25, 1, 4]) {
+        // Ten seconds of game time, however many frames that is — the question
+        // is what the spring does over a span a player would sit through, not
+        // over a fixed number of steps.
+        const frames = Math.max(4, Math.ceil(10 / dt));
+        let x = 1, v = 40, peak = 0, broke = false;
+        for (let i = 0; i < frames; i++) {
+          const s = springStep(k, c, dt);
+          const nx = s.a * x + s.b * v;
+          v = s.c * x + s.d * v;
+          x = nx;
+          peak = Math.max(peak, Math.abs(x));
+          if (!Number.isFinite(x) || !Number.isFinite(v)) {
+            info(`k=${k} c=${c} dt=${dt} went non-finite at frame ${i}`); ok = false; broke = true; break;
+          }
+        }
+        if (broke) continue;
+        // Bounded on the way, and home by the end. The old integrator failed
+        // both: at dt=0.1 with these numbers it reached 1e+15.
+        if (peak > 40 || Math.abs(x) > 1e-2 || Math.abs(v) > 1e-2) {
+          info(`k=${k} c=${c} dt=${dt} peaked at ${peak.toExponential(2)}, `
+            + `ended at x=${x.toExponential(2)} v=${v.toExponential(2)}`);
+          ok = false;
+        }
+      }
+    }
+    return ok;
+  })(), 'no stiffness, damping or frame time makes it grow');
+
+  check('and it is the same motion, whatever size the step is cut into', (() => {
+    /*
+     * A closed-form solution has the property no integrator has: one step of
+     * `dt` and two of `dt/2` land in the same place. That is what makes the
+     * frame rate stop mattering, so it is the property worth testing.
+     */
+    let worst = 0;
+    for (const [k, c] of [[190, 21], [130, 16], [50, 30], [400, 12]]) {
+      for (const dt of [1 / 144, 1 / 60, 0.1, 0.5]) {
+        const x0 = 0.3, v0 = 2.5;
+        const one = springStep(k, c, dt);
+        const full = [one.a * x0 + one.b * v0, one.c * x0 + one.d * v0];
+        const h = springStep(k, c, dt / 2);
+        const mid = [h.a * x0 + h.b * v0, h.c * x0 + h.d * v0];
+        const h2 = springStep(k, c, dt / 2);
+        const twice = [h2.a * mid[0] + h2.b * mid[1], h2.c * mid[0] + h2.d * mid[1]];
+        worst = Math.max(worst, Math.abs(full[0] - twice[0]), Math.abs(full[1] - twice[1]));
+      }
+    }
+    info(`halving the step moves the answer by ${worst.toExponential(2)}`);
+    return worst < 1e-12;
+  })(), 'exact, not merely stable');
+
+  check('…and it is the right spring, not just a smooth one', (() => {
+    // Against the physics it replaces, stepped finely enough to be trusted.
+    const fine = (x, v, k, c, T, h = 1e-6) => {
+      for (let t = 0; t < T - 1e-12; t += h) { v += (-x * k - v * c) * h; x += v * h; }
+      return [x, v];
+    };
+    let worst = 0;
+    for (const [k, c] of [[190, 21], [130, 16]]) {
+      for (const dt of [1 / 60, 1 / 30]) {
+        const s = springStep(k, c, dt);
+        const x0 = 0.3, v0 = 2.5;
+        const [rx, rv] = fine(x0, v0, k, c, dt);
+        worst = Math.max(worst, Math.abs(s.a * x0 + s.b * v0 - rx), Math.abs(s.c * x0 + s.d * v0 - rv));
+      }
+    }
+    info(`worst disagreement with a fine reference ${worst.toExponential(2)}`);
+    return worst < 1e-3;
+  })(), 'the same stiffness and damping the weapons were tuned against');
+
+  check('a NaN can never reach the camera', () => springSafe(NaN) === 0
+    && springSafe(Infinity) === 60 && springSafe(-1e9) === -60 && springSafe(0.4) === 0.4);
+
+  check('the weapon stays in frame through ten seconds at ten frames a second', (() => {
+    const gun = new ViewModel(fakeRenderer);
+    gun.setWeapon(loadoutFor('assault')[0], COS.SLOT.PRIMARY, wearing('factory'));
+    let worst = 0;
+    for (let f = 0; f < 100; f++) {
+      // Firing every frame at 10 fps: three rounds' worth of kick per step,
+      // which is the worst case the old integrator could be handed.
+      gun.fire();
+      gun.update(0.1, { speed: 7, grounded: true, ads: false });
+      for (const key of ['z', 'pitch', 'roll', 'yaw']) worst = Math.max(worst, Math.abs(gun.recoil[key]));
+      if (!Number.isFinite(gun.root.position.x + gun.root.rotation.x)) return false;
+    }
+    info(`worst recoil excursion ${worst.toFixed(3)}`);
+    // A held burst legitimately loads the spring up; what must never happen is
+    // it running away. Anything past a couple of radians is off the screen.
+    return worst < 6;
+  })(), 'the recoil spring loads and settles instead of diverging');
+
+suite('Client — renderer');
 
   let gfx = null;
   const renderer = makeRenderer();
@@ -1907,7 +2019,7 @@ export default async function run() {
     } catch (e) { info(String(e)); return false; }
   })());
 
-  check('every map builds into per-material batches', (() => {
+  check('every map builds into batches that hold all of it and nothing twice', (() => {
     let ok = true;
     const counts = [];
     for (const id of ALL_MAP_IDS) {
@@ -1918,21 +2030,46 @@ export default async function run() {
         // the renderer very much does draw, it simply never collides.
         const drawn = map.boxes.filter((b) => !b.clip);
         const instanced = gfx.batches.reduce((n, m) => n + m.count, 0);
-        counts.push(`${id} ${gfx.batches.length}×`);
+        const culled = gfx.batches.filter((m) => m.frustumCulled);
+        counts.push(`${id} ${gfx.batches.length}× (${culled.length} cullable)`);
         if (instanced !== drawn.length) {
           info(`${id}: ${instanced} instances for ${drawn.length} drawn boxes`); ok = false;
         }
-        // One batch per material, doubled at worst because shadow casting is a
-        // per-mesh flag and the flat paint on a road must not cast one.
+        if (gfx.batches.some((m) => m.count === 0)) {
+          info(`${id}: an empty batch was built`); ok = false;
+        }
+        // A big level is split by place as well as by material so the frustum
+        // can skip what is behind the player — but every chunk still has to
+        // earn its draw call, so the total stays close to the material count
+        // rather than exploding into one mesh per corner.
         const materials = new Set(drawn.map((b) => b.mat)).size;
-        if (gfx.batches.length > materials * 2) {
+        if (gfx.batches.length > Math.max(materials * 2, 12) + 32) {
           info(`${id}: ${gfx.batches.length} batches for ${materials} materials`); ok = false;
+        }
+        // A batch the renderer is allowed to skip must know where it is; one it
+        // is not allowed to skip must not pretend to.
+        for (const m of culled) {
+          if (!m.boundingSphere || !Number.isFinite(m.boundingSphere.radius)) {
+            info(`${id}: a cullable batch has no bound`); ok = false;
+          }
         }
       } catch (e) { info(`${id}: ${e}`); ok = false; }
     }
     info(counts.join(' · '));
     return ok;
-  })(), 'at most one draw call per surface material per shadow class');
+  })(), 'every drawn box in exactly one batch, and every skippable batch bounded');
+
+  check('the biggest map in the game is one the frustum can actually skip', (() => {
+    gfx.setMap(getMap('chateau'));
+    const culled = gfx.batches.filter((m) => m.frustumCulled);
+    const skippable = culled.reduce((n, m) => n + m.count, 0);
+    const total = gfx.batches.reduce((n, m) => n + m.count, 0);
+    info(`${skippable} of ${total} instances sit in a batch that can be culled`);
+    // Château is six thousand boxes over a hundred and twenty metres. Before
+    // this it was one mesh per material spanning the whole level, which meant
+    // every box in it was submitted whichever way the player faced.
+    return culled.length >= 8 && skippable > total * 0.3;
+  })(), 'chunked by place, not just by material');
 
   let rebuildDetail = '';
   check('rebuilding a map releases the previous one', (() => {

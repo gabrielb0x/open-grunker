@@ -9,6 +9,8 @@
  * Mounted at /api/v1/admin, with the panel itself served from /admin.
  */
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { basename } from 'node:path';
 import * as K from '../../shared/constants.js';
 import { Router, ApiError } from './router.js';
 import { ok, json, readJson } from '../util/http.js';
@@ -20,10 +22,12 @@ import * as COS from '../../shared/cosmetics.js';
 import { clanAvatars } from '../util/avatar.js';
 import * as anthems from '../util/anthem.js';
 import config from '../config.js';
-import log, { recent as recentLogs } from '../util/log.js';
+import log, {
+  recent as recentLogs, stats as logStats, CAT_NAMES, LEVEL_NAMES,
+} from '../util/log.js';
 import { SERIES_META, GAUGES, COUNTERS } from '../game/telemetry.js';
 
-const logger = log.child('admin');
+const logger = log.child('admin', 'admin');
 
 /**
  * Does this path segment look like an entity id?
@@ -436,7 +440,7 @@ export function createAdminApi({ db, hub, telemetry = null, banPayload = null })
     // moderation spike is one of the few things worth seeing on both.
     try { db.events?.add({ kind: `admin.${action}`, name: target ?? null, detail: detail ?? null }); }
     catch { /* analytics is not the product */ }
-    logger.info(`${action} ${target ?? ''} ${detail ?? ''}`.trim());
+    logger.info(action, { target: target ?? null, detail: detail ?? null, actor: 'admin@local' });
   };
 
   /* ── Session ───────────────────────────────────────────────────────────── */
@@ -1529,17 +1533,115 @@ export function createAdminApi({ db, hub, telemetry = null, banPayload = null })
 
   /* ── Logs ──────────────────────────────────────────────────────────────── */
 
+  /**
+   * The stream, narrowed by whatever the panel asked for.
+   *
+   * Everything is optional and everything composes: level and category accept
+   * comma lists, `q` is free text over the message and the fields, and
+   * `player`/`userId`/`room` are the identity filters that make a line
+   * findable from somebody's account page. `since` is an id, so the panel's
+   * live tail asks only for what it has not already drawn.
+   */
   r.get('/admin/logs', (ctx) => {
     requireAdmin(ctx);
-    const level = ctx.query.get('level');
+    const pick = (name, allowed) => {
+      const raw = (ctx.query.get(name) ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+      const kept = raw.filter((v) => allowed.includes(v));
+      return kept.length ? kept.join(',') : null;
+    };
+    const lines = recentLogs({
+      limit: num(ctx.query.get('limit'), 1, 1000, 250),
+      level: pick('level', LEVEL_NAMES),
+      cat: pick('cat', CAT_NAMES),
+      ns: (ctx.query.get('ns') || '').slice(0, 40) || null,
+      q: (ctx.query.get('q') || '').slice(0, 120) || null,
+      player: (ctx.query.get('player') || '').slice(0, 40) || null,
+      userId: (ctx.query.get('userId') || '').slice(0, 64) || null,
+      room: (ctx.query.get('room') || '').slice(0, 32) || null,
+      sinceId: num(ctx.query.get('since'), 0, 1e12, 0),
+      since: num(ctx.query.get('at'), 0, 1e15, 0),
+    });
     ok(ctx.res, {
-      lines: recentLogs({
-        limit: num(ctx.query.get('limit'), 1, 800, 200),
-        level: ['error', 'warn', 'info', 'debug'].includes(level) ? level : null,
-        sinceId: num(ctx.query.get('since'), 0, 1e12, 0),
-      }),
+      lines,
+      stats: logStats(),
+      levels: LEVEL_NAMES,
+      categories: CAT_NAMES,
+      settings: log.settingsState(),
       audit: db.audit.recent(num(ctx.query.get('auditLimit'), 1, 500, 100)),
     });
+  });
+
+  /** Both switches, plus what the disk copy currently looks like. */
+  r.get('/admin/logs/config', (ctx) => {
+    requireAdmin(ctx);
+    ok(ctx.res, { settings: log.settingsState(), files: log.sink.list().slice(0, 60) });
+  });
+
+  /**
+   * Flips a switch, and remembers it for this instance.
+   *
+   * Persisted in the database rather than the environment because it is a
+   * decision about *this* server that has to survive a restart without a
+   * redeploy — which is exactly what the request asked for.
+   */
+  r.post('/admin/logs/config', async (ctx) => {
+    requireAdmin(ctx);
+    const body = await readJson(ctx.req);
+    const before = log.settingsState();
+    const state = log.updateStored(db.settings, {
+      toDisk: body.toDisk,
+      trace: body.trace,
+      keepDays: body.keepDays,
+      maxFileMb: body.maxFileMb,
+      maxTotalMb: body.maxTotalMb,
+    });
+    if (before.disk.enabled !== state.disk.enabled) {
+      audit('logs.disk', state.disk.enabled ? 'on' : 'off', state.disk.dir);
+    }
+    if (before.trace !== state.trace) audit('logs.trace', state.trace ? 'on' : 'off', null);
+    ok(ctx.res, { settings: state, files: log.sink.list().slice(0, 60) });
+  });
+
+  /** What is on disk right now. */
+  r.get('/admin/logs/files', (ctx) => {
+    requireAdmin(ctx);
+    ok(ctx.res, { dir: log.sink.dir, files: log.sink.list(), state: log.sink.state() });
+  });
+
+  /**
+   * One file, as it was written.
+   *
+   * `resolve` is the boundary: the name comes off a query string, so it is
+   * reduced to a basename and matched against the pattern this server writes
+   * before it is ever joined to a path.
+   */
+  r.get('/admin/logs/file', (ctx) => {
+    requireAdmin(ctx);
+    const path = log.sink.resolve(ctx.query.get('name'));
+    if (!path) throw new ApiError(404, 'not_found', 'no such log file');
+    const name = basename(path);
+    ctx.res.writeHead(200, {
+      'content-type': 'application/x-ndjson; charset=utf-8',
+      'content-disposition': `attachment; filename="${name}"`,
+      'cache-control': 'no-store',
+    });
+    createReadStream(path).on('error', () => ctx.res.end()).pipe(ctx.res);
+  });
+
+  /** Deletes every log file except the one being written to. */
+  r.delete('/admin/logs/files', (ctx) => {
+    requireAdmin(ctx);
+    const out = log.sink.purge();
+    audit('logs.purge', `${out.removed} files`, `${Math.round(out.freed / 1024)} KB`);
+    ok(ctx.res, { ...out, files: log.sink.list(), state: log.sink.state() });
+  });
+
+  /** Empties the in-memory ring. The files on disk are untouched. */
+  r.delete('/admin/logs', (ctx) => {
+    requireAdmin(ctx);
+    log.clear();
+    audit('logs.clear', 'buffer', null);
+    ok(ctx.res, { stats: logStats() });
   });
 
   return r;

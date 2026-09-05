@@ -36,9 +36,16 @@ import { buildWearable } from './wearables.js';
 const gripAtOf = (model) => model.grip ?? [0, -0.16, 0.08];
 import { buildWeaponMesh, collapseStatic, skinnedBoxGeometry } from './gunskin.js';
 import { settings } from './settings.js';
+import { springStep, safe as springSafe } from './spring.js';
 
 /** Where the gun rests when hip-firing, before per-weapon and per-player offsets. */
 const HIP = { x: 0.2, y: -0.19, z: -0.46 };
+
+/** The recoil spring, and the four axes it drives. See spring.js. */
+const RECOIL_STIFFNESS = 130, RECOIL_DAMPING = 16;
+const RECOIL_AXES = [['z', 'vz'], ['pitch', 'vp'], ['roll', 'vr'], ['yaw', 'vy']];
+/** Far past anything a weapon table can ask for — a guard rail, not a design. */
+const RECOIL_LIMIT = 40;
 /** How far in front of the eye the aligned sight sits when aiming. */
 const ADS_Z = -0.42;
 const AKIMBO_OFFSET = 0.5;
@@ -668,16 +675,21 @@ export class ViewModel {
     this.lag.y += (0 - this.lag.y) * Math.min(1, dt * 8);
     const swayScale = 1 - this.adsAmount * 0.8;
 
-    // Recoil spring — critically damped enough to settle before the next shot.
-    const stiffness = 130, damping = 16;
-    this.recoil.vz += (-this.recoil.z * stiffness - this.recoil.vz * damping) * dt;
-    this.recoil.vp += (-this.recoil.pitch * stiffness - this.recoil.vp * damping) * dt;
-    this.recoil.vr += (-this.recoil.roll * stiffness - this.recoil.vr * damping) * dt;
-    this.recoil.vy += (-this.recoil.yaw * stiffness - this.recoil.vy * damping) * dt;
-    this.recoil.z += this.recoil.vz * dt;
-    this.recoil.pitch += this.recoil.vp * dt;
-    this.recoil.roll += this.recoil.vr * dt;
-    this.recoil.yaw += this.recoil.vy * dt;
+    /*
+     * Recoil spring — damped enough to settle before the next shot.
+     *
+     * Solved, not stepped: the old integration went unstable below about eleven
+     * frames a second, and a rifle whose recoil doubles every frame is a rifle
+     * swinging through the whole screen. All four axes share one spring, so the
+     * coefficients are worked out once. See spring.js.
+     */
+    const sp = springStep(RECOIL_STIFFNESS, RECOIL_DAMPING, dt);
+    const r0 = this.recoil;
+    for (const [x, v] of RECOIL_AXES) {
+      const px = r0[x], pv = r0[v];
+      r0[x] = springSafe(sp.a * px + sp.b * pv, RECOIL_LIMIT);
+      r0[v] = springSafe(sp.c * px + sp.d * pv, RECOIL_LIMIT * 20);
+    }
 
     this.landDip *= Math.max(0, 1 - dt * 7);
     if (this.drawT > 0) this.drawT = Math.max(0, this.drawT - dt);

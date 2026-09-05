@@ -454,30 +454,159 @@ table.list tr.guest.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent)
   border: 1px solid rgba(255, 93, 93, .28); border-radius: var(--r);
 }
 
-/* ── Logs ─────────────────────────────────────────────────────────────── */
+/* ── Logs ───────────────────────────────────────────────────────────────
+   A tail, but a tail you can interrogate.
 
-.logs-split { display: grid; grid-template-columns: 1.7fr 1fr; gap: 18px; align-items: start; }
-.log-col h3 {
-  margin: 0 0 10px; font: 900 9.5px var(--font); letter-spacing: .24em;
+   Every line the server writes is a record — level, category, source, and
+   who it was about — so the page is built around narrowing rather than
+   around scrolling. The level chips and the category select are the two
+   filters anybody reaches for first, so they are the two that are one click
+   away; everything else is a box you type in.
+
+   The colour rules are the panel's own: red is a sanction or a failure,
+   amber is "you", blue is information, dim is detail. A log line is mostly
+   dim on purpose — what should catch the eye is the handful of lines that
+   are not.
+   ─────────────────────────────────────────────────────────────────────── */
+
+.lg-counters {
+  display: flex; flex-wrap: wrap; gap: 10px; margin: 0 2px 14px;
+}
+.lg-count {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 8px 14px; border-radius: var(--r-pill);
+  background: var(--panel); border: 1px solid var(--line); box-shadow: var(--ring);
+}
+.lg-count b {
+  font: 900 15px var(--font); letter-spacing: -.02em; font-variant-numeric: tabular-nums;
+}
+.lg-count small {
+  font: 800 8.5px var(--font); letter-spacing: .18em; color: var(--dim); text-transform: uppercase;
+}
+.lg-count.error b { color: var(--red); }
+.lg-count.warn  b { color: var(--accent); }
+.lg-count.live  b { color: var(--green); }
+
+.lg-filters { margin: 0 2px 14px; display: grid; gap: 10px; }
+.lg-levels { display: flex; flex-wrap: wrap; gap: 6px; }
+.lg-chip {
+  padding: 7px 14px; border-radius: var(--r-pill); cursor: pointer;
+  background: var(--panel); border: 1px solid var(--line); color: var(--muted);
+  font: 900 9.5px var(--font); letter-spacing: .16em; text-transform: uppercase;
+  transition: border-color .14s, color .14s, background .14s;
+}
+.lg-chip:hover { border-color: var(--line-2); color: var(--text); }
+.lg-chip.active { background: var(--panel-3); border-color: var(--accent); color: var(--accent); }
+.lg-chip.lv-error.active { border-color: var(--red); color: var(--red); }
+.lg-chip.lv-warn.active  { border-color: var(--accent); color: var(--accent); }
+.lg-chip.lv-info.active  { border-color: var(--blue); color: var(--blue); }
+.lg-chip.lv-debug.active { border-color: var(--line-2); color: var(--muted); }
+
+.lg-row-2 { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.lg-row-2 input[type=search] { flex: 1; min-width: 200px; }
+.lg-row-2 #logPlayer { flex: 0 1 180px; min-width: 140px; }
+
+.lg-split { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start; }
+
+.lg-stream {
+  height: calc(100vh - 330px); min-height: 320px; overflow: auto; padding: 8px 0;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg);
+  font: 12px/1.55 var(--mono); box-shadow: var(--shadow-sm), var(--ring);
+}
+.lg-hint { margin: 8px 4px 0; font-size: 11px; color: var(--dim); }
+
+.lg-line {
+  display: grid; grid-template-columns: 82px 46px 76px minmax(0, 1fr);
+  gap: 10px; padding: 3px 16px; align-items: baseline;
+  border-left: 2px solid transparent;
+}
+.lg-line:hover { background: rgba(255, 255, 255, .022); cursor: pointer; }
+.lg-line.error { border-left-color: var(--red); background: rgba(255, 93, 93, .05); }
+.lg-line.warn  { border-left-color: var(--accent); background: rgba(255, 176, 46, .04); }
+.lg-time { color: var(--dim); font-variant-numeric: tabular-nums; }
+.lg-lv { font-weight: 800; letter-spacing: .06em; }
+.lg-line.error .lg-lv { color: var(--red); }
+.lg-line.warn  .lg-lv { color: var(--accent); }
+.lg-line.info  .lg-lv { color: var(--blue); }
+.lg-line.debug .lg-lv, .lg-line.debug .lg-msg { color: var(--dim); }
+.lg-catname {
+  font: 800 9px var(--font); letter-spacing: .12em; text-transform: uppercase;
+  color: var(--violet); opacity: .9; overflow: hidden; text-overflow: ellipsis;
+}
+.lg-body { min-width: 0; overflow-wrap: anywhere; }
+.lg-ns { color: var(--accent); opacity: .8; margin-right: 6px; }
+.lg-msg { color: var(--text); }
+
+/* The structured half. A chip is a filter you can press, not decoration. */
+.lg-tag {
+  display: inline-block; margin: 1px 4px 1px 0; padding: 0 6px;
+  border-radius: 5px; background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--muted); font-size: 10.5px; white-space: nowrap;
+}
+.lg-tag b { color: var(--dim); font-weight: 600; }
+.lg-tag.who { border-color: rgba(255, 176, 46, .4); color: var(--accent); cursor: pointer; }
+.lg-tag.where { border-color: rgba(85, 168, 255, .35); color: var(--blue); cursor: pointer; }
+.lg-tag.who:hover, .lg-tag.where:hover { background: var(--panel-3); }
+
+.lg-raw {
+  grid-column: 1 / -1; margin: 6px 0 8px; padding: 10px 12px;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r-xs);
+  color: var(--muted); font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.lg-empty { padding: 30px 16px; color: var(--dim); text-align: center; }
+
+/* ── The rail ─────────────────────────────────────────────────────────── */
+
+.lg-rail { display: grid; gap: 14px; }
+.lg-card {
+  padding: 16px 18px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-sm), var(--ring);
+}
+.lg-card h3 {
+  margin: 0 0 12px; font: 900 9.5px var(--font); letter-spacing: .24em;
   color: var(--muted); text-transform: uppercase;
 }
-.log-box {
-  height: calc(100vh - 230px); overflow: auto; padding: 14px 16px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg);
-  font: 12px/1.7 var(--mono); box-shadow: var(--shadow-sm), var(--ring);
+.lg-switch {
+  display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; cursor: pointer;
 }
-.log-line { display: grid; grid-template-columns: 78px 50px 1fr; gap: 12px; padding: 2px 0; }
-.log-line .t { color: var(--dim); }
-.log-line .l { font-weight: 700; letter-spacing: .06em; }
-.log-line.error .l, .log-line.error .m { color: var(--red); }
-.log-line.warn  .l { color: var(--accent); }
-.log-line.info  .l { color: var(--blue); }
-.log-line.debug .l, .log-line.debug .m { color: var(--dim); }
-.log-line .ns { color: var(--accent); opacity: .85; }
+.lg-switch input { margin-top: 3px; flex: none; }
+.lg-switch b { display: block; font: 700 12px var(--font); color: var(--text); }
+.lg-switch small { display: block; margin-top: 2px; font-size: 10.5px; color: var(--dim); line-height: 1.45; }
+
+.lg-retention { display: flex; gap: 8px; margin: 14px 0 10px; }
+.lg-retention label {
+  flex: 1; display: grid; gap: 3px;
+  font: 800 8px var(--font); letter-spacing: .14em; color: var(--dim); text-transform: uppercase;
+}
+.lg-retention input {
+  width: 100%; padding: 6px 8px; font: 700 12px var(--mono);
+  color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: var(--r-xs);
+}
+.lg-retention small { font: 700 8px var(--font); letter-spacing: .1em; color: var(--dim); }
+
+.lg-diskstate {
+  padding: 8px 10px; margin-bottom: 10px; border-radius: var(--r-xs);
+  background: var(--bg-2); color: var(--muted); font: 11px/1.5 var(--mono);
+}
+.lg-diskstate.bad { color: var(--red); border: 1px solid rgba(255, 93, 93, .3); }
+.lg-files { max-height: 190px; overflow: auto; margin-bottom: 10px; }
+.lg-file {
+  display: flex; justify-content: space-between; gap: 8px; padding: 5px 0;
+  border-bottom: 1px solid rgba(38, 50, 68, .5); font: 11px var(--mono);
+}
+.lg-file a { color: var(--blue); text-decoration: none; }
+.lg-file a:hover { text-decoration: underline; }
+.lg-file span { color: var(--dim); font-variant-numeric: tabular-nums; }
+.lg-file.current a { color: var(--green); }
+
+.lg-audit { max-height: 300px; overflow: auto; }
 .audit-line {
-  display: grid; grid-template-columns: 78px 1fr; gap: 12px; padding: 6px 0;
-  border-bottom: 1px solid rgba(38, 50, 68, .5);
+  display: grid; grid-template-columns: 62px 1fr; gap: 10px; padding: 6px 0;
+  border-bottom: 1px solid rgba(38, 50, 68, .5); font: 11px/1.5 var(--mono);
 }
+.audit-line .t { color: var(--dim); }
 .audit-line .a { color: var(--text); font-weight: 600; }
 .audit-line .d { color: var(--muted); }
 
@@ -555,7 +684,7 @@ table.list tr.guest.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent)
 /* ── Narrow ───────────────────────────────────────────────────────────── */
 
 @media (max-width: 1180px) {
-  .split, .logs-split { grid-template-columns: 1fr; }
+  .split, .lg-split { grid-template-columns: 1fr; }
   .detail { position: static; max-height: none; }
 }
 @media (max-width: 900px) {
